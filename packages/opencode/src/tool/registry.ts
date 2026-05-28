@@ -29,6 +29,7 @@ import * as Log from "@opencode-ai/core/util/log"
 import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
+import { CreateGoalTool, GetGoalTool, UpdateGoalTool } from "./goal"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
 import { pathToFileURL } from "url"
@@ -131,6 +132,9 @@ export const layer: Layer.Layer<
     const edit = yield* EditTool
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
+    const getGoal = yield* GetGoalTool
+    const createGoal = yield* CreateGoalTool
+    const updateGoal = yield* UpdateGoalTool
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
 
@@ -241,6 +245,9 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          get_goal: Tool.init(getGoal),
+          create_goal: Tool.init(createGoal),
+          update_goal: Tool.init(updateGoal),
         })
 
         return {
@@ -256,6 +263,9 @@ export const layer: Layer.Layer<
             tool.write,
             tool.task,
             tool.fetch,
+            tool.get_goal,
+            tool.create_goal,
+            tool.update_goal,
             tool.todo,
             tool.search,
             ...(flags.experimentalScout ? [tool.repo_clone, tool.repo_overview] : []),
@@ -315,6 +325,10 @@ export const layer: Layer.Layer<
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {
       const filtered = (yield* all()).filter((tool) => {
+        if (tool.id === GetGoalTool.id || tool.id === CreateGoalTool.id || tool.id === UpdateGoalTool.id) {
+          return input.agent.mode === "primary"
+        }
+
         if (tool.id === WebSearchTool.id) {
           return webSearchEnabled(input.providerID, { exa: flags.enableExa, parallel: flags.enableParallel })
         }

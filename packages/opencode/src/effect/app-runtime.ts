@@ -28,6 +28,7 @@ import { SessionStatus } from "@/session/status"
 import { SessionRunState } from "@/session/run-state"
 import { SessionProcessor } from "@/session/processor"
 import { SessionCompaction } from "@/session/compaction"
+import { SessionGoal } from "@/session/goal"
 import { SessionRevert } from "@/session/revert"
 import { SessionSummary } from "@/session/summary"
 import { SessionPrompt } from "@/session/prompt"
@@ -59,7 +60,7 @@ import { BackgroundJob } from "@/background/job"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 
-export const AppLayer = Layer.mergeAll(
+const AppLayerCore = Layer.mergeAll(
   Npm.defaultLayer,
   AppFileSystem.defaultLayer,
   Bus.defaultLayer,
@@ -86,9 +87,13 @@ export const AppLayer = Layer.mergeAll(
   SessionStatus.defaultLayer,
   BackgroundJob.defaultLayer,
   RuntimeFlags.defaultLayer,
+)
+
+const AppLayerSession = Layer.mergeAll(
   SessionRunState.defaultLayer,
   SessionProcessor.defaultLayer,
   SessionCompaction.defaultLayer,
+  SessionGoal.defaultLayer,
   SessionRevert.defaultLayer,
   SessionSummary.defaultLayer,
   SessionPrompt.defaultLayer,
@@ -97,6 +102,9 @@ export const AppLayer = Layer.mergeAll(
   LSP.defaultLayer,
   MCP.defaultLayer,
   McpAuth.defaultLayer,
+)
+
+const AppLayerTools = Layer.mergeAll(
   Command.defaultLayer,
   Truncate.defaultLayer,
   ToolRegistry.defaultLayer,
@@ -114,7 +122,12 @@ export const AppLayer = Layer.mergeAll(
   SyncEvent.defaultLayer,
   EventV2Bridge.defaultLayer,
   DataMigration.defaultLayer,
-).pipe(Layer.provideMerge(InstanceLayer.layer), Layer.provideMerge(Observability.layer))
+)
+
+export const AppLayer = Layer.mergeAll(AppLayerCore, AppLayerSession, AppLayerTools).pipe(
+  Layer.provideMerge(InstanceLayer.layer),
+  Layer.provideMerge(Observability.layer),
+)
 
 const rt = ManagedRuntime.make(AppLayer, { memoMap })
 type Runtime = Pick<typeof rt, "runSync" | "runPromise" | "runPromiseExit" | "runFork" | "runCallback" | "dispose">

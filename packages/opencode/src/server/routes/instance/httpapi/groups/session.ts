@@ -7,10 +7,12 @@ import { SessionPrompt } from "@/session/prompt"
 import { SessionRevert } from "@/session/revert"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionGoal } from "@/session/goal"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { Snapshot } from "@/snapshot"
 import { Schema, Struct } from "effect"
+import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, HttpApiSchema, OpenApi } from "effect/unstable/httpapi"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
@@ -63,6 +65,11 @@ export const SummarizePayload = Schema.Struct({
   modelID: ModelID,
   auto: Schema.optional(Schema.Boolean),
 })
+export const GoalSetPayload = Schema.Struct({
+  objective: Schema.optional(Schema.String),
+  status: Schema.optional(SessionGoal.Status),
+  tokenBudget: Schema.optional(Schema.NullOr(NonNegativeInt)),
+})
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
 export const ShellPayload = Schema.Struct(Struct.omit(SessionPrompt.ShellInput.fields, ["sessionID"]))
@@ -88,6 +95,7 @@ export const SessionPaths = {
   share: `${root}/:sessionID/share`,
   init: `${root}/:sessionID/init`,
   summarize: `${root}/:sessionID/summarize`,
+  goal: `${root}/:sessionID/goal`,
   prompt: `${root}/:sessionID/message`,
   promptAsync: `${root}/:sessionID/prompt_async`,
   command: `${root}/:sessionID/command`,
@@ -307,6 +315,43 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.summarize",
             summary: "Summarize session",
             description: "Generate a concise summary of the session using AI compaction to preserve key information.",
+          }),
+        ),
+        HttpApiEndpoint.get("goalGet", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.optional(SessionGoal.Info), "Current session goal"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goal.get",
+            summary: "Get session goal",
+            description: "Get the active long-running goal for a session, if one exists.",
+          }),
+        ),
+        HttpApiEndpoint.post("goalSet", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: GoalSetPayload,
+          success: described(SessionGoal.Info, "Updated session goal"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goal.set",
+            summary: "Set session goal",
+            description: "Create, replace, pause, resume, block, complete, or budget a long-running session goal.",
+          }),
+        ),
+        HttpApiEndpoint.delete("goalClear", SessionPaths.goal, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Boolean, "Cleared session goal"),
+          error: [HttpApiError.BadRequest, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.goal.clear",
+            summary: "Clear session goal",
+            description: "Clear the long-running goal for a session.",
           }),
         ),
         HttpApiEndpoint.post("prompt", SessionPaths.prompt, {

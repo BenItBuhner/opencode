@@ -1227,6 +1227,7 @@ export function Prompt(props: PromptProps) {
     input.clear()
     return true
   }
+
   const exit = useExit()
 
   function pasteText(text: string, virtualText: string) {

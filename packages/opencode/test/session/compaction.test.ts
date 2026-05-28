@@ -381,8 +381,8 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
-        expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
+      const tokens = { input: 82_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
+      expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
   )
@@ -405,7 +405,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+        const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 20_000, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
@@ -417,7 +417,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 400_000, input: 272_000, output: 128_000 })
-        const tokens = { input: 271_000, output: 1_000, reasoning: 0, cache: { read: 2_000, write: 0 } }
+        const tokens = { input: 271_000, output: 70_000, reasoning: 0, cache: { read: 2_000, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
@@ -908,12 +908,12 @@ describe("session.compaction.process", () => {
   )
 
   itCompaction.instance(
-    "persists tail_start_id for retained recent turns",
+    "compacts and updates compaction stats",
     Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
       yield* createUserMessage(session.id, "first")
-      const keep = yield* createUserMessage(session.id, "second")
+      yield* createUserMessage(session.id, "second")
       yield* createUserMessage(session.id, "third")
       yield* createSummaryCompaction(session.id)
 
@@ -929,34 +929,8 @@ describe("session.compaction.process", () => {
 
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
-      expect(part?.tail_start_id).toBe(keep.id)
+      expect(part?.strategy).toBe("codex-local-memento")
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }) })),
-  )
-
-  itCompaction.instance(
-    "shrinks retained tail to fit preserve token budget",
-    Effect.gen(function* () {
-      const ssn = yield* SessionNs.Service
-      const session = yield* ssn.create({})
-      yield* createUserMessage(session.id, "first")
-      yield* createUserMessage(session.id, "x".repeat(2_000))
-      const keep = yield* createUserMessage(session.id, "tiny")
-      yield* createSummaryCompaction(session.id)
-
-      const msgs = yield* ssn.messages({ sessionID: session.id })
-      const parent = msgs.at(-1)?.info.id
-      expect(parent).toBeTruthy()
-      yield* SessionCompaction.use.process({
-        parentID: parent!,
-        messages: msgs,
-        sessionID: session.id,
-        auto: false,
-      })
-
-      const part = yield* readCompactionPart(session.id)
-      expect(part?.type).toBe("compaction")
-      expect(part?.tail_start_id).toBe(keep.id)
-    }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 100 }) })),
   )
 
   itCompaction.instance(
@@ -1060,15 +1034,9 @@ describe("session.compaction.process", () => {
 
         const part = yield* readCompactionPart(session.id)
         expect(part?.type).toBe("compaction")
-        expect(part?.tail_start_id).toBe(keep.id)
+        expect(part?.strategy).toBe("codex-local-memento")
         expect(captured).toContain("zzzz")
-        expect(captured).not.toContain("keep tail")
-
-        const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
-        expect(filtered.map((msg) => msg.info.id).slice(0, 3)).toEqual([parent!, expect.any(String), keep.id])
-        expect(filtered[1]?.info.role).toBe("assistant")
-        expect(filtered[1]?.info.role === "assistant" ? filtered[1].info.summary : false).toBe(true)
-        expect(filtered.map((msg) => msg.info.id)).not.toContain(large.id)
+        expect(captured).toContain("keep tail")
       }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 1, preserve_recent_tokens: 100 }) }))
     },
     { git: true },
@@ -1370,8 +1338,8 @@ describe("session.compaction.process", () => {
         })
 
         expect(captured).toContain("older context")
-        expect(captured).not.toContain("keep this turn")
-        expect(captured).not.toContain("and this one too")
+        expect(captured).toContain("keep this turn")
+        expect(captured).toContain("and this one too")
         expect(captured).not.toContain("What did we do so far?")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
@@ -1410,11 +1378,8 @@ describe("session.compaction.process", () => {
         expect(parent).toBeTruthy()
         yield* SessionCompaction.use.process({ parentID: parent!, messages: msgs, sessionID: session.id, auto: false })
 
-        expect(captured).toContain("<previous-summary>")
         expect(captured).toContain("summary one")
-        expect(captured.match(/summary one/g)?.length).toBe(1)
-        expect(captured).toContain("## Constraints & Preferences")
-        expect(captured).toContain("## Progress")
+        expect(captured).toContain("CONTEXT CHECKPOINT COMPACTION")
       }).pipe(withCompaction({ llm: stub.layer }))
     },
     { git: true },
@@ -1428,8 +1393,8 @@ describe("session.compaction.process", () => {
     return Effect.gen(function* () {
       const ssn = yield* SessionNs.Service
       const session = yield* ssn.create({})
-      const u1 = yield* createUserMessage(session.id, "one")
-      const u2 = yield* createUserMessage(session.id, "two")
+      yield* createUserMessage(session.id, "one")
+      yield* createUserMessage(session.id, "two")
       const u3 = yield* createUserMessage(session.id, "three")
       yield* createCompactionMarker(session.id)
 
@@ -1449,14 +1414,8 @@ describe("session.compaction.process", () => {
       const filtered = MessageV2.filterCompacted(MessageV2.stream(session.id))
       const ids = filtered.map((msg) => msg.info.id)
 
-      expect(ids).not.toContain(u1.id)
-      expect(ids).not.toContain(u2.id)
       expect(ids).toContain(u3.id)
       expect(ids).toContain(u4.id)
-      expect(filtered.some((msg) => msg.info.role === "assistant" && msg.info.summary)).toBe(true)
-      expect(
-        filtered.some((msg) => msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction")),
-      ).toBe(true)
     }).pipe(withCompaction({ llm: stub.layer, config: cfg({ tail_turns: 2, preserve_recent_tokens: 10_000 }) }))
   })
 
@@ -1500,7 +1459,7 @@ describe("session.compaction.process", () => {
 
       const part = yield* readCompactionPart(session.id)
       expect(part?.type).toBe("compaction")
-      expect(part?.tail_start_id).toBe(keep.id)
+      expect(part?.strategy).toBe("codex-local-memento")
     }).pipe(withCompaction({ config: cfg({ tail_turns: 2, preserve_recent_tokens: 500 }) })),
   )
 })

@@ -4,6 +4,8 @@ import { ProviderTransform } from "@/provider/transform"
 import type { MessageV2 } from "./message-v2"
 
 const COMPACTION_BUFFER = 20_000
+const EFFECTIVE_CONTEXT_WINDOW_PERCENT = 0.95
+const AUTO_COMPACT_LIMIT_PERCENT = 0.9
 
 export function usable(input: { cfg: Config.Info; model: Provider.Model; outputTokenMax?: number }) {
   const context = input.model.limit.context
@@ -28,5 +30,6 @@ export function isOverflow(input: {
 
   const count =
     input.tokens.total || input.tokens.input + input.tokens.output + input.tokens.cache.read + input.tokens.cache.write
-  return count >= usable(input)
+  const codexLimit = Math.floor(input.model.limit.context * EFFECTIVE_CONTEXT_WINDOW_PERCENT * AUTO_COMPACT_LIMIT_PERCENT)
+  return count >= codexLimit
 }

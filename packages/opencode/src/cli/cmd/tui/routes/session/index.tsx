@@ -7,6 +7,7 @@ import {
   For,
   Match,
   on,
+  onCleanup,
   onMount,
   Show,
   Switch,
@@ -180,6 +181,104 @@ function use() {
   return ctx
 }
 
+type GoalInfo = {
+  objective: string
+  status: "active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete"
+  tokenBudget?: number
+  tokensUsed: number
+  timeUsedSeconds: number
+  updatedAt: number
+}
+
+function formatGoalDuration(seconds: number) {
+  if (seconds < 60) return `${Math.max(0, seconds)}s`
+  const days = Math.floor(seconds / 86_400)
+  const hours = Math.floor((seconds % 86_400) / 3_600)
+  const minutes = Math.floor((seconds % 3_600) / 60)
+  if (days > 0) return `${days}d ${hours}h ${minutes}m`
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`
+  return `${minutes}m`
+}
+
+function goalFooter(goal: GoalInfo, now: number) {
+  if (goal.status === "active") {
+    const elapsed = goal.timeUsedSeconds + Math.max(0, Math.floor((now - goal.updatedAt) / 1000))
+    return `Pursuing goal (${formatGoalDuration(elapsed)})`
+  }
+  if (goal.status === "paused") return "Goal paused (/goal resume)"
+  if (goal.status === "complete") return "Goal achieved"
+  if (goal.status === "budget_limited") return "Goal unmet (limited by budget)"
+  if (goal.status === "usage_limited") return "Goal unmet (usage limited)"
+  return "Goal unmet"
+}
+
+type CompactionDebugInfo = {
+  auto: boolean
+  overflow?: boolean
+  strategy?: string
+  replacement?: string
+  continuation?: string
+  summarized_messages?: number
+  summarized_user_messages?: number
+  summarized_assistant_messages?: number
+  summarized_tool_calls?: number
+  retained_user_messages?: number
+  retained_user_tokens?: number
+  retained_user_max_tokens?: number
+  stripped_assistant_messages?: number
+  stripped_tool_results?: number
+  stripped_media_parts?: number
+  previous_summary?: boolean
+  summary_chars?: number
+  trimmed_messages?: number
+}
+
+function compactNumber(value: number | undefined) {
+  if (value === undefined) return "unknown"
+  return value.toLocaleString()
+}
+
+function compactTokens(value: number | undefined) {
+  if (value === undefined) return "unknown"
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 10_000 ? 0 : 1)}K`
+  return value.toString()
+}
+
+function compactionTitle(part: CompactionDebugInfo) {
+  const trigger = part.auto ? "Automatic" : "Manual"
+  return `${trigger} Codex Compaction${part.overflow ? " · Context Overflow" : ""}`
+}
+
+function compactionRows(part: CompactionDebugInfo) {
+  const summarized =
+    part.summarized_messages === undefined
+      ? "history selected for checkpoint summary"
+      : `${compactNumber(part.summarized_messages)} messages (${compactNumber(part.summarized_user_messages)} user, ${compactNumber(part.summarized_assistant_messages)} assistant, ${compactNumber(part.summarized_tool_calls)} tool results)`
+  const retained =
+    part.retained_user_messages === undefined
+      ? "synthetic summary plus recent real user messages"
+      : `summary + ${compactNumber(part.retained_user_messages)} recent real user messages (~${compactTokens(part.retained_user_tokens)} / ${compactTokens(part.retained_user_max_tokens)} token cap)`
+  const stripped =
+    part.stripped_assistant_messages === undefined
+      ? "old assistant/tool/media details are removed from live context after summarization"
+      : `${compactNumber(part.stripped_assistant_messages)} assistant messages, ${compactNumber(part.stripped_tool_results)} tool results, ${compactNumber(part.stripped_media_parts)} media parts removed from live context`
+
+  return [
+    ["Type", part.overflow ? "Codex local checkpoint after context overflow" : "Codex local checkpoint"],
+    ["Strategy", part.strategy ?? "codex-local-memento"],
+    ["Summarized", summarized],
+    ["Retained", retained],
+    ["Stripped", stripped],
+    ["Continuation", part.continuation ?? (part.auto ? "auto continuation" : "manual checkpoint")],
+    [
+      "Model sees",
+      "recent user messages + prefixed handoff summary; stripped assistant/tool details only survive if the summary captured them",
+    ],
+    ["Previous summary", part.previous_summary ? "included via compacted checkpoint history" : "none detected"],
+  ]
+}
+
 export function Session() {
   const route = useRouteData("session")
   const { navigate } = useRoute()
@@ -247,6 +346,20 @@ export function Session() {
   const toast = useToast()
   const sdk = useSDK()
   const editor = useEditorContext()
+  const [goal, setGoal] = createSignal<GoalInfo | undefined>()
+  const [goalClock, setGoalClock] = createSignal(Date.now())
+
+  createEffect(() => {
+    if (goal()?.status !== "active") return
+    const timer = setInterval(() => setGoalClock(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+
+  async function refreshGoal(sessionID: string) {
+    const response = await sdk.fetch(`${sdk.url}/session/${sessionID}/goal`)
+    if (!response.ok) return
+    setGoal((await response.json()) as GoalInfo | undefined)
+  }
 
   createEffect(() => {
     const sessionID = route.sessionID
@@ -276,6 +389,7 @@ export function Session() {
       }
       editor.reconnect(result.data.directory)
       await sync.session.sync(sessionID)
+      await refreshGoal(sessionID)
       if (route.sessionID === sessionID && scroll) scroll.scrollBy(100_000)
     })().catch((error) => {
       if (route.sessionID !== sessionID) return
@@ -303,6 +417,18 @@ export function Session() {
       local.agent.set("plan")
       lastSwitch = part.id
     }
+  })
+
+  ;(event.on as (type: string, cb: (evt: { properties: unknown }) => void) => void)("session.goal.updated", (evt) => {
+    const properties = evt.properties as { sessionID: string; goal: GoalInfo }
+    if (properties.sessionID !== route.sessionID) return
+    setGoal(properties.goal)
+  })
+
+  ;(event.on as (type: string, cb: (evt: { properties: unknown }) => void) => void)("session.goal.cleared", (evt) => {
+    const properties = evt.properties as { sessionID: string }
+    if (properties.sessionID !== route.sessionID) return
+    setGoal(undefined)
   })
 
   let seeded = false
@@ -1277,7 +1403,18 @@ export function Session() {
                         toBottom()
                       }}
                       sessionID={route.sessionID}
-                      right={<TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
+                      right={
+                        <box flexDirection="row" gap={1}>
+                          <Show when={goal()}>
+                            {(current) => (
+                              <text fg={theme.textMuted}>
+                                {goalFooter(current(), goalClock())}
+                              </text>
+                            )}
+                          </Show>
+                          <TuiPluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />
+                        </box>
+                      }
                     />
                   </TuiPluginRuntime.Slot>
                 </Show>
@@ -1415,13 +1552,32 @@ function UserMessage(props: {
         </box>
       </Show>
       <Show when={compaction()}>
-        <box
-          marginTop={1}
-          border={["top"]}
-          title=" Compaction "
-          titleAlignment="center"
-          borderColor={theme.borderActive}
-        />
+        {(current) => {
+          const info = current() as CompactionDebugInfo
+          return (
+            <box
+              marginTop={1}
+              paddingTop={1}
+              paddingBottom={1}
+              paddingLeft={2}
+              paddingRight={2}
+              border={["top", "bottom"]}
+              title={` ${compactionTitle(info)} `}
+              titleAlignment="center"
+              borderColor={theme.borderActive}
+              backgroundColor={theme.backgroundPanel}
+            >
+              <For each={compactionRows(info)}>
+                {([label, value]) => (
+                  <text fg={theme.textMuted}>
+                    <span style={{ fg: theme.text, bold: true }}>{label}: </span>
+                    {value}
+                  </text>
+                )}
+              </For>
+            </box>
+          )
+        }}
       </Show>
     </>
   )

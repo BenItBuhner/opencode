@@ -18,6 +18,7 @@ import * as ProviderError from "@/provider/error"
 import { iife } from "@/util/iife"
 import { errorMessage } from "@/util/error"
 import { isMedia } from "@/util/media"
+import { Token } from "@/util/token"
 import type { SystemError } from "bun"
 import type { Provider } from "@/provider/provider"
 import { ModelID, ProviderID } from "@/provider/schema"
@@ -26,6 +27,7 @@ import { NonNegativeInt } from "@opencode-ai/core/schema"
 import * as EffectLogger from "@opencode-ai/core/effect/logger"
 import { MessageError } from "./message-error"
 import { AuthError, OutputLengthError } from "./message-error"
+import { COMPACT_USER_MESSAGE_MAX_TOKENS, compactSummaryText, realUserText, summaryAssistantText } from "./compact-codex"
 export { AuthError, OutputLengthError } from "./message-error"
 
 /** Error shape thrown by Bun's fetch() when gzip/br decompression fails mid-stream */
@@ -187,6 +189,23 @@ export const CompactionPart = Schema.Struct({
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
+  strategy: Schema.optional(Schema.String),
+  replacement: Schema.optional(Schema.String),
+  continuation: Schema.optional(Schema.String),
+  summarized_messages: Schema.optional(NonNegativeInt),
+  summarized_user_messages: Schema.optional(NonNegativeInt),
+  summarized_assistant_messages: Schema.optional(NonNegativeInt),
+  summarized_tool_calls: Schema.optional(NonNegativeInt),
+  retained_user_messages: Schema.optional(NonNegativeInt),
+  retained_user_tokens: Schema.optional(NonNegativeInt),
+  retained_user_max_tokens: Schema.optional(NonNegativeInt),
+  stripped_assistant_messages: Schema.optional(NonNegativeInt),
+  stripped_tool_results: Schema.optional(NonNegativeInt),
+  stripped_media_parts: Schema.optional(NonNegativeInt),
+  previous_summary: Schema.optional(Schema.Boolean),
+  summary_message_id: Schema.optional(MessageID),
+  summary_chars: Schema.optional(NonNegativeInt),
+  trimmed_messages: Schema.optional(NonNegativeInt),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 
@@ -723,12 +742,10 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           }
         }
 
-        if (part.type === "compaction") {
-          userMessage.parts.push({
-            type: "text",
-            text: "What did we do so far?",
-          })
-        }
+        // Compaction parts are UI/control markers. Codex-style compacted
+        // history replaces them with a synthetic summary user message in
+        // filterCompacted(); leaking the marker text to the model makes it
+        // reason about the compaction itself instead of continuing the task.
         if (part.type === "subtask") {
           userMessage.parts.push({
             type: "text",
@@ -1011,57 +1028,87 @@ export const get = Effect.fn("MessageV2.get")(function* (input: { sessionID: Ses
   }
 })
 
-export function filterCompacted(msgs: Iterable<WithParts>) {
-  const result = [] as WithParts[]
-  const completed = new Set<string>()
-  let retain: MessageID | undefined
-  for (const msg of msgs) {
-    result.push(msg)
-    if (retain) {
-      if (msg.info.id === retain) break
+export function filterCompacted(msgs: Iterable<WithParts>): WithParts[] {
+  const chronological = Array.from(msgs).toSorted((a, b) => {
+    const time = a.info.time.created - b.info.time.created
+    if (time !== 0) return time
+    return a.info.id.localeCompare(b.info.id)
+  })
+  const compactionUsers = new Map<MessageID, number>()
+  let latest:
+    | {
+        userIndex: number
+        assistantIndex: number
+        summary: string | undefined
+      }
+    | undefined
+
+  for (let index = 0; index < chronological.length; index++) {
+    const msg = chronological[index]!
+    if (msg.info.role === "user" && msg.parts.some((part) => part.type === "compaction")) {
+      compactionUsers.set(msg.info.id, index)
       continue
     }
-    if (msg.info.role === "user" && completed.has(msg.info.id)) {
-      const part = msg.parts.find((item): item is CompactionPart => item.type === "compaction")
-      if (!part) continue
-      if (!part.tail_start_id) break
-      retain = part.tail_start_id
-      if (msg.info.id === retain) break
-      continue
-    }
-    if (msg.info.role === "user" && completed.has(msg.info.id) && msg.parts.some((part) => part.type === "compaction"))
-      break
-    if (msg.info.role === "assistant" && msg.info.summary && msg.info.finish && !msg.info.error)
-      completed.add(msg.info.parentID)
+    const summary = summaryAssistantText(msg)
+    if (summary === undefined || msg.info.role !== "assistant") continue
+    const userIndex = compactionUsers.get(msg.info.parentID)
+    if (userIndex === undefined) continue
+    latest = { userIndex, assistantIndex: index, summary }
   }
-  result.reverse()
-  const compactionIndex = result.findLastIndex(
-    (msg) =>
-      msg.info.role === "user" &&
-      msg.parts.some((item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined),
-  )
-  const compaction = result[compactionIndex]
-  const part = compaction?.parts.find(
-    (item): item is CompactionPart => item.type === "compaction" && item.tail_start_id !== undefined,
-  )
-  const summaryIndex = compaction
-    ? result.findIndex(
-        (msg, index) =>
-          index > compactionIndex &&
-          msg.info.role === "assistant" &&
-          msg.info.summary &&
-          msg.info.parentID === compaction.info.id,
-      )
-    : -1
-  const tailIndex = part?.tail_start_id ? result.findIndex((msg) => msg.info.id === part.tail_start_id) : -1
-  if (tailIndex >= 0 && tailIndex < compactionIndex && summaryIndex > compactionIndex) {
-    return [
-      ...result.slice(compactionIndex, summaryIndex + 1),
-      ...result.slice(tailIndex, compactionIndex),
-      ...result.slice(summaryIndex + 1),
-    ]
+
+  if (!latest) return chronological
+
+  const previousVisibleHistory: WithParts[] = filterCompacted(chronological.slice(0, latest.userIndex))
+
+  return [
+    ...compactUserHistory(previousVisibleHistory),
+    compactSummaryMessage(chronological[latest.userIndex]!, latest.summary),
+    ...chronological.slice(latest.assistantIndex + 1),
+  ]
+}
+
+function compactSummaryMessage(compaction: WithParts, summary: string | undefined): WithParts {
+  return {
+    info: compaction.info,
+    parts: [
+      {
+        id: PartID.ascending(),
+        messageID: compaction.info.id,
+        sessionID: compaction.info.sessionID,
+        type: "text",
+        synthetic: true,
+        text: compactSummaryText(summary),
+      },
+    ],
   }
-  return result
+}
+
+function compactUserHistory(messages: WithParts[]) {
+  const selected: WithParts[] = []
+  let remaining = COMPACT_USER_MESSAGE_MAX_TOKENS
+  for (const msg of messages.toReversed()) {
+    const text = realUserText(msg)
+    if (!text || remaining <= 0) continue
+    const tokens = Token.estimate(text)
+    const truncated = tokens > remaining
+    const nextText =
+      truncated ? text.slice(0, Math.max(0, Math.floor(text.length * (remaining / tokens) * 0.95))).trim() : text
+    remaining -= Math.min(tokens, remaining)
+    selected.push({
+      info: msg.info,
+      parts: [
+        {
+          id: PartID.ascending(),
+          messageID: msg.info.id,
+          sessionID: msg.info.sessionID,
+          type: "text",
+          text: nextText,
+        },
+      ],
+    })
+    if (truncated) break
+  }
+  return selected.toReversed()
 }
 
 export const filterCompactedEffect = Effect.fnUntraced(function* (sessionID: SessionID) {

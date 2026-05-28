@@ -1197,6 +1197,55 @@ function modelSuggestions(provider: Info | undefined, modelID: ModelID, enableEx
     .map((item) => item.id)
 }
 
+function numberField(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value) && value > 0) return value
+    if (typeof value === "string") {
+      const parsed = Number(value)
+      if (Number.isFinite(parsed) && parsed > 0) return parsed
+    }
+  }
+  return undefined
+}
+
+async function discoverOpenAICompatibleModelLimits(provider: Info) {
+  const base = typeof provider.options.baseURL === "string" ? provider.options.baseURL : undefined
+  if (!base) return {}
+  const apiKey = typeof provider.options.apiKey === "string" ? provider.options.apiKey : provider.key
+  const url = new URL("models", base.replace(/\/?$/, "/"))
+  const response = await fetch(url, {
+    headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined,
+  })
+  if (!response.ok) throw new Error(`model discovery failed: ${response.status} ${response.statusText}`)
+  const body = (await response.json()) as {
+    data?: unknown
+    models?: unknown
+  }
+  const items = Array.isArray(body.data) ? body.data : Array.isArray(body.models) ? body.models : []
+  const result: Record<string, { name?: string; context?: number; output?: number; input?: number }> = {}
+  for (const item of items) {
+    if (!isRecord(item)) continue
+    const id = typeof item.id === "string" ? item.id : typeof item.name === "string" ? item.name : undefined
+    if (!id) continue
+    const limit = isRecord(item.limit) ? item.limit : undefined
+    const context = numberField(
+      limit?.context,
+      item.context_window,
+      item.context_length,
+      item.max_context_window_tokens,
+      item.max_context_tokens,
+      item.context,
+    )
+    result[id] = {
+      name: typeof item.name === "string" ? item.name : undefined,
+      context,
+      input: numberField(limit?.input, item.input, item.max_prompt_tokens, item.max_input_tokens),
+      output: numberField(limit?.output, item.output, item.max_output_tokens, item.max_completion_tokens),
+    }
+  }
+  return result
+}
+
 export const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -1460,6 +1509,26 @@ export const layer = Layer.effect(
           if (provider.name) partial.name = provider.name
           if (provider.options) partial.options = provider.options
           mergeProvider(providerID, partial)
+        }
+
+        for (const [id, provider] of Object.entries(providers)) {
+          if (!Object.values(provider.models).some((model) => model.api.npm === "@ai-sdk/openai-compatible")) {
+            continue
+          }
+          if (!provider.options.baseURL) continue
+          try {
+            const discovered = yield* Effect.promise(() => discoverOpenAICompatibleModelLimits(provider))
+            for (const [modelID, metadata] of Object.entries(discovered)) {
+              const model = provider.models[modelID]
+              if (!model) continue
+              if (metadata.name && model.name === modelID) model.name = metadata.name
+              model.limit.context = metadata.context ?? model.limit.context
+              model.limit.input = metadata.input ?? model.limit.input
+              model.limit.output = metadata.output ?? model.limit.output
+            }
+          } catch (error) {
+            log.warn("openai-compatible model discovery failed", { providerID: id, error })
+          }
         }
 
         const gitlab = ProviderID.make("gitlab")

@@ -61,6 +61,8 @@ import { referencePromptMetadata, referenceTextPart } from "./prompt/reference"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { LLMEvent } from "@opencode-ai/llm"
+import { SessionGoal } from "./goal"
+import { goalContext } from "./goal-context"
 
 // @ts-ignore
 globalThis.AI_SDK_LOG_WARNINGS = false
@@ -1286,6 +1288,28 @@ export const layer = Layer.effect(
                 callID: orphan.callID,
               })
             }
+            const activeGoal = yield* SessionGoal.getDirect(sessionID)
+            if (activeGoal?.status === "active") {
+              const continueMsg = yield* sessions.updateMessage({
+                id: MessageID.ascending(),
+                role: "user",
+                sessionID,
+                time: { created: Date.now() },
+                agent: lastUser.agent,
+                model: lastUser.model,
+              })
+              yield* sessions.updatePart({
+                id: PartID.ascending(),
+                messageID: continueMsg.id,
+                sessionID,
+                type: "text",
+                synthetic: true,
+                metadata: { goal_continue: true },
+                text: "Continue working toward the active thread goal.",
+              })
+              yield* slog.info("continuing active goal")
+              continue
+            }
             yield* slog.info("exiting loop")
             break
           }
@@ -1432,15 +1456,26 @@ export const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
-            const [skills, env, instructions, modelMsgs] = yield* Effect.all([
+            const [skills, env, instructions, modelMsgs, goal] = yield* Effect.all([
               sys.skills(agent),
               sys.environment(model),
               instruction.system().pipe(Effect.orDie),
               MessageV2.toModelMessagesEffect(msgs, model),
+              SessionGoal.getDirect(sessionID),
             ])
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
             const format = lastUser.format ?? { type: "text" as const }
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
+            const goalMessages =
+              goal && (goal.status === "active" || goal.status === "budget_limited")
+                ? [
+                    ...modelMsgs,
+                    {
+                      role: "user" as const,
+                      content: [{ type: "text" as const, text: goalContext(goal) }],
+                    },
+                  ]
+                : modelMsgs
             const result = yield* handle.process({
               user: lastUser,
               agent,
@@ -1448,7 +1483,7 @@ export const layer = Layer.effect(
               sessionID,
               parentSessionID: session.parentID,
               system,
-              messages: [...modelMsgs, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
+              messages: [...goalMessages, ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS }] : [])],
               tools,
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
@@ -1510,6 +1545,83 @@ export const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
+    const goalCommand = Effect.fn("SessionPrompt.goalCommand")(function* (input: CommandInput) {
+      const raw = input.arguments.trim()
+      const stateMessage = (text: string) =>
+        prompt({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          model: input.model ? Provider.parseModel(input.model) : undefined,
+          agent: input.agent,
+          variant: input.variant,
+          noReply: true,
+          parts: [{ type: "text", text }],
+        })
+
+      if (!raw) {
+        return yield* stateMessage(formatGoalStatus(yield* SessionGoal.getDirect(input.sessionID)))
+      }
+
+      if (raw === "clear") {
+        yield* SessionGoal.clearDirect(input.sessionID)
+        yield* bus.publish(SessionGoal.Event.Cleared, { sessionID: input.sessionID })
+        return yield* stateMessage("Goal cleared.")
+      }
+
+      if (raw === "pause") {
+        const goal = yield* SessionGoal.setDirect({
+          sessionID: input.sessionID,
+          status: "paused",
+        })
+        yield* bus.publish(SessionGoal.Event.Updated, { sessionID: input.sessionID, goal })
+        return yield* stateMessage("Goal paused (/goal resume).")
+      }
+
+      if (raw === "resume") {
+        const goal = yield* SessionGoal.setDirect({
+          sessionID: input.sessionID,
+          status: "active",
+        })
+        yield* bus.publish(SessionGoal.Event.Updated, { sessionID: input.sessionID, goal })
+        return yield* prompt({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          model: input.model ? Provider.parseModel(input.model) : undefined,
+          agent: input.agent,
+          variant: input.variant,
+          parts: [
+            {
+              type: "text",
+              text: "Continue working toward the active thread goal.",
+              synthetic: true,
+              metadata: { goal_continue: true },
+            },
+          ],
+        })
+      }
+
+      if (raw === "edit") {
+        return yield* stateMessage("Use /goal edit <new objective> or /goal <new objective> to replace the current goal.")
+      }
+
+      const objective = raw.startsWith("edit ") ? raw.slice("edit ".length).trim() : raw
+      const goal = yield* SessionGoal.setDirect({
+        sessionID: input.sessionID,
+        objective,
+        status: "active",
+      })
+      yield* bus.publish(SessionGoal.Event.Updated, { sessionID: input.sessionID, goal })
+
+      return yield* prompt({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        model: input.model ? Provider.parseModel(input.model) : undefined,
+        agent: input.agent,
+        variant: input.variant,
+        parts: [{ type: "text", text: objective }],
+      })
+    })
+
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
       const cmd = yield* commands.get(input.command)
@@ -1520,6 +1632,7 @@ export const layer = Layer.effect(
         yield* bus.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
+      if (input.command === Command.Default.GOAL) return yield* goalCommand(input)
       const agentName = cmd.agent ?? input.agent
 
       const raw = input.arguments.match(argsRegex) ?? []
@@ -1742,6 +1855,18 @@ export const CommandInput = Schema.Struct({
   ),
 })
 export type CommandInput = Schema.Schema.Type<typeof CommandInput>
+
+function formatGoalStatus(goal: SessionGoal.Info | undefined) {
+  if (!goal) return "No goal set. Use /goal <objective> to start one."
+  const status =
+    goal.status === "budget_limited"
+      ? "limited by budget"
+      : goal.status === "usage_limited"
+        ? "usage limited"
+        : goal.status.replaceAll("_", " ")
+  const budget = goal.tokenBudget ? ` (${goal.tokensUsed}/${goal.tokenBudget} tokens)` : ""
+  return `Goal ${status}${budget}: ${goal.objective}`
+}
 
 /** @internal Exported for testing */
 export function createStructuredOutputTool(input: {

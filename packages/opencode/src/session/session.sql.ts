@@ -135,3 +135,20 @@ export const PermissionTable = sqliteTable("permission", {
   ...Timestamps,
   data: text({ mode: "json" }).notNull().$type<Permission.Ruleset>(),
 })
+
+export const ThreadGoalTable = sqliteTable("thread_goal", {
+  session_id: text()
+    .$type<SessionID>()
+    .primaryKey()
+    .references(() => SessionTable.id, { onDelete: "cascade" }),
+  goal_id: text().notNull(),
+  objective: text().notNull(),
+  status: text()
+    .$type<"active" | "paused" | "blocked" | "usage_limited" | "budget_limited" | "complete">()
+    .notNull(),
+  token_budget: integer(),
+  tokens_used: integer().notNull().default(0),
+  time_used_seconds: integer().notNull().default(0),
+  created_at_ms: integer().notNull(),
+  updated_at_ms: integer().notNull(),
+})

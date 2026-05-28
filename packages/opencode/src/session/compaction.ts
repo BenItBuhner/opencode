@@ -20,6 +20,14 @@ import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionEvent } from "@opencode-ai/core/session-event"
+import {
+  COMPACT_USER_MESSAGE_MAX_TOKENS,
+  SUMMARIZATION_PROMPT,
+  realUserText,
+  selectRecentUserTexts,
+  summaryAssistantText,
+} from "./compact-codex"
+import { SessionGoal } from "./goal"
 
 const log = Log.create({ service: "session.compaction" })
 
@@ -39,42 +47,6 @@ const PRUNE_PROTECTED_TOOLS = ["skill"]
 const DEFAULT_TAIL_TURNS = 2
 const MIN_PRESERVE_RECENT_TOKENS = 2_000
 const MAX_PRESERVE_RECENT_TOKENS = 8_000
-const SUMMARY_TEMPLATE = `Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
-<template>
-## Goal
-- [single-sentence task summary]
-
-## Constraints & Preferences
-- [user constraints, preferences, specs, or "(none)"]
-
-## Progress
-### Done
-- [completed work or "(none)"]
-
-### In Progress
-- [current work or "(none)"]
-
-### Blocked
-- [blockers or "(none)"]
-
-## Key Decisions
-- [decision and why, or "(none)"]
-
-## Next Steps
-- [ordered next actions or "(none)"]
-
-## Critical Context
-- [important technical facts, errors, open questions, or "(none)"]
-
-## Relevant Files
-- [file or directory path: why it matters, or "(none)"]
-</template>
-
-Rules:
-- Keep every section, even when empty.
-- Use terse bullets, not prose paragraphs.
-- Preserve exact file paths, commands, error strings, and identifiers when known.
-- Do not mention the summary process or that context was compacted.`
 type Turn = {
   start: number
   end: number
@@ -90,6 +62,40 @@ type CompletedCompaction = {
   userIndex: number
   assistantIndex: number
   summary: string | undefined
+}
+
+function compactionStats(input: {
+  summarized: MessageV2.WithParts[]
+  source: MessageV2.WithParts[]
+  retainedUserTexts: string[]
+  summary?: string
+  activeGoal: boolean
+  auto: boolean
+  overflow?: boolean
+}) {
+  const countParts = (messages: MessageV2.WithParts[], type: MessageV2.Part["type"]) =>
+    messages.reduce((count, msg) => count + msg.parts.filter((part) => part.type === type).length, 0)
+  return {
+    strategy: "codex-local-memento",
+    replacement: "summary + recent real user messages",
+    continuation: input.activeGoal
+      ? "active goal continuation"
+      : input.auto
+        ? "auto continuation"
+        : "manual checkpoint",
+    summarized_messages: input.summarized.length,
+    summarized_user_messages: input.summarized.filter((msg) => msg.info.role === "user").length,
+    summarized_assistant_messages: input.summarized.filter((msg) => msg.info.role === "assistant").length,
+    summarized_tool_calls: countParts(input.summarized, "tool"),
+    retained_user_messages: input.retainedUserTexts.length,
+    retained_user_tokens: Token.estimate(input.retainedUserTexts.join("\n\n")),
+    retained_user_max_tokens: COMPACT_USER_MESSAGE_MAX_TOKENS,
+    stripped_assistant_messages: input.source.filter((msg) => msg.info.role === "assistant").length,
+    stripped_tool_results: countParts(input.source, "tool"),
+    stripped_media_parts: countParts(input.source, "file"),
+    previous_summary: input.source.some((msg) => summaryAssistantText(msg) !== undefined),
+    summary_chars: Math.max(0, input.summary?.trim().length ?? 0),
+  } satisfies Partial<MessageV2.CompactionPart>
 }
 
 function summaryText(message: MessageV2.WithParts) {
@@ -121,16 +127,7 @@ function completedCompactions(messages: MessageV2.WithParts[]) {
 }
 
 function buildPrompt(input: { previousSummary?: string; context: string[] }) {
-  const anchor = input.previousSummary
-    ? [
-        "Update the anchored summary below using the conversation history above.",
-        "Preserve still-true details, remove stale details, and merge in the new facts.",
-        "<previous-summary>",
-        input.previousSummary,
-        "</previous-summary>",
-      ].join("\n")
-    : "Create a new anchored summary from the conversation history above."
-  return [anchor, SUMMARY_TEMPLATE, ...input.context].join("\n\n")
+  return [SUMMARIZATION_PROMPT, ...input.context].join("\n\n")
 }
 
 function preserveRecentBudget(input: { cfg: Config.Info; model: Provider.Model }) {
@@ -384,24 +381,31 @@ export const layer = Layer.effect(
       const model = agent.model
         ? yield* provider.getModel(agent.model.providerID, agent.model.modelID).pipe(Effect.orDie)
         : yield* provider.getModel(userMessage.model.providerID, userMessage.model.modelID).pipe(Effect.orDie)
-      const cfg = yield* config.get()
       const history = compactionPart && messages.at(-1)?.info.id === input.parentID ? messages.slice(0, -1) : messages
-      const prior = completedCompactions(history)
-      const hidden = new Set(prior.flatMap((item) => [item.userIndex, item.assistantIndex]))
-      const previousSummary = prior.at(-1)?.summary
-      const selected = yield* select({
-        messages: history.filter((_, index) => !hidden.has(index)),
-        cfg,
-        model,
-      })
+      const compactableHistory = MessageV2.filterCompacted(history)
+      const retainedUserTexts = selectRecentUserTexts(compactableHistory)
+      const activeGoal = (yield* SessionGoal.getDirect(input.sessionID))?.status === "active"
+      if (compactionPart) {
+        yield* session.updatePart({
+          ...compactionPart,
+          ...compactionStats({
+            summarized: compactableHistory,
+            source: history,
+            retainedUserTexts,
+            activeGoal,
+            auto: input.auto,
+            overflow: input.overflow,
+          }),
+        })
+      }
       // Allow plugins to inject context or replace compaction prompt.
       const compacting = yield* plugin.trigger(
         "experimental.session.compacting",
         { sessionID: input.sessionID },
         { context: [], prompt: undefined },
       )
-      const nextPrompt = compacting.prompt ?? buildPrompt({ previousSummary, context: compacting.context })
-      const msgs = structuredClone(selected.head)
+      const nextPrompt = compacting.prompt ?? buildPrompt({ context: compacting.context })
+      const msgs = structuredClone(compactableHistory)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
       const modelMessages = yield* MessageV2.toModelMessagesEffect(msgs, model, {
         stripMedia: true,
@@ -467,13 +471,6 @@ export const layer = Layer.effect(
         return "stop"
       }
 
-      if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {
-        yield* session.updatePart({
-          ...compactionPart,
-          tail_start_id: selected.tail_start_id,
-        })
-      }
-
       if (result === "continue" && input.auto) {
         if (replay) {
           const original = replay.info
@@ -533,11 +530,14 @@ export const layer = Layer.effect(
               agent: userMessage.agent,
               model: userMessage.model,
             })
+            const activeGoal = yield* SessionGoal.getDirect(input.sessionID)
             const text =
               (input.overflow
                 ? "The previous request exceeded the provider's size limit due to large media attachments. The conversation was compacted and media files were removed from context. If the user was asking about attached images or files, explain that the attachments were too large to process and suggest they try again with smaller or fewer files.\n\n"
                 : "") +
-              "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed."
+              (activeGoal?.status === "active"
+                ? "Continue working toward the active thread goal."
+                : "Continue if you have next steps, or stop and ask for clarification if you are unsure how to proceed.")
             yield* session.updatePart({
               id: PartID.ascending(),
               messageID: continueMsg.id,
@@ -546,7 +546,7 @@ export const layer = Layer.effect(
               // Internal marker for auto-compaction followups so provider plugins
               // can distinguish them from manual post-compaction user prompts.
               // This is not a stable plugin contract and may change or disappear.
-              metadata: { compaction_continue: true },
+              metadata: activeGoal?.status === "active" ? { compaction_continue: true, goal_continue: true } : { compaction_continue: true },
               synthetic: true,
               text,
               time: {
@@ -573,7 +573,22 @@ export const layer = Layer.effect(
             sessionID: input.sessionID,
             timestamp: DateTime.makeUnsafe(Date.now()),
             text: summary ?? "",
-            include: selected.tail_start_id,
+            include: undefined,
+          })
+        }
+        if (compactionPart) {
+          yield* session.updatePart({
+            ...compactionPart,
+            ...compactionStats({
+              summarized: compactableHistory,
+              source: history,
+              retainedUserTexts,
+              activeGoal,
+              auto: input.auto,
+              overflow: input.overflow,
+              summary,
+            }),
+            summary_message_id: msg.id,
           })
         }
         yield* bus.publish(Event.Compacted, { sessionID: input.sessionID })

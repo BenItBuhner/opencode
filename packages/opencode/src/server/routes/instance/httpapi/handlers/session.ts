@@ -12,6 +12,7 @@ import { SessionRevert } from "@/session/revert"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
+import { SessionGoal } from "@/session/goal"
 import { Todo } from "@/session/todo"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -32,6 +33,7 @@ import {
   RevertPayload,
   ShellPayload,
   SummarizePayload,
+  GoalSetPayload,
   UpdatePayload,
 } from "../groups/session"
 import { PermissionNotFoundError } from "../errors"
@@ -56,6 +58,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const statusSvc = yield* SessionStatus.Service
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
+    const goals = yield* SessionGoal.Service
     const bus = yield* Bus.Service
     const scope = yield* Scope.Scope
 
@@ -283,6 +286,32 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       return true
     })
 
+    const goalGet = Effect.fn("SessionHttpApi.goalGet")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* goals.get(ctx.params.sessionID)
+    })
+
+    const goalSet = Effect.fn("SessionHttpApi.goalSet")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof GoalSetPayload.Type
+    }) {
+      yield* requireSession(ctx.params.sessionID)
+      return yield* goals
+        .set({
+          sessionID: ctx.params.sessionID,
+          objective: ctx.payload.objective,
+          status: ctx.payload.status,
+          tokenBudget: ctx.payload.tokenBudget,
+        })
+        .pipe(Effect.mapError(() => new HttpApiError.BadRequest({})))
+    })
+
+    const goalClear = Effect.fn("SessionHttpApi.goalClear")(function* (ctx: { params: { sessionID: SessionID } }) {
+      yield* requireSession(ctx.params.sessionID)
+      yield* goals.clear(ctx.params.sessionID)
+      return true
+    })
+
     const prompt = Effect.fn("SessionHttpApi.prompt")(function* (ctx: {
       params: { sessionID: SessionID }
       payload: typeof PromptPayload.Type
@@ -421,6 +450,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("share", share)
       .handle("unshare", unshare)
       .handle("summarize", summarize)
+      .handle("goalGet", goalGet)
+      .handle("goalSet", goalSet)
+      .handle("goalClear", goalClear)
       .handle("prompt", prompt)
       .handle("promptAsync", promptAsync)
       .handle("command", command)

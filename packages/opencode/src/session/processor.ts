@@ -28,6 +28,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import * as DateTime from "effect/DateTime"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { SessionGoal } from "./goal"
 
 const DOOM_LOOP_THRESHOLD = 3
 const log = Log.create({ service: "session.processor" })
@@ -576,6 +577,11 @@ export const layer = Layer.effect(
             ctx.assistantMessage.finish = value.reason
             ctx.assistantMessage.cost += usage.cost
             ctx.assistantMessage.tokens = usage.tokens
+            yield* SessionGoal.accountDirect({
+              sessionID: ctx.sessionID,
+              tokens: Math.max(0, usage.tokens.input - usage.tokens.cache.read) + usage.tokens.output,
+              seconds: Math.max(0, Math.floor((Date.now() - ctx.assistantMessage.time.created) / 1000)),
+            })
             yield* session.updatePart({
               id: PartID.ascending(),
               reason: value.reason,
@@ -774,6 +780,11 @@ export const layer = Layer.effect(
           sessionID: ctx.assistantMessage.sessionID,
           error: ctx.assistantMessage.error,
         })
+        const activeGoal = yield* SessionGoal.getDirect(ctx.sessionID)
+        if (activeGoal?.status === "active") {
+          const paused = yield* SessionGoal.setDirect({ sessionID: ctx.sessionID, status: "paused" })
+          yield* bus.publish(SessionGoal.Event.Updated, { sessionID: ctx.sessionID, goal: paused })
+        }
         yield* status.set(ctx.sessionID, { type: "idle" })
       })
 
