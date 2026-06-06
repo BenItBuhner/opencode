@@ -40,9 +40,10 @@ import type { Provider } from "@/provider/provider"
 import { Permission } from "@/permission"
 import { Global } from "@opencode-ai/core/global"
 import { Effect, Layer, Option, Context, Schema, Types } from "effect"
-import { AbsolutePath, NonNegativeInt, optionalOmitUndefined } from "@opencode-ai/core/schema"
+import { NonNegativeInt, optionalOmitUndefined } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderV2 } from "@opencode-ai/core/provider"
+import { ModelV2 } from "@opencode-ai/core/model"
 
 const log = Log.create({ service: "session" })
 const runtime = makeRuntime(Database.Service, Database.defaultLayer)
@@ -82,7 +83,7 @@ export function fromRow(row: SessionRow): Info {
     agent: row.agent ?? undefined,
     model: row.model
       ? {
-          id: ProviderV2.ModelID.make(row.model.id),
+          id: ModelV2.ID.make(row.model.id),
           providerID: ProviderV2.ID.make(row.model.providerID),
           variant: row.model.variant,
         }
@@ -109,13 +110,6 @@ export function fromRow(row: SessionRow): Info {
       compacting: row.time_compacting ?? undefined,
       archived: row.time_archived ?? undefined,
     },
-  }
-}
-
-function eventLocation(info: Pick<Info, "directory" | "workspaceID">) {
-  return {
-    directory: AbsolutePath.make(info.directory),
-    workspaceID: info.workspaceID,
   }
 }
 
@@ -209,7 +203,7 @@ const Revert = Schema.Struct({
 })
 
 const Model = Schema.Struct({
-  id: ProviderV2.ModelID,
+  id: ModelV2.ID,
   providerID: ProviderV2.ID,
   variant: optionalOmitUndefined(Schema.String),
 })
@@ -570,20 +564,6 @@ export const layer: Layer.Layer<
     const events = yield* EventV2Bridge.Service
     const flags = yield* RuntimeFlags.Service
 
-    const locationForSession = Effect.fnUntraced(function* (sessionID: SessionID) {
-      const row = yield* db
-        .select({ directory: SessionTable.directory, workspaceID: SessionTable.workspace_id })
-        .from(SessionTable)
-        .where(eq(SessionTable.id, sessionID))
-        .get()
-        .pipe(Effect.orDie)
-      if (!row) return
-      return {
-        directory: AbsolutePath.make(row.directory),
-        workspaceID: row.workspaceID ?? undefined,
-      }
-    })
-
     const createNext = Effect.fn("Session.createNext")(function* (input: {
       id?: SessionID
       title?: string
@@ -620,11 +600,7 @@ export const layer: Layer.Layer<
       }
       log.info("created", result)
 
-      yield* events.publish(
-        SessionV1.Event.Created,
-        { sessionID: result.id, info: result },
-        { location: eventLocation(result) },
-      )
+      yield* events.publish(SessionV1.Event.Created, { sessionID: result.id, info: result })
 
       return result
     })
@@ -711,11 +687,7 @@ export const layer: Layer.Layer<
           yield* remove(child.id)
         }
 
-        yield* events.publish(
-          SessionV1.Event.Deleted,
-          { sessionID, info: session },
-          { location: eventLocation(session) },
-        )
+        yield* events.publish(SessionV1.Event.Deleted, { sessionID, info: session })
         yield* events.remove(sessionID)
       } catch (e) {
         log.error(e)
@@ -724,23 +696,17 @@ export const layer: Layer.Layer<
 
     const updateMessage = <T extends SessionV1.Info>(msg: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        const location = yield* locationForSession(msg.sessionID)
-        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID: msg.sessionID, info: msg }, { location })
+        yield* events.publish(SessionV1.Event.MessageUpdated, { sessionID: msg.sessionID, info: msg })
         return msg
       }).pipe(Effect.withSpan("Session.updateMessage"))
 
     const updatePart = <T extends SessionV1.Part>(part: T): Effect.Effect<T> =>
       Effect.gen(function* () {
-        const location = yield* locationForSession(part.sessionID)
-        yield* events.publish(
-          SessionV1.Event.PartUpdated,
-          {
-            sessionID: part.sessionID,
-            part: structuredClone(part),
-            time: Date.now(),
-          },
-          { location },
-        )
+        yield* events.publish(SessionV1.Event.PartUpdated, {
+          sessionID: part.sessionID,
+          part: structuredClone(part),
+          time: Date.now(),
+        })
         return part
       }).pipe(Effect.withSpan("Session.updatePart"))
 
@@ -845,7 +811,7 @@ export const layer: Layer.Layer<
           revert: info.revert === null ? undefined : (info.revert ?? current.revert),
           permission: info.permission === null ? undefined : (info.permission ?? current.permission),
         } as Info
-        yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next }, { location: eventLocation(next) })
+        yield* events.publish(SessionV1.Event.Updated, { sessionID, info: next })
       })
 
     const touch = Effect.fn("Session.touch")(function* (sessionID: SessionID) {
@@ -1006,15 +972,10 @@ export const layer: Layer.Layer<
       sessionID: SessionID
       messageID: MessageID
     }) {
-      const location = yield* locationForSession(input.sessionID)
-      yield* events.publish(
-        SessionV1.Event.MessageRemoved,
-        {
-          sessionID: input.sessionID,
-          messageID: input.messageID,
-        },
-        { location },
-      )
+      yield* events.publish(SessionV1.Event.MessageRemoved, {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+      })
       return input.messageID
     })
 
@@ -1023,16 +984,11 @@ export const layer: Layer.Layer<
       messageID: MessageID
       partID: PartID
     }) {
-      const location = yield* locationForSession(input.sessionID)
-      yield* events.publish(
-        SessionV1.Event.PartRemoved,
-        {
-          sessionID: input.sessionID,
-          messageID: input.messageID,
-          partID: input.partID,
-        },
-        { location },
-      )
+      yield* events.publish(SessionV1.Event.PartRemoved, {
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        partID: input.partID,
+      })
       return input.partID
     })
 
@@ -1150,7 +1106,7 @@ function listByProject(
           : or(...conds)!,
       )
     }
-  } else if (input.scope !== "project" && !input.experimentalWorkspaces) {
+  } else if (input.scope !== "project") {
     if (input.directory) {
       conditions.push(eq(SessionTable.directory, input.directory))
     }
