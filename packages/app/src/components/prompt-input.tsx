@@ -206,6 +206,16 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     return diffs.some((diff) => diff.file === path)
   }
 
+  const sessionGoal = createMemo(() => {
+    const sessionID = params.id
+    if (!sessionID) return undefined
+    const goal = sync.session.get(sessionID)?.metadata?.goal
+    if (!goal || typeof goal !== "object") return undefined
+    const item = goal as { text?: unknown; status?: unknown }
+    if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
+    return { text: item.text, status: item.status }
+  })
+
   const openComment = (item: { path: string; commentID?: string; commentOrigin?: "review" | "file" }) => {
     if (!item.commentID) return
 
@@ -1920,6 +1930,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                           </div>
                         </Show>
                       </Show>
+                    </Show>
+                    <Show when={sessionGoal()}>
+                      {(goal) => (
+                        <div class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted">
+                          Goal {goal().status}: {goal().text}
+                        </div>
+                      )}
                     </Show>
                   </div>
                 </div>

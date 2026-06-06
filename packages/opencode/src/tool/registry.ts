@@ -1,4 +1,5 @@
 import { PlanExitTool } from "./plan"
+import { GoalCompleteTool, GoalPauseTool, GoalResumeTool, GoalSetTool, GoalStatusTool } from "./goal"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
@@ -122,6 +123,11 @@ export const layer: Layer.Layer<
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
     const plan = yield* PlanExitTool
+    const goalSet = yield* GoalSetTool
+    const goalPause = yield* GoalPauseTool
+    const goalResume = yield* GoalResumeTool
+    const goalComplete = yield* GoalCompleteTool
+    const goalStatus = yield* GoalStatusTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -238,6 +244,11 @@ export const layer: Layer.Layer<
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          goalSet: Tool.init(goalSet),
+          goalPause: Tool.init(goalPause),
+          goalResume: Tool.init(goalResume),
+          goalComplete: Tool.init(goalComplete),
+          goalStatus: Tool.init(goalStatus),
         })
 
         return {
@@ -257,6 +268,11 @@ export const layer: Layer.Layer<
             tool.search,
             tool.skill,
             tool.patch,
+            tool.goalSet,
+            tool.goalPause,
+            tool.goalResume,
+            tool.goalComplete,
+            tool.goalStatus,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],

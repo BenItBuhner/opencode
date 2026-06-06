@@ -457,6 +457,10 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const commandName = cmdName.slice(1)
       const customCommand = sync.data.command.find((c) => c.name === commandName)
       if (customCommand) {
+        const goalAction = commandName === "goal" ? args[0]?.toLowerCase() : undefined
+        if (goalAction === "set" || goalAction === "edit" || goalAction === "resume") {
+          local.agent.set("goal")
+        }
         clearInput()
         client.session
           .command({

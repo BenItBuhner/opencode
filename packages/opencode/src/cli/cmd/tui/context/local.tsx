@@ -7,6 +7,7 @@ import { useRoute } from "@tui/context/route"
 import { useEvent } from "@tui/context/event"
 import { uniqueBy } from "remeda"
 import path from "path"
+import { orderPrimaryAgents } from "@opencode-ai/core/agent/cycle-order"
 import { Global } from "@opencode-ai/core/global"
 import { iife } from "@/util/iife"
 import { useToast } from "../ui/toast"
@@ -44,7 +45,9 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     }
 
     const agent = iife(() => {
-      const agents = createMemo(() => sync.data.agent.filter((x) => x.mode !== "subagent" && !x.hidden))
+      const agents = createMemo(() =>
+        orderPrimaryAgents(sync.data.agent.filter((x) => x.mode !== "subagent" && !x.hidden)),
+      )
       const visibleAgents = createMemo(() => sync.data.agent.filter((x) => !x.hidden))
       const [agentStore, setAgentStore] = createStore({
         current: undefined as string | undefined,

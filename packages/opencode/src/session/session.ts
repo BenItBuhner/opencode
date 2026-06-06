@@ -215,6 +215,28 @@ const Model = Schema.Struct({
 })
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
+export const GoalStatus = Schema.Literals(["active", "paused", "completed"])
+export const Goal = Schema.Struct({
+  text: Schema.String,
+  status: GoalStatus,
+  created: NonNegativeInt,
+  updated: NonNegativeInt,
+  completed: optionalOmitUndefined(NonNegativeInt),
+  revision: optionalOmitUndefined(NonNegativeInt),
+})
+export type Goal = Types.DeepMutable<Schema.Schema.Type<typeof Goal>>
+export const GoalUpdateInput = Schema.Struct({
+  sessionID: SessionID,
+  text: Schema.optional(Schema.String),
+  status: Schema.optional(GoalStatus),
+})
+export type GoalUpdateInput = Types.DeepMutable<Schema.Schema.Type<typeof GoalUpdateInput>>
+
+const decodeGoal = Schema.decodeUnknownOption(Goal)
+
+export function goalFromMetadata(metadata: typeof Metadata.Type | undefined): Goal | undefined {
+  return Option.getOrUndefined(decodeGoal(metadata?.goal))
+}
 
 export const Info = Schema.Struct({
   id: SessionID,
@@ -482,6 +504,10 @@ export interface Interface {
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
   readonly setArchived: (input: { sessionID: SessionID; time?: number }) => Effect.Effect<void>
   readonly setMetadata: (input: typeof SetMetadataInput.Type) => Effect.Effect<void>
+  readonly getGoal: (sessionID: SessionID) => Effect.Effect<Goal | undefined, NotFound>
+  readonly setGoal: (input: { sessionID: SessionID; text: string; status?: typeof GoalStatus.Type }) => Effect.Effect<Goal, NotFound>
+  readonly updateGoal: (input: GoalUpdateInput) => Effect.Effect<Goal | undefined, NotFound>
+  readonly clearGoal: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
   readonly setRevert: (input: {
     sessionID: SessionID
@@ -838,6 +864,69 @@ export const layer: Layer.Layer<
       yield* patch(input.sessionID, { metadata: input.metadata, time: { updated: Date.now() } }).pipe(Effect.orDie)
     })
 
+    const writeGoalMetadata = Effect.fn("Session.writeGoalMetadata")(function* (input: {
+      session: Info
+      goal?: Goal
+    }) {
+      const metadata = { ...(input.session.metadata ?? {}) }
+      if (input.goal) metadata.goal = input.goal
+      else delete metadata.goal
+      yield* patch(input.session.id, { metadata, time: { updated: Date.now() } })
+    })
+
+    const getGoal = Effect.fn("Session.getGoal")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      return goalFromMetadata(current.metadata)
+    })
+
+    const setGoal = Effect.fn("Session.setGoal")(function* (input: {
+      sessionID: SessionID
+      text: string
+      status?: typeof GoalStatus.Type
+    }) {
+      const current = yield* get(input.sessionID)
+      const existing = goalFromMetadata(current.metadata)
+      const now = Date.now()
+      const status = input.status ?? "active"
+      const goal: Goal = {
+        text: input.text.trim(),
+        status,
+        created: existing?.created ?? now,
+        updated: now,
+        completed: status === "completed" ? (existing?.completed ?? now) : undefined,
+        revision: (existing?.revision ?? 0) + 1,
+      }
+      yield* writeGoalMetadata({ session: current, goal })
+      return goal
+    })
+
+    const updateGoal = Effect.fn("Session.updateGoal")(function* (input: GoalUpdateInput) {
+      const current = yield* get(input.sessionID)
+      const existing = goalFromMetadata(current.metadata)
+      if (!existing) {
+        if (input.text === undefined) return undefined
+        return yield* setGoal({ sessionID: input.sessionID, text: input.text, status: input.status })
+      }
+
+      const now = Date.now()
+      const status = input.status ?? existing.status
+      const goal: Goal = {
+        ...existing,
+        text: input.text === undefined ? existing.text : input.text.trim(),
+        status,
+        updated: now,
+        completed: status === "completed" ? (existing.completed ?? now) : undefined,
+        revision: (existing.revision ?? 0) + 1,
+      }
+      yield* writeGoalMetadata({ session: current, goal })
+      return goal
+    })
+
+    const clearGoal = Effect.fn("Session.clearGoal")(function* (sessionID: SessionID) {
+      const current = yield* get(sessionID)
+      yield* writeGoalMetadata({ session: current })
+    })
+
     const setPermission = Effect.fn("Session.setPermission")(function* (input: {
       sessionID: SessionID
       permission: PermissionV1.Ruleset
@@ -986,6 +1075,10 @@ export const layer: Layer.Layer<
       setTitle,
       setArchived,
       setMetadata,
+      getGoal,
+      setGoal,
+      updateGoal,
+      clearGoal,
       setPermission,
       setRevert,
       clearRevert,

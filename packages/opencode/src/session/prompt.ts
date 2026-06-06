@@ -88,6 +88,15 @@ function isOrphanedInterruptedTool(part: SessionV1.ToolPart) {
   return part.state.status === "error" && part.state.metadata?.interrupted === true
 }
 
+function visiblePromptText(parts: PromptInput["parts"]) {
+  return parts
+    .filter((part): part is Extract<PromptInput["parts"][number], { type: "text" }> => part.type === "text")
+    .filter((part) => !part.synthetic)
+    .map((part) => part.text)
+    .join("\n")
+    .trim()
+}
+
 export interface Interface {
   readonly cancel: (sessionID: SessionID) => Effect.Effect<void>
   readonly prompt: (input: PromptInput) => Effect.Effect<SessionV1.WithParts, Image.Error>
@@ -1219,6 +1228,10 @@ export const layer = Layer.effect(
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
+      if ((input.agent ?? session.agent) === "goal" && !(yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie))) {
+        const text = visiblePromptText(input.parts)
+        if (text) yield* sessions.setGoal({ sessionID: input.sessionID, text, status: "active" }).pipe(Effect.orDie)
+      }
       yield* sessions.touch(input.sessionID)
 
       const permissions: PermissionV1.Rule[] = []
@@ -1279,18 +1292,26 @@ export const layer = Layer.effect(
             !hasToolCalls &&
             lastUser.id < lastAssistant.id
           ) {
-            const orphan = lastAssistantMsg?.parts.find(
-              (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
-            )
-            if (orphan) {
-              yield* slog.warn("loop exit with orphaned interrupted tool", {
-                messageID: lastAssistant.id,
-                tool: orphan.tool,
-                callID: orphan.callID,
-              })
+            const activeGoal =
+              lastAssistant.agent === "goal"
+                ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie)
+                : undefined
+            if (activeGoal?.status === "active") {
+              yield* slog.info("continuing active goal after assistant stop", { messageID: lastAssistant.id })
+            } else {
+              const orphan = lastAssistantMsg?.parts.find(
+                (part): part is SessionV1.ToolPart => part.type === "tool" && isOrphanedInterruptedTool(part),
+              )
+              if (orphan) {
+                yield* slog.warn("loop exit with orphaned interrupted tool", {
+                  messageID: lastAssistant.id,
+                  tool: orphan.tool,
+                  callID: orphan.callID,
+                })
+              }
+              yield* slog.info("exiting loop")
+              break
             }
-            yield* slog.info("exiting loop")
-            break
           }
 
           step++
@@ -1476,7 +1497,15 @@ export const layer = Layer.effect(
               }
             }
 
-            if (result === "stop") return "break" as const
+            if (result === "stop") {
+              const activeGoal =
+                agent.name === "goal" ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie) : undefined
+              if (activeGoal?.status === "active" && !isLastStep && !handle.message.error) {
+                yield* slog.info("continuing active goal after model stop", { messageID: handle.message.id })
+                return "continue" as const
+              }
+              return "break" as const
+            }
             if (result === "compact") {
               yield* compaction.create({
                 sessionID,
@@ -1513,6 +1542,157 @@ export const layer = Layer.effect(
       return yield* state.startShell(input.sessionID, lastAssistant(input.sessionID), shellImpl(input, ready), ready)
     })
 
+    const goalCommandResponse = Effect.fn("SessionPrompt.goalCommandResponse")(function* (input: {
+      sessionID: SessionID
+      messageID?: MessageID
+      agent?: string
+      model?: string
+      text: string
+    }) {
+      const model = input.model ? Provider.parseModel(input.model) : yield* currentModel(input.sessionID)
+      const agent = input.agent ?? (yield* agents.defaultInfo()).name
+      const message = yield* sessions.updateMessage({
+        id: input.messageID ?? MessageID.ascending(),
+        sessionID: input.sessionID,
+        role: "user",
+        time: { created: Date.now() },
+        agent,
+        model,
+      } satisfies SessionV1.User)
+      const part = yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: message.id,
+        sessionID: input.sessionID,
+        type: "text",
+        text: input.text,
+        synthetic: true,
+      } satisfies SessionV1.TextPart)
+      return { info: message, parts: [part] }
+    })
+
+    const goalHelp = [
+      "Usage: /goal set <goal>, /goal edit <goal>, /goal pause, /goal resume, /goal complete, /goal status, /goal clear",
+      "",
+      "Goal state is stored on the session and is separate from the currently selected agent.",
+    ].join("\n")
+
+    const goalCommand = Effect.fn("SessionPrompt.goalCommand")(function* (input: CommandInput) {
+      const trimmed = input.arguments.trim()
+      const [rawAction = "status", ...rest] = trimmed ? trimmed.split(/\s+/) : []
+      const action = rawAction.toLowerCase()
+      const text = rest.join(" ").trim()
+
+      if (action === "set" || action === "edit") {
+        if (!text) {
+          return yield* goalCommandResponse({
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            agent: input.agent,
+            model: input.model,
+            text: goalHelp,
+          })
+        }
+        const goal = yield* sessions.setGoal({ sessionID: input.sessionID, text, status: "active" })
+        return yield* prompt({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: "goal",
+          model: input.model ? Provider.parseModel(input.model) : undefined,
+          variant: input.variant,
+          parts: [
+            {
+              type: "text",
+              text: `The session goal is now active:\n\n${goal.text}\n\nStart working toward this goal.`,
+              synthetic: true,
+              metadata: { goal_command: action },
+            },
+            ...(input.parts ?? []),
+          ],
+        })
+      }
+
+      if (action === "resume") {
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "active" })
+        if (!goal) {
+          return yield* goalCommandResponse({
+            sessionID: input.sessionID,
+            messageID: input.messageID,
+            agent: input.agent,
+            model: input.model,
+            text: "No session goal is currently set. Use /goal set <goal> first.",
+          })
+        }
+        return yield* prompt({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: "goal",
+          model: input.model ? Provider.parseModel(input.model) : undefined,
+          variant: input.variant,
+          parts: [
+            {
+              type: "text",
+              text: `Resume the active session goal:\n\n${goal.text}`,
+              synthetic: true,
+              metadata: { goal_command: action },
+            },
+            ...(input.parts ?? []),
+          ],
+        })
+      }
+
+      if (action === "pause") {
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "paused" })
+        return yield* goalCommandResponse({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: input.agent,
+          model: input.model,
+          text: goal ? `Paused session goal:\n\n${goal.text}` : "No session goal is currently set.",
+        })
+      }
+
+      if (action === "complete" || action === "done") {
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "completed" })
+        return yield* goalCommandResponse({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: input.agent,
+          model: input.model,
+          text: goal ? `Completed session goal:\n\n${goal.text}` : "No session goal is currently set.",
+        })
+      }
+
+      if (action === "clear") {
+        yield* sessions.clearGoal(input.sessionID)
+        return yield* goalCommandResponse({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: input.agent,
+          model: input.model,
+          text: "Cleared the session goal.",
+        })
+      }
+
+      if (action === "status" || action === "show") {
+        const goal = yield* sessions.getGoal(input.sessionID)
+        return yield* goalCommandResponse({
+          sessionID: input.sessionID,
+          messageID: input.messageID,
+          agent: input.agent,
+          model: input.model,
+          text: goal ? `Session goal (${goal.status}):\n\n${goal.text}` : "No session goal is currently set.",
+        })
+      }
+
+      return yield* goalCommandResponse({
+        sessionID: input.sessionID,
+        messageID: input.messageID,
+        agent: input.agent,
+        model: input.model,
+        text: goalHelp,
+      })
+    })
+
     const command = Effect.fn("SessionPrompt.command")(function* (input: CommandInput) {
       yield* elog.info("command", { sessionID: input.sessionID, command: input.command, agent: input.agent })
       const cmd = yield* commands.get(input.command)
@@ -1522,6 +1702,16 @@ export const layer = Layer.effect(
         const error = new NamedError.Unknown({ message: `Command not found: "${input.command}".${hint}` })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
+      }
+      if (input.command === Command.Default.GOAL) {
+        const result = yield* goalCommand(input)
+        yield* events.publish(Command.Event.Executed, {
+          name: input.command,
+          sessionID: input.sessionID,
+          arguments: input.arguments,
+          messageID: result.info.id,
+        })
+        return result
       }
       const agentName = cmd.agent ?? input.agent
 

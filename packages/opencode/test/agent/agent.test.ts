@@ -47,12 +47,21 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
+it.instance("orders primary agents build, plan, goal for cycling", () =>
+  Effect.gen(function* () {
+    const agents = yield* load((svc) => svc.list())
+    const primary = agents.filter((a) => a.mode === "primary" && !a.hidden).map((a) => a.name)
+    expect(primary.slice(0, 3)).toEqual(["build", "plan", "goal"])
+  }),
+)
+
 it.instance("returns default native agents when no config", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())
     const names = agents.map((a) => a.name)
     expect(names).toContain("build")
     expect(names).toContain("plan")
+    expect(names).toContain("goal")
     expect(names).toContain("general")
     expect(names).toContain("explore")
     expect(names).toContain("compaction")
@@ -76,10 +85,29 @@ it.instance("plan agent denies edits except .opencode/plans/*", () =>
   Effect.gen(function* () {
     const plan = yield* load((svc) => svc.get("plan"))
     expect(plan).toBeDefined()
+    expect(plan?.color).toBe("warning")
     // Wildcard is denied
     expect(evalPerm(plan, "edit")).toBe("deny")
     // But specific path is allowed
     expect(Permission.evaluate("edit", ".opencode/plans/foo.md", plan!.permission).action).toBe("allow")
+  }),
+)
+
+it.instance("goal agent is primary and owns goal lifecycle tools", () =>
+  Effect.gen(function* () {
+    const goal = yield* load((svc) => svc.get("goal"))
+    const build = yield* load((svc) => svc.get("build"))
+
+    expect(goal).toBeDefined()
+    expect(goal?.mode).toBe("primary")
+    expect(goal?.native).toBe(true)
+    expect(goal?.prompt).toContain("session goal")
+    expect(evalPerm(goal, "goal_set")).toBe("allow")
+    expect(evalPerm(goal, "goal_pause")).toBe("allow")
+    expect(evalPerm(goal, "goal_resume")).toBe("allow")
+    expect(evalPerm(goal, "goal_complete")).toBe("allow")
+    expect(evalPerm(goal, "goal_status")).toBe("allow")
+    expect(evalPerm(build, "goal_set")).toBe("deny")
   }),
 )
 
@@ -409,12 +437,13 @@ it.instance(
 )
 
 it.instance(
-  "Agent.list keeps the default agent first and sorts the rest by name",
+  "Agent.list keeps the default agent first and sorts the rest by cycle order",
   () =>
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names[0]).toBe("plan")
-      expect(names.slice(1)).toEqual(names.slice(1).toSorted((a, b) => a.localeCompare(b)))
+      expect(names.slice(1, 3)).toEqual(["build", "goal"])
+      expect(names.slice(3)).toEqual(names.slice(3).toSorted((a, b) => a.localeCompare(b)))
     }),
   {
     config: {
@@ -704,6 +733,7 @@ it.instance(
       agent: {
         build: { disable: true },
         plan: { disable: true },
+        goal: { disable: true },
       },
     },
   },

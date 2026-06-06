@@ -1454,6 +1454,8 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   const childShortcut = useCommandShortcut("session.child.first")
 
+  if (props.message.summary) return <CompactionSummary parts={props.parts} />
+
   return (
     <>
       <For each={props.parts}>
@@ -1527,6 +1529,50 @@ const PART_MAPPING = {
   text: TextPart,
   tool: ToolPart,
   reasoning: ReasoningPart,
+}
+
+function CompactionSummary(props: { parts: Part[] }) {
+  const ctx = use()
+  const { theme, syntax } = useTheme()
+  const [expanded, setExpanded] = createSignal(false)
+  const summary = createMemo(() =>
+    props.parts
+      .filter((part): part is TextPart => part.type === "text")
+      .map((part) => part.text.trim())
+      .filter(Boolean)
+      .join("\n\n"),
+  )
+
+  return (
+    <box
+      marginTop={1}
+      border={["top"]}
+      title=" Compaction "
+      titleAlignment="center"
+      borderColor={theme.borderActive}
+      flexShrink={0}
+    >
+      <box paddingLeft={3} paddingTop={1} gap={1}>
+        <box onMouseUp={() => setExpanded((value) => !value)}>
+          <text fg={theme.textMuted}>{expanded() ? "- " : "+ "}Compacted context summary</text>
+        </box>
+        <Show when={expanded() && summary()}>
+          <box>
+            <markdown
+              syntaxStyle={syntax()}
+              streaming={false}
+              internalBlockMode="top-level"
+              content={summary()}
+              tableOptions={{ style: "grid" }}
+              conceal={ctx.conceal()}
+              fg={theme.markdownText}
+              bg={theme.background}
+            />
+          </box>
+        </Show>
+      </box>
+    </box>
+  )
 }
 
 const INLINE_TOOL_ICON_WIDTH = 2

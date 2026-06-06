@@ -150,12 +150,49 @@ export function Prompt(props: PromptProps) {
   const dialog = useDialog()
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
+  const renderer = useRenderer()
+  const sessionGoal = createMemo(() => {
+    const sessionID = props.sessionID
+    if (!sessionID) return undefined
+    const goal = sync.session.get(sessionID)?.metadata?.goal
+    if (!goal || typeof goal !== "object") return undefined
+    const item = goal as { text?: unknown; status?: unknown; created?: unknown }
+    if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
+    return { text: item.text, status: item.status, created: typeof item.created === "number" ? item.created : undefined }
+  })
+  const [goalNow, setGoalNow] = createSignal(Date.now())
+  onMount(() => {
+    const timer = setInterval(() => setGoalNow(Date.now()), 1000)
+    onCleanup(() => clearInterval(timer))
+  })
+  const goalElapsed = createMemo(() => {
+    const goal = sessionGoal()
+    if (!goal || goal.status !== "active" || goal.created === undefined) return
+    return formatDuration(Math.floor((goalNow() - goal.created) / 1000)) || "0s"
+  })
+  const openGoalDetails = () => {
+    if (renderer.getSelection()?.getSelectedText()) return
+    const goal = sessionGoal()
+    if (!goal) return
+    const elapsed = goalElapsed()
+    void DialogAlert.show(
+      dialog,
+      "Goal Details",
+      [
+        `Status: ${goal.status}`,
+        elapsed ? `Running: ${elapsed}` : undefined,
+        "",
+        goal.text,
+      ]
+        .filter((line) => line !== undefined)
+        .join("\n"),
+    )
+  }
   const history = usePromptHistory()
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
   const paletteShortcut = useCommandShortcut("command.palette.show")
-  const renderer = useRenderer()
   const dimensions = useTerminalDimensions()
   const { theme, syntax } = useTheme()
   const kv = useKV()
@@ -1170,10 +1207,15 @@ export function Prompt(props: PromptProps) {
       const [command, ...firstLineArgs] = firstLine.split(" ")
       const restOfInput = firstLineEnd === -1 ? "" : inputText.slice(firstLineEnd + 1)
       const args = firstLineArgs.join(" ") + (restOfInput ? "\n" + restOfInput : "")
+      const commandName = command.slice(1)
+      const goalAction = commandName === "goal" ? firstLineArgs[0]?.toLowerCase() : undefined
+      if (goalAction === "set" || goalAction === "edit" || goalAction === "resume") {
+        local.agent.set("goal")
+      }
 
       void sdk.client.session.command({
         sessionID,
-        command: command.slice(1),
+        command: commandName,
         arguments: args,
         agent: agent.name,
         model: `${selectedModel.providerID}/${selectedModel.modelID}`,
@@ -1759,6 +1801,14 @@ export function Prompt(props: PromptProps) {
               <Show when={editorContextLabelState() !== "none" ? editorFileLabelDisplay() : undefined}>
                 {(file) => (
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
+                )}
+              </Show>
+              <Show when={goalElapsed()}>
+                {(elapsed) => (
+                  <box flexDirection="row" gap={1} onMouseUp={openGoalDetails}>
+                    <text fg={theme.accent}>goal</text>
+                    <text fg={theme.textMuted}>{elapsed()}</text>
+                  </box>
                 )}
               </Show>
               <Switch>

@@ -229,6 +229,8 @@ function ShellMessage(props: { message: SessionMessageShell }) {
 
 function CompactionMessage(props: { message: SessionMessageCompaction }) {
   const { theme, syntax } = useTheme()
+  const [expanded, setExpanded] = createSignal(false)
+  const summary = createMemo(() => props.message.summary.trim())
   return (
     <box
       marginTop={1}
@@ -238,21 +240,30 @@ function CompactionMessage(props: { message: SessionMessageCompaction }) {
       borderColor={theme.borderActive}
       flexShrink={0}
     >
-      <Show when={props.message.summary}>
-        {(summary) => (
-          <box paddingLeft={3} paddingTop={1}>
+      <box paddingLeft={3} paddingTop={1} gap={1}>
+        <box onMouseUp={() => setExpanded((value) => !value)}>
+          <text fg={theme.textMuted}>
+            {expanded() ? "- " : "+ "}
+            {props.message.reason === "auto" ? "Auto-compacted context" : "Compacted context"}
+            <Show when={props.message.include}>
+              {(include) => <span> · retained from {include()}</span>}
+            </Show>
+          </text>
+        </box>
+        <Show when={expanded() && summary()}>
+          <box>
             <code
               filetype="markdown"
               drawUnstyledText={false}
               streaming={false}
               syntaxStyle={syntax()}
-              content={summary().trim()}
+              content={summary()}
               conceal={true}
               fg={theme.text}
             />
           </box>
-        )}
-      </Show>
+        </Show>
+      </box>
     </box>
   )
 }

@@ -513,6 +513,88 @@ it.instance("loop calls LLM and returns assistant message", () =>
   }),
 )
 
+noLLMServer.instance(
+  "goal prompt bootstraps missing session goal",
+  () =>
+    Effect.gen(function* () {
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "goal",
+        model: ref,
+        noReply: true,
+        parts: [{ type: "text", text: "Fix goal mode startup" }],
+      })
+
+      const goal = yield* sessions.getGoal(chat.id)
+      expect(goal?.text).toBe("Fix goal mode startup")
+      expect(goal?.status).toBe("active")
+    }),
+  { config: cfg },
+)
+
+it.instance("goal loop continues after progress response until goal is completed", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "goal",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Finish the goal workflow" }],
+    })
+
+    yield* llm.text("I made progress and have more to do.")
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Goal complete.")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(yield* llm.calls).toBe(3)
+    expect(result.info.role).toBe("assistant")
+    expect(result.parts.some((part) => part.type === "text" && part.text === "Goal complete.")).toBe(true)
+    expect((yield* sessions.getGoal(chat.id))?.status).toBe("completed")
+  }),
+)
+
+it.instance("/goal resume keeps internal resume prompt synthetic", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setGoal({ sessionID: chat.id, text: "Do the secret goal", status: "paused" })
+
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Resumed and completed.")
+
+    yield* prompt.command({
+      sessionID: chat.id,
+      command: "goal",
+      arguments: "resume",
+      agent: "goal",
+      model: `${ref.providerID}/${ref.modelID}`,
+    })
+
+    const messages = yield* sessions.messages({ sessionID: chat.id })
+    const internal = messages
+      .flatMap((message) => message.parts)
+      .find((part) => part.type === "text" && part.text.includes("Resume the active session goal"))
+
+    expect(internal?.type).toBe("text")
+    if (internal?.type === "text") {
+      expect(internal.synthetic).toBe(true)
+      expect(internal.metadata).toEqual({ goal_command: "resume" })
+    }
+  }),
+)
+
 noLLMServer.instance.skip(
   "prompt emits v2 prompted and synthetic events (v2 projector disabled)",
   () =>

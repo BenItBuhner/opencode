@@ -23,6 +23,39 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
   if (!userMessage) return input.messages
 
+  if (input.agent.name === "goal") {
+    const goal = yield* sessions.getGoal(input.session.id)
+    userMessage.parts.push({
+      id: PartID.ascending(),
+      messageID: userMessage.info.id,
+      sessionID: userMessage.info.sessionID,
+      type: "text",
+      text: goal
+        ? [
+            "<session-goal>",
+            `Status: ${goal.status}`,
+            `Goal: ${goal.text}`,
+            "",
+            goal.status === "active"
+              ? [
+                  "Continue working toward this objective until it is completed, paused, or blocked by a question for the user.",
+                  "Do not stop after a progress update. If the goal is not complete yet, take the next concrete action.",
+                  "When the goal is complete, call goal_complete before giving the final summary.",
+                ].join("\n")
+              : goal.status === "paused"
+                ? "The goal is paused. Do not continue it unless the user explicitly resumes it."
+                : "The goal is completed. Do not continue it unless the user explicitly resumes or replaces it.",
+            "</session-goal>",
+          ].join("\n")
+        : [
+            "<session-goal>",
+            "No session goal is set. Ask the user what goal to set, or set one only if they explicitly provide it.",
+            "</session-goal>",
+          ].join("\n"),
+      synthetic: true,
+    })
+  }
+
   if (!flags.experimentalPlanMode) {
     if (input.agent.name === "plan") {
       userMessage.parts.push({

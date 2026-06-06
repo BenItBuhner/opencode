@@ -1387,6 +1387,8 @@ describe("session.compaction.process", () => {
         const ssn = yield* SessionNs.Service
         const session = yield* ssn.create({})
         yield* createUserMessage(session.id, "older context")
+        yield* createUserMessage(session.id, "keep first recent turn")
+        yield* createUserMessage(session.id, "keep second recent turn")
         yield* createUserMessage(session.id, "keep this turn")
         yield* createUserMessage(session.id, "and this one too")
         yield* createCompactionMarker(session.id)
@@ -1402,6 +1404,8 @@ describe("session.compaction.process", () => {
         })
 
         expect(captured).toContain("older context")
+        expect(captured).not.toContain("keep first recent turn")
+        expect(captured).not.toContain("keep second recent turn")
         expect(captured).not.toContain("keep this turn")
         expect(captured).not.toContain("and this one too")
         expect(captured).not.toContain("What did we do so far?")

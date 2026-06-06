@@ -1519,6 +1519,9 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
     () => props.message.role === "assistant" && typeof (props.message as AssistantMessage).time.completed !== "number",
   )
   const text = () => readPartText(data.store.part_text_accum_delta, part())
+  const summaryAssistant = createMemo(
+    () => props.message.role === "assistant" && (props.message as AssistantMessage).summary === true,
+  )
   const isLastTextPart = createMemo(() => {
     const last = (data.store.part?.[props.message.id] ?? [])
       .filter((item): item is TextPart => item?.type === "text" && !!item.text?.trim())
@@ -1544,36 +1547,57 @@ PART_MAPPING["text"] = function TextPartDisplay(props) {
 
   return (
     <Show when={text()}>
-      <div data-component="text-part" data-timeline-part-id={part().id}>
-        <div data-slot="text-part-body">
-          <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
-            <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
-          </Show>
-        </div>
-        <Show when={showCopy()}>
-          <div data-slot="text-part-copy-wrapper" data-interrupted={interrupted() ? "" : undefined}>
-            <Tooltip
-              value={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
-              placement="top"
-              gutter={4}
-            >
-              <IconButton
-                icon={copied() ? "check" : "copy"}
-                size="normal"
-                variant="ghost"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={handleCopy}
-                aria-label={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
-              />
-            </Tooltip>
-            <Show when={meta()}>
-              <span data-slot="text-part-meta" class="text-12-regular text-text-weak cursor-default">
-                {meta()}
-              </span>
+      <Show
+        when={!summaryAssistant()}
+        fallback={
+          <div data-component="text-part" data-timeline-part-id={part().id}>
+            <Collapsible variant="ghost" class="tool-collapsible">
+              <Collapsible.Trigger>
+                <div data-component="context-tool-group-trigger">
+                  <span data-slot="context-tool-group-title">Compacted context summary</span>
+                  <Collapsible.Arrow />
+                </div>
+              </Collapsible.Trigger>
+              <Collapsible.Content>
+                <div data-slot="text-part-body">
+                  <Markdown text={text()} cacheKey={part().id} streaming={false} />
+                </div>
+              </Collapsible.Content>
+            </Collapsible>
+          </div>
+        }
+      >
+        <div data-component="text-part" data-timeline-part-id={part().id}>
+          <div data-slot="text-part-body">
+            <Show when={streaming()} fallback={<Markdown text={text()} cacheKey={part().id} streaming={false} />}>
+              <PacedMarkdown text={text()} cacheKey={part().id} streaming={streaming()} />
             </Show>
           </div>
-        </Show>
-      </div>
+          <Show when={showCopy()}>
+            <div data-slot="text-part-copy-wrapper" data-interrupted={interrupted() ? "" : undefined}>
+              <Tooltip
+                value={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
+                placement="top"
+                gutter={4}
+              >
+                <IconButton
+                  icon={copied() ? "check" : "copy"}
+                  size="normal"
+                  variant="ghost"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={handleCopy}
+                  aria-label={copied() ? i18n.t("ui.message.copied") : i18n.t("ui.message.copyResponse")}
+                />
+              </Tooltip>
+              <Show when={meta()}>
+                <span data-slot="text-part-meta" class="text-12-regular text-text-weak cursor-default">
+                  {meta()}
+                </span>
+              </Show>
+            </div>
+          </Show>
+        </div>
+      </Show>
     </Show>
   )
 }

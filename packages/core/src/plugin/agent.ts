@@ -29,6 +29,18 @@ Guidelines:
 
 Complete the user's search request efficiently and report your findings clearly.`
 
+const PROMPT_GOAL = `You are the Goal agent. Your job is to help the user make steady progress toward the active session goal without taking over unrelated work.
+
+Core rules:
+- Treat the session goal as durable state, not as the same thing as the currently selected agent.
+- If no goal is set, ask the user what goal they want to set or use the goal_set tool only when they explicitly provide one.
+- If the goal is paused, do not continue it unless the user explicitly resumes it.
+- If the user switches to another agent or asks for unrelated work, respect that switch and avoid forcing goal-mode behavior into the turn.
+- Use goal_set, goal_pause, goal_resume, and goal_complete to keep the session goal state accurate.
+- When the goal is active, keep going. Do not stop after a progress update or partial answer; take the next concrete action until the goal is completed, paused, or blocked by a question for the user.
+- If the goal is not complete yet, continue working and describe progress only as part of the next action.
+- When the goal is complete, call goal_complete and give a concise final summary.`
+
 const PROMPT_COMPACTION = `You are an anchored context summarization assistant for coding sessions.
 
 Summarize only the conversation history you are given. The newest turns may be kept verbatim outside your summary, so focus on the older context that still matters for continuing the work.
@@ -113,6 +125,11 @@ export const Plugin = PluginV2.define({
       { action: "*", resource: "*", effect: "allow" },
       ...readonlyExternalDirectory,
       { action: "question", resource: "*", effect: "deny" },
+      { action: "goal_set", resource: "*", effect: "deny" },
+      { action: "goal_pause", resource: "*", effect: "deny" },
+      { action: "goal_resume", resource: "*", effect: "deny" },
+      { action: "goal_complete", resource: "*", effect: "deny" },
+      { action: "goal_status", resource: "*", effect: "deny" },
       { action: "plan_enter", resource: "*", effect: "deny" },
       { action: "plan_exit", resource: "*", effect: "deny" },
       { action: "read", resource: "*", effect: "allow" },
@@ -136,6 +153,7 @@ export const Plugin = PluginV2.define({
       editor.update(AgentV2.ID.make("plan"), (item) => {
         item.description = "Plan mode. Disallows all edit tools."
         item.mode = "primary"
+        item.color = "warning"
         item.permissions.push(
           ...PermissionV2.merge(defaults, [
             { action: "question", resource: "*", effect: "allow" },
@@ -148,6 +166,24 @@ export const Plugin = PluginV2.define({
               resource: path.relative(worktree, path.join(Global.Path.data, "plans", "*.md")),
               effect: "allow",
             },
+          ]),
+        )
+      })
+
+      editor.update(AgentV2.ID.make("goal"), (item) => {
+        item.description =
+          "Goal mode. Works against a durable session goal that can be paused, edited, resumed, or completed."
+        item.system = PROMPT_GOAL
+        item.mode = "primary"
+        item.color = "accent"
+        item.permissions.push(
+          ...PermissionV2.merge(defaults, [
+            { action: "question", resource: "*", effect: "allow" },
+            { action: "goal_set", resource: "*", effect: "allow" },
+            { action: "goal_pause", resource: "*", effect: "allow" },
+            { action: "goal_resume", resource: "*", effect: "allow" },
+            { action: "goal_complete", resource: "*", effect: "allow" },
+            { action: "goal_status", resource: "*", effect: "allow" },
           ]),
         )
       })

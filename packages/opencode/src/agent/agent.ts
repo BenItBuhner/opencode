@@ -11,9 +11,11 @@ import { ProviderTransform } from "@/provider/transform"
 import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
+import PROMPT_GOAL from "./prompt/goal.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
+import { primaryAgentSortRank } from "@opencode-ai/core/agent/cycle-order"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
@@ -110,6 +112,11 @@ export const layer = Layer.effect(
             ...Object.fromEntries(whitelistedDirs.map((dir) => [dir, "allow"])),
           },
           question: "deny",
+          goal_set: "deny",
+          goal_pause: "deny",
+          goal_resume: "deny",
+          goal_complete: "deny",
+          goal_status: "deny",
           plan_enter: "deny",
           plan_exit: "deny",
           // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
@@ -143,6 +150,7 @@ export const layer = Layer.effect(
             name: "plan",
             description: "Plan mode. Disallows all edit tools.",
             options: {},
+            color: "warning",
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
@@ -161,6 +169,27 @@ export const layer = Layer.effect(
             ),
             mode: "primary",
             native: true,
+          },
+          goal: {
+            name: "goal",
+            description: "Goal mode. Works against a durable session goal that can be paused, edited, resumed, or completed.",
+            options: {},
+            prompt: PROMPT_GOAL,
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                question: "allow",
+                goal_set: "allow",
+                goal_pause: "allow",
+                goal_resume: "allow",
+                goal_complete: "allow",
+                goal_status: "allow",
+              }),
+              user,
+            ),
+            mode: "primary",
+            native: true,
+            color: "accent",
           },
           general: {
             name: "general",
@@ -303,6 +332,7 @@ export const layer = Layer.effect(
             values(),
             sortBy(
               [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
+              [(x) => primaryAgentSortRank(x.name), "asc"],
               [(x) => x.name, "asc"],
             ),
           )

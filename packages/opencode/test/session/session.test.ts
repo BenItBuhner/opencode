@@ -209,6 +209,33 @@ describe("Session", () => {
     }),
   )
 
+  it.instance("stores goal metadata without clobbering other metadata", () =>
+    Effect.gen(function* () {
+      const session = yield* SessionNs.Service
+      const created = yield* Effect.acquireRelease(
+        session.create({ title: "with-goal", metadata: { source: "test" } }),
+        (info) => session.remove(info.id).pipe(Effect.ignore),
+      )
+
+      const goal = yield* session.setGoal({ sessionID: created.id, text: "ship goal mode" })
+      expect(goal.status).toBe("active")
+      expect(goal.revision).toBe(1)
+
+      const withGoal = yield* session.get(created.id)
+      expect(withGoal.metadata?.source).toBe("test")
+      expect(withGoal.metadata?.goal).toMatchObject({ text: "ship goal mode", status: "active" })
+
+      const paused = yield* session.updateGoal({ sessionID: created.id, status: "paused" })
+      expect(paused?.status).toBe("paused")
+      expect(paused?.revision).toBe(2)
+
+      yield* session.clearGoal(created.id)
+      const cleared = yield* session.get(created.id)
+      expect(cleared.metadata?.source).toBe("test")
+      expect(cleared.metadata?.goal).toBeUndefined()
+    }),
+  )
+
   it.instance("omits metadata when not provided", () =>
     Effect.gen(function* () {
       const session = yield* SessionNs.Service
