@@ -33,7 +33,9 @@ export const GoalSetTool = Tool.define<typeof SetParameters, Metadata, Session.S
             metadata: {},
           })
 
-          const goal = yield* session.setGoal({ sessionID: ctx.sessionID, text: params.text, status: "active" })
+          const goal = yield* session
+            .setGoal({ sessionID: ctx.sessionID, text: params.text, status: "active" })
+            .pipe(Effect.orDie)
           return {
             title: "Goal set",
             output: formatGoal(goal),
@@ -61,7 +63,7 @@ export const GoalPauseTool = Tool.define<typeof EmptyParameters, Metadata, Sessi
             metadata: {},
           })
 
-          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "paused" })
+          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "paused" }).pipe(Effect.orDie)
           return {
             title: goal ? "Goal paused" : "No goal",
             output: formatGoal(goal),
@@ -89,7 +91,7 @@ export const GoalResumeTool = Tool.define<typeof EmptyParameters, Metadata, Sess
             metadata: {},
           })
 
-          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "active" })
+          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "active" }).pipe(Effect.orDie)
           return {
             title: goal ? "Goal resumed" : "No goal",
             output: formatGoal(goal),
@@ -117,7 +119,7 @@ export const GoalCompleteTool = Tool.define<typeof EmptyParameters, Metadata, Se
             metadata: {},
           })
 
-          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "completed" })
+          const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "completed" }).pipe(Effect.orDie)
           return {
             title: goal ? "Goal completed" : "No goal",
             output: formatGoal(goal),
@@ -145,7 +147,7 @@ export const GoalStatusTool = Tool.define<typeof EmptyParameters, Metadata, Sess
             metadata: {},
           })
 
-          const goal = yield* session.getGoal(ctx.sessionID)
+          const goal = yield* session.getGoal(ctx.sessionID).pipe(Effect.orDie)
           return {
             title: goal ? "Goal status" : "No goal",
             output: formatGoal(goal),

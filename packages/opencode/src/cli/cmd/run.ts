@@ -503,7 +503,7 @@ export const RunCommand = effectCmd({
           throw new Error("Failed to create session")
         }
 
-        void share(sdk, id).catch(() => {})
+        if (!args.command) void share(sdk, id).catch(() => {})
         return {
           id,
           title: result.data?.title,
@@ -623,6 +623,22 @@ export const RunCommand = effectCmd({
             return true
           }
           return false
+        }
+
+        function outputReturnedText(parts: Array<{ type: string; text?: string }>) {
+          for (const part of parts) {
+            if (part.type !== "text") continue
+            const text = part.text?.trim()
+            if (!text) continue
+            if (emit("text", { part })) continue
+            if (!process.stdout.isTTY) {
+              process.stdout.write(text + EOL)
+              continue
+            }
+            UI.empty()
+            UI.println(text)
+            UI.empty()
+          }
         }
 
         // Consume one subscribed event stream for the active session and mirror it
@@ -758,15 +774,9 @@ export const RunCommand = effectCmd({
         // Validate agent if specified
         const agent = await pickAgent(client)
 
-        await share(client, sessionID)
+        if (!args.command) await share(client, sessionID)
 
         if (!args.interactive) {
-          const events = await client.event.subscribe()
-          loop(client, events).catch((e) => {
-            console.error(e)
-            process.exit(1)
-          })
-
           if (args.command) {
             const result = await client.session.command({
               sessionID,
@@ -779,9 +789,18 @@ export const RunCommand = effectCmd({
             if (result.error) {
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
+              return
             }
+            outputReturnedText(result.data?.parts ?? [])
             return
           }
+
+          const controller = new AbortController()
+          const events = await client.event.subscribe(undefined, { signal: controller.signal })
+          loop(client, events).catch((e) => {
+            console.error(e)
+            process.exit(1)
+          })
 
           const model = pick(args.model)
           const result = await client.session.prompt({

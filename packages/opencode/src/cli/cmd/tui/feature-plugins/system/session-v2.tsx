@@ -249,9 +249,6 @@ function CompactionMessage(props: { message: SessionMessageCompaction }) {
           <text fg={theme.textMuted}>
             {expanded() ? "- " : "+ "}
             {props.message.reason === "auto" ? "Auto-compacted context" : "Compacted context"}
-            <Show when={props.message.include}>
-              {(include) => <span> · retained from {include()}</span>}
-            </Show>
           </text>
         </box>
         <Show when={expanded() && summary()}>

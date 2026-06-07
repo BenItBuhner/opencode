@@ -9,7 +9,6 @@ import { fileURLToPath } from "url"
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
-const packageJson = JSON.parse(fs.readFileSync(path.join(__dirname, "package.json"), "utf8"))
 
 const platformMap = {
   darwin: "darwin",
@@ -26,7 +25,6 @@ const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
 const base = `@benitbuhner/opencode-goal-mode-${platform}-${arch}`
 const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
-const targetBinary = path.join(__dirname, "bin", "opencode-goal-mode.exe")
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -120,70 +118,40 @@ function resolveBinary(name) {
   const packageJsonPath = require.resolve(`${name}/package.json`)
   const binaryPath = path.join(path.dirname(packageJsonPath), "bin", sourceBinary)
   if (!fs.existsSync(binaryPath)) throw new Error(`Binary not found at ${binaryPath}`)
+  if (platform !== "windows") {
+    try {
+      fs.chmodSync(binaryPath, 0o755)
+    } catch {
+      // The following spawn will surface a clearer platform error if chmod is not permitted.
+    }
+  }
   return binaryPath
 }
 
-function installPackage(name) {
-  const version = packageJson.optionalDependencies?.[name]
-  if (!version) return
-
-  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "opencode-install-"))
-  try {
-    const result = childProcess.spawnSync(
-      "npm",
-      ["install", "--ignore-scripts", "--no-save", "--loglevel=error", "--prefix", temp, `${name}@${version}`],
-      { stdio: "inherit", windowsHide: true },
-    )
-    if (result.status !== 0) return
-    const packageDir = path.join(temp, "node_modules", name)
-    copyBinary(path.join(packageDir, "bin", sourceBinary), targetBinary)
-    return true
-  } finally {
-    fs.rmSync(temp, { recursive: true, force: true })
-  }
-}
-
-function copyBinary(source, target) {
-  if (!fs.existsSync(source)) throw new Error(`Binary not found at ${source}`)
-  fs.mkdirSync(path.dirname(target), { recursive: true })
-  if (fs.existsSync(target)) fs.unlinkSync(target)
-  try {
-    fs.linkSync(source, target)
-  } catch {
-    fs.copyFileSync(source, target)
-  }
-  fs.chmodSync(target, 0o755)
-}
-
-function verifyBinary() {
-  const result = childProcess.spawnSync(targetBinary, ["--version"], {
-    encoding: "utf8",
-    stdio: "ignore",
-    windowsHide: true,
-  })
-  return result.status === 0
-}
-
-function main() {
+function findBinary() {
   for (const name of packageNames()) {
     try {
-      copyBinary(resolveBinary(name), targetBinary)
-      if (verifyBinary()) return
+      return resolveBinary(name)
     } catch {
-      if (installPackage(name) && verifyBinary()) return
+      // Try the next compatible package name.
     }
   }
 
   throw new Error(
-    `It seems your package manager failed to install the right opencode-goal-mode CLI package. Try manually installing ${packageNames()
+    `Could not find the opencode-goal-mode binary package. Try reinstalling, or manually install ${packageNames()
       .map((name) => JSON.stringify(name))
       .join(" or ")}.`,
   )
 }
 
-try {
-  main()
-} catch (error) {
-  console.error(error.message)
-  process.exit(1)
+const binary = findBinary()
+const result = childProcess.spawnSync(binary, process.argv.slice(2), {
+  stdio: "inherit",
+  windowsHide: false,
+})
+
+if (result.error) throw result.error
+if (typeof result.status === "number") process.exit(result.status)
+if (result.signal) {
+  process.kill(process.pid, result.signal)
 }

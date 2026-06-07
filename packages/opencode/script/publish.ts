@@ -1,11 +1,19 @@
 #!/usr/bin/env bun
 import { $ } from "bun"
+import fs from "fs"
+import path from "path"
 import pkg from "../package.json"
 import { Script } from "@opencode-ai/script"
 import { fileURLToPath } from "url"
 
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
+
+const packageName = "@benitbuhner/opencode-goal-mode"
+const packageDirName = "opencode-goal-mode"
+const commandName = "opencode-goal-mode"
+const publishExtraRegistries = process.env.OPENCODE_GOAL_MODE_PUBLISH_REGISTRIES === "1"
+const packOnly = process.env.OPENCODE_GOAL_MODE_PACK_ONLY === "1"
 
 async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
@@ -19,47 +27,64 @@ async function publish(dir: string, name: string, version: string) {
     console.log(`already published ${name}@${version}`)
     return
   }
+  for (const artifact of new Bun.Glob("*.tgz").scanSync({ cwd: dir })) {
+    fs.rmSync(path.join(dir, artifact), { force: true })
+  }
   await $`bun pm pack`.cwd(dir)
-  await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+  if (packOnly) return
+  const npmrc = path.join(dir, ".npmrc")
+  if (process.env.NPM_TOKEN) {
+    fs.writeFileSync(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n")
+  }
+  try {
+    await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+  } finally {
+    fs.rmSync(npmrc, { force: true })
+  }
 }
 
+type BinaryPackage = {
+  dir: string
+  name: string
+  version: string
+}
+
+const binaryPackages: BinaryPackage[] = []
 const binaries: Record<string, string> = {}
+fs.rmSync(`./dist/${packageDirName}`, { recursive: true, force: true })
 for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" })) {
-  const pkg = await Bun.file(`./dist/${filepath}`).json()
-  binaries[pkg.name] = pkg.version
+  if (filepath === `${packageDirName}/package.json` || filepath === `${packageDirName}\\package.json`) continue
+  const item = await Bun.file(`./dist/${filepath}`).json()
+  const dir = `./dist/${filepath.replace(/[\\/]package\.json$/, "")}`
+  const name = String(item.name).replace(/^opencode-/, `${packageName}-`)
+  await Bun.file(`./dist/${filepath}`).write(
+    JSON.stringify(
+      {
+        ...item,
+        name,
+      },
+      null,
+      2,
+    ),
+  )
+  binaries[name] = item.version
+  binaryPackages.push({ dir, name, version: item.version })
 }
 console.log("binaries", binaries)
-const version = Object.values(binaries)[0]
+const version = process.env.OPENCODE_GOAL_MODE_META_VERSION ?? Object.values(binaries)[0]
 
-await $`mkdir -p ./dist/${pkg.name}`
-await $`mkdir -p ./dist/${pkg.name}/bin`
-await $`cp ./script/postinstall.mjs ./dist/${pkg.name}/postinstall.mjs`
-await Bun.file(`./dist/${pkg.name}/LICENSE`).write(await Bun.file("../../LICENSE").text())
-await Bun.file(`./dist/${pkg.name}/bin/${pkg.name}.exe`).write(
-  [
-    `echo "Error: ${pkg.name}-ai's postinstall script was not run." >&2`,
-    'echo "" >&2',
-    'echo "This occurs when using --ignore-scripts during installation, or when using a" >&2',
-    'echo "package manager like pnpm that does not run postinstall scripts by default." >&2',
-    'echo "" >&2',
-    'echo "To fix this, run the postinstall script manually:" >&2',
-    `echo "  cd node_modules/${pkg.name}-ai && node postinstall.mjs" >&2`,
-    'echo "" >&2',
-    `echo "Or reinstall ${pkg.name}-ai without the --ignore-scripts flag." >&2`,
-    "exit 1",
-    "",
-  ].join("\n"),
-)
+await $`mkdir -p ./dist/${packageDirName}`
+await $`mkdir -p ./dist/${packageDirName}/bin`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}`
+await Bun.file(`./dist/${packageDirName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
-await Bun.file(`./dist/${pkg.name}/package.json`).write(
+await Bun.file(`./dist/${packageDirName}/package.json`).write(
   JSON.stringify(
     {
-      name: pkg.name + "-ai",
+      name: packageName,
+      files: ["bin", "LICENSE"],
       bin: {
-        [pkg.name]: `./bin/${pkg.name}.exe`,
-      },
-      scripts: {
-        postinstall: "node ./postinstall.mjs",
+        [commandName]: `./bin/${commandName}`,
       },
       version: version,
       license: pkg.license,
@@ -72,11 +97,11 @@ await Bun.file(`./dist/${pkg.name}/package.json`).write(
   ),
 )
 
-const tasks = Object.entries(binaries).map(async ([name]) => {
-  await publish(`./dist/${name}`, name, binaries[name])
+const tasks = binaryPackages.map(async (item) => {
+  await publish(item.dir, item.name, item.version)
 })
 await Promise.all(tasks)
-await publish(`./dist/${pkg.name}`, `${pkg.name}-ai`, version)
+await publish(`./dist/${packageDirName}`, packageName, version)
 
 const image = "ghcr.io/anomalyco/opencode"
 const platforms = "linux/amd64,linux/arm64"
@@ -84,7 +109,7 @@ const tags = [`${image}:${version}`, `${image}:${Script.channel}`]
 const tagFlags = tags.flatMap((t) => ["-t", t])
 
 // registries
-if (!Script.preview) {
+if (publishExtraRegistries && !Script.preview) {
   await $`docker buildx build --platform ${platforms} ${tagFlags} --push .`
   // Calculate SHA values
   const arm64Sha = await $`sha256sum ./dist/opencode-linux-arm64.tar.gz | cut -d' ' -f1`.text().then((x) => x.trim())

@@ -1227,8 +1227,7 @@ export const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
-      function* (sessionID: SessionID) {
+    const runLoop = Effect.fn("SessionPrompt.run")(function* (sessionID: SessionID) {
         const ctx = yield* InstanceState.context
         const slog = elog.with({ sessionID })
         let structured: unknown
@@ -1241,6 +1240,7 @@ export const layer = Layer.effect(
 
           let msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(
             Effect.provideService(Database.Service, database),
+            Effect.orDie,
           )
 
           const { user: lastUser, assistant: lastAssistant, finished: lastFinished, tasks } = MessageV2.latest(msgs)
@@ -1320,7 +1320,9 @@ export const layer = Layer.effect(
             lastFinished.summary !== true &&
             (yield* compaction.isOverflow({ tokens: lastFinished.tokens, model }))
           ) {
-            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true })
+            yield* compaction.create({ sessionID, agent: lastUser.agent, model: lastUser.model, auto: true }).pipe(
+              Effect.orDie,
+            )
             continue
           }
 
@@ -1479,13 +1481,15 @@ export const layer = Layer.effect(
               return "break" as const
             }
             if (result === "compact") {
-              yield* compaction.create({
-                sessionID,
-                agent: lastUser.agent,
-                model: lastUser.model,
-                auto: true,
-                overflow: !handle.message.finish,
-              })
+              yield* compaction
+                .create({
+                  sessionID,
+                  agent: lastUser.agent,
+                  model: lastUser.model,
+                  auto: true,
+                  overflow: !handle.message.finish,
+                })
+                .pipe(Effect.orDie)
             }
             return "continue" as const
           }).pipe(
@@ -1497,14 +1501,17 @@ export const layer = Layer.effect(
         }
 
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
-        return yield* lastAssistant(sessionID)
-      },
-    )
+        return yield* lastAssistant(sessionID).pipe(Effect.orDie)
+    })
 
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
     ) {
-      return yield* state.ensureRunning(input.sessionID, lastAssistant(input.sessionID), runLoop(input.sessionID))
+      return yield* state.ensureRunning(
+        input.sessionID,
+        lastAssistant(input.sessionID).pipe(Effect.orDie),
+        runLoop(input.sessionID).pipe(Effect.orDie),
+      )
     })
 
     const shell: (input: ShellInput) => Effect.Effect<SessionV1.WithParts, Session.BusyError> = Effect.fn(
@@ -1564,7 +1571,7 @@ export const layer = Layer.effect(
             text: goalHelp,
           })
         }
-        const goal = yield* sessions.setGoal({ sessionID: input.sessionID, text, status: "active" })
+        const goal = yield* sessions.setGoal({ sessionID: input.sessionID, text, status: "active" }).pipe(Effect.orDie)
         return yield* prompt({
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -1584,7 +1591,7 @@ export const layer = Layer.effect(
       }
 
       if (action === "resume") {
-        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "active" })
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "active" }).pipe(Effect.orDie)
         if (!goal) {
           return yield* goalCommandResponse({
             sessionID: input.sessionID,
@@ -1613,7 +1620,7 @@ export const layer = Layer.effect(
       }
 
       if (action === "pause") {
-        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "paused" })
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "paused" }).pipe(Effect.orDie)
         return yield* goalCommandResponse({
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -1624,7 +1631,7 @@ export const layer = Layer.effect(
       }
 
       if (action === "complete" || action === "done") {
-        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "completed" })
+        const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "completed" }).pipe(Effect.orDie)
         return yield* goalCommandResponse({
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -1635,7 +1642,7 @@ export const layer = Layer.effect(
       }
 
       if (action === "clear") {
-        yield* sessions.clearGoal(input.sessionID)
+        yield* sessions.clearGoal(input.sessionID).pipe(Effect.orDie)
         return yield* goalCommandResponse({
           sessionID: input.sessionID,
           messageID: input.messageID,
@@ -1646,7 +1653,7 @@ export const layer = Layer.effect(
       }
 
       if (action === "status" || action === "show") {
-        const goal = yield* sessions.getGoal(input.sessionID)
+        const goal = yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie)
         return yield* goalCommandResponse({
           sessionID: input.sessionID,
           messageID: input.messageID,
