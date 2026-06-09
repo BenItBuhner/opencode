@@ -15,6 +15,7 @@ import type { JSONSchema7 } from "@ai-sdk/provider"
 import { SessionCompaction } from "./compaction"
 import { SystemPrompt } from "./system"
 import { Instruction } from "./instruction"
+import PROMPT_GOAL from "../agent/prompt/goal.txt"
 import { Plugin } from "../plugin"
 import MAX_STEPS from "../session/prompt/max-steps.txt"
 import { ToolRegistry } from "@/tool/registry"
@@ -335,6 +336,8 @@ export const layer = Layer.effect(
             prompt: task.prompt,
             description: task.description,
             subagent_type: task.agent,
+            goal_mode: task.goal_mode,
+            goal: task.goal,
             command: task.command,
           },
           time: { start: Date.now() },
@@ -344,6 +347,8 @@ export const layer = Layer.effect(
         prompt: task.prompt,
         description: task.description,
         subagent_type: task.agent,
+        goal_mode: task.goal_mode,
+        goal: task.goal,
         command: task.command,
       }
       yield* plugin.trigger(
@@ -1200,7 +1205,10 @@ export const layer = Layer.effect(
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
-      if ((input.agent ?? session.agent) === "goal" && !(yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie))) {
+      if (
+        Session.isGoalHarnessSession(session, input.agent ?? session.agent) &&
+        !(yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie))
+      ) {
         const text = visiblePromptText(input.parts)
         if (text) yield* sessions.setGoal({ sessionID: input.sessionID, text, status: "active" }).pipe(Effect.orDie)
       }
@@ -1225,6 +1233,28 @@ export const layer = Layer.effect(
       const msgs = yield* sessions.messages({ sessionID, limit: 1 }).pipe(Effect.orDie)
       if (msgs.length > 0) return msgs[0]
       throw new Error("Impossible")
+    })
+
+    const assistantErrorReason = (error: SessionV1.Assistant["error"]) => {
+      const message = error?.data && "message" in error.data ? error.data.message : undefined
+      return typeof message === "string" ? message : (error?.name ?? "response error")
+    }
+
+    const pauseActiveGoalAfterError = Effect.fn("SessionPrompt.pauseActiveGoalAfterError")(function* (input: {
+      sessionID: SessionID
+      agent: string
+      messageID?: MessageID
+      reason: string
+    }) {
+      const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      if (!Session.isGoalHarnessSession(session, input.agent)) return
+      const goal = yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie)
+      if (goal?.status !== "active") return
+      yield* sessions.updateGoal({ sessionID: input.sessionID, status: "paused" }).pipe(Effect.orDie)
+      yield* elog.with({ sessionID: input.sessionID }).warn("paused active goal after response error", {
+        messageID: input.messageID,
+        reason: input.reason,
+      })
     })
 
     const runLoop = Effect.fn("SessionPrompt.run")(function* (sessionID: SessionID) {
@@ -1264,10 +1294,9 @@ export const layer = Layer.effect(
             !hasToolCalls &&
             lastUser.id < lastAssistant.id
           ) {
-            const activeGoal =
-              lastAssistant.agent === "goal"
-                ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie)
-                : undefined
+            const activeGoal = Session.isGoalHarnessSession(session, lastAssistant.agent)
+              ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie)
+              : undefined
             if (activeGoal?.status === "active") {
               yield* slog.info("continuing active goal after assistant stop", { messageID: lastAssistant.id })
             } else {
@@ -1438,6 +1467,7 @@ export const layer = Layer.effect(
             ])
             const system = [...env, ...instructions, ...(skills ? [skills] : [])]
             const format = lastUser.format ?? { type: "text" as const }
+            if (Session.isGoalHarnessSession(session, agent.name) && agent.name !== "goal") system.push(PROMPT_GOAL)
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
               user: lastUser,
@@ -1451,6 +1481,16 @@ export const layer = Layer.effect(
               model,
               toolChoice: format.type === "json_schema" ? "required" : undefined,
             })
+
+            if (handle.message.error) {
+              yield* pauseActiveGoalAfterError({
+                sessionID,
+                agent: agent.name,
+                messageID: handle.message.id,
+                reason: assistantErrorReason(handle.message.error),
+              })
+              return "break" as const
+            }
 
             if (structured !== undefined) {
               handle.message.structured = structured
@@ -1467,13 +1507,20 @@ export const layer = Layer.effect(
                   retries: 0,
                 }).toObject()
                 yield* sessions.updateMessage(handle.message)
+                yield* pauseActiveGoalAfterError({
+                  sessionID,
+                  agent: agent.name,
+                  messageID: handle.message.id,
+                  reason: assistantErrorReason(handle.message.error),
+                })
                 return "break" as const
               }
             }
 
             if (result === "stop") {
-              const activeGoal =
-                agent.name === "goal" ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie) : undefined
+              const activeGoal = Session.isGoalHarnessSession(session, agent.name)
+                ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie)
+                : undefined
               if (activeGoal?.status === "active" && !isLastStep && !handle.message.error) {
                 yield* slog.info("continuing active goal after model stop", { messageID: handle.message.id })
                 return "continue" as const

@@ -37,7 +37,11 @@ Core rules:
 - If no goal is set, ask the user what goal they want to set or use the goal_set tool only when they explicitly provide one.
 - If the goal is paused, do not continue it unless the user explicitly resumes it.
 - If the user switches to another agent or asks for unrelated work, respect that switch and avoid forcing goal-mode behavior into the turn.
-- Use goal_set, goal_pause, goal_resume, and goal_complete to keep the session goal state accurate.
+- Use goal_set, goal_pause, goal_resume, goal_summarize_state, and goal_complete to keep the session goal state accurate.
+- Use goal_summarize_state periodically after meaningful progress, after resolving a blocker, before pausing, and before completing the goal if the latest state summary is stale.
+- Do not call goal_summarize_state every turn. Prefer it after a meaningful phase change or every few substantial actions.
+- goal_summarize_state requires a numeric progress estimate from 0 to 100 and a structured markdown summary with exactly size 2 section headers and bullet lists. Include these sections: ## Progress, ## Current State, ## Blockers, and ## Next Steps.
+- Keep progress estimates realistic. Do not report 100 unless you are ready to call goal_complete.
 - When the goal is active, keep going. Do not stop after a progress update or partial answer; take the next concrete action until the goal is completed, paused, or blocked by a question for the user.
 - If the goal is not complete yet, continue working and describe progress only as part of the next action.
 - When the goal is complete, call goal_complete and give a concise final summary.`
@@ -131,6 +135,7 @@ export const Plugin = PluginV2.define({
       { action: "goal_resume", resource: "*", effect: "deny" },
       { action: "goal_complete", resource: "*", effect: "deny" },
       { action: "goal_status", resource: "*", effect: "deny" },
+      { action: "goal_summarize_state", resource: "*", effect: "deny" },
       { action: "plan_enter", resource: "*", effect: "deny" },
       { action: "plan_exit", resource: "*", effect: "deny" },
       { action: "read", resource: "*", effect: "allow" },
@@ -186,6 +191,7 @@ export const Plugin = PluginV2.define({
             { action: "goal_resume", resource: "*", effect: "allow" },
             { action: "goal_complete", resource: "*", effect: "allow" },
             { action: "goal_status", resource: "*", effect: "allow" },
+            { action: "goal_summarize_state", resource: "*", effect: "allow" },
           ]),
         )
       })

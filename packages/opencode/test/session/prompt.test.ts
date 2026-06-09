@@ -564,6 +564,216 @@ it.instance("goal loop continues after progress response until goal is completed
   }),
 )
 
+it.instance("goal loop pauses the active goal after a provider response error", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      compaction: { auto: false },
+    }))
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "goal",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Finish the goal workflow" }],
+    })
+
+    yield* llm.error(413, { error: { message: "request entity too large" } })
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(result.info.role).toBe("assistant")
+    if (result.info.role === "assistant") {
+      expect(result.info.error).toBeDefined()
+      expect(result.info.finish).toBe("error")
+    }
+    expect((yield* sessions.getGoal(chat.id))?.status).toBe("paused")
+  }),
+)
+
+it.instance("goal loop persists structured state summaries", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "goal",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Finish the goal workflow" }],
+    })
+
+    yield* llm.tool("goal_summarize_state", {
+      progress: 40,
+      headline: "Workflow started",
+      summary: [
+        "## Progress",
+        "- Implemented the first checkpoint.",
+        "",
+        "## Current State",
+        "- Goal mode is active.",
+        "",
+        "## Blockers",
+        "- None.",
+        "",
+        "## Next Steps",
+        "- Finish the goal workflow.",
+      ].join("\n"),
+    })
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Goal complete.")
+
+    yield* prompt.loop({ sessionID: chat.id })
+    const goal = yield* sessions.getGoal(chat.id)
+    expect(goal?.progress).toBe(40)
+    expect(goal?.summaries).toHaveLength(1)
+    expect(goal?.summaries?.[0]?.headline).toBe("Workflow started")
+    expect(goal?.status).toBe("completed")
+  }),
+)
+
+it.instance("goal summary tool rejects invalid summary format", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "goal",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Finish the goal workflow" }],
+    })
+
+    yield* llm.tool("goal_summarize_state", {
+      progress: 40,
+      summary: ["# Progress", "- Wrong heading size."].join("\n"),
+    })
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Goal complete.")
+
+    yield* prompt.loop({ sessionID: chat.id })
+    const goal = yield* sessions.getGoal(chat.id)
+    expect(goal?.summaries).toBeUndefined()
+
+    const messages = yield* MessageV2.filterCompactedEffect(chat.id)
+    const summaryTool = messages
+      .flatMap((message) => message.parts)
+      .find((part) => part.type === "tool" && part.tool === "goal_summarize_state")
+    expect(summaryTool?.type).toBe("tool")
+    if (summaryTool?.type === "tool") expect(summaryTool.state.status).toBe("error")
+  }),
+)
+
+it.instance("goal-mode subagent sessions receive goal prompt and reminders", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Goal child",
+      agent: "general",
+      metadata: { goal_mode: true },
+      permission: [{ permission: "goal_complete", pattern: "*", action: "allow" }],
+    })
+    yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the child goal", status: "active" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "general",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Continue" }],
+    })
+
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Goal complete.")
+
+    yield* prompt.loop({ sessionID: chat.id })
+    const inputs = yield* llm.inputs
+    expect(JSON.stringify(inputs[0])).toContain("You are the Goal agent")
+    expect(JSON.stringify(inputs[0])).toContain("<session-goal>")
+    expect(JSON.stringify(inputs[0])).toContain("Finish the child goal")
+  }),
+  10_000,
+)
+
+it.instance("goal-mode subagent sessions continue after progress until completed", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Goal child",
+      agent: "general",
+      metadata: { goal_mode: true },
+      permission: [{ permission: "goal_complete", pattern: "*", action: "allow" }],
+    })
+    yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the child goal", status: "active" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "general",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Continue" }],
+    })
+
+    yield* llm.text("I made progress and have more to do.")
+    yield* llm.tool("goal_complete", {})
+    yield* llm.text("Goal complete.")
+
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    expect(yield* llm.calls).toBe(3)
+    expect(result.info.role).toBe("assistant")
+    expect((yield* sessions.getGoal(chat.id))?.status).toBe("completed")
+  }),
+)
+
+it.instance("goal-mode subagent sessions pause after provider response errors", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig((url) => ({
+      ...providerCfg(url),
+      compaction: { auto: false },
+    }))
+
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Goal child",
+      agent: "general",
+      metadata: { goal_mode: true },
+    })
+    yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the child goal", status: "active" })
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "general",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Continue" }],
+    })
+
+    yield* llm.error(413, { error: { message: "request entity too large" } })
+
+    yield* prompt.loop({ sessionID: chat.id })
+    expect((yield* sessions.getGoal(chat.id))?.status).toBe("paused")
+  }),
+)
+
 it.instance("/goal resume keeps internal resume prompt synthetic", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)

@@ -32,6 +32,7 @@ import { computePromptTraits } from "./traits"
 import { assign, expandPastedTextPlaceholders, expandTrackedPastedText } from "./part"
 import { usePromptStash } from "./stash"
 import { DialogStash } from "../dialog-stash"
+import { DialogGoalSummaries, type GoalSummaryView } from "../dialog-goal-summaries"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import * as Editor from "@tui/util/editor"
@@ -90,6 +91,12 @@ const money = new Intl.NumberFormat("en-US", {
 })
 
 const DRAFT_RETENTION_MIN_CHARS = 20
+
+function compactProgressBar(progress: number) {
+  const value = Math.max(0, Math.min(100, Math.round(progress)))
+  const filled = Math.round(value / 25)
+  return `${"#".repeat(filled)}${"-".repeat(4 - filled)}`
+}
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -151,9 +158,32 @@ export function Prompt(props: PromptProps) {
     if (!sessionID) return undefined
     const goal = sync.session.get(sessionID)?.metadata?.goal
     if (!goal || typeof goal !== "object") return undefined
-    const item = goal as { text?: unknown; status?: unknown; created?: unknown }
+    const item = goal as {
+      text?: unknown
+      status?: unknown
+      created?: unknown
+      progress?: unknown
+      summaries?: unknown
+    }
     if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
-    return { text: item.text, status: item.status, created: typeof item.created === "number" ? item.created : undefined }
+    const summaries = Array.isArray(item.summaries)
+      ? item.summaries
+          .filter((summary): summary is GoalSummaryView => summary !== null && typeof summary === "object")
+          .map((summary) => ({
+            id: typeof summary.id === "string" ? summary.id : undefined,
+            created: typeof summary.created === "number" ? summary.created : undefined,
+            progress: typeof summary.progress === "number" ? summary.progress : undefined,
+            summary: typeof summary.summary === "string" ? summary.summary : undefined,
+            headline: typeof summary.headline === "string" ? summary.headline : undefined,
+          }))
+      : undefined
+    return {
+      text: item.text,
+      status: item.status,
+      created: typeof item.created === "number" ? item.created : undefined,
+      progress: typeof item.progress === "number" ? item.progress : summaries?.at(-1)?.progress,
+      summaries,
+    }
   })
   const [goalNow, setGoalNow] = createSignal(Date.now())
   onMount(() => {
@@ -182,6 +212,12 @@ export function Prompt(props: PromptProps) {
         .filter((line) => line !== undefined)
         .join("\n"),
     )
+  }
+  const openGoalSummaries = () => {
+    if (renderer.getSelection()?.getSelectedText()) return
+    const goal = sessionGoal()
+    if (!goal) return
+    dialog.replace(() => <DialogGoalSummaries goal={goal} />)
   }
   const history = usePromptHistory()
   const stash = usePromptStash()
@@ -1698,11 +1734,19 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={goalElapsed()}>
-                {(elapsed) => (
-                  <box flexDirection="row" gap={1} onMouseUp={openGoalDetails}>
-                    <text fg={theme.accent}>goal</text>
-                    <text fg={theme.textMuted}>{elapsed()}</text>
+              <Show when={sessionGoal()}>
+                {(goal) => (
+                  <box flexDirection="row" gap={1}>
+                    <text fg={theme.accent} onMouseUp={openGoalDetails}>
+                      goal
+                    </text>
+                    <Show when={goal().progress !== undefined}>
+                      <box flexDirection="row" gap={1} onMouseUp={openGoalSummaries}>
+                        <text fg={theme.accent}>{goal().progress}%</text>
+                        <text fg={theme.textMuted}>{compactProgressBar(goal().progress ?? 0)}</text>
+                      </box>
+                    </Show>
+                    <Show when={goalElapsed()}>{(elapsed) => <text fg={theme.textMuted}>{elapsed()}</text>}</Show>
                   </box>
                 )}
               </Show>

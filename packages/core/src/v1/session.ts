@@ -198,6 +198,8 @@ export const SubtaskPart = Schema.Struct({
   prompt: Schema.String,
   description: Schema.String,
   agent: Schema.String,
+  goal_mode: Schema.optional(Schema.Boolean),
+  goal: Schema.optional(Schema.String),
   model: Schema.optional(
     Schema.Struct({
       providerID: ProviderV2.ID,
@@ -438,6 +440,8 @@ export const SubtaskPartInput = Schema.Struct({
   prompt: Schema.String,
   description: Schema.String,
   agent: Schema.String,
+  goal_mode: Schema.optional(Schema.Boolean),
+  goal: Schema.optional(Schema.String),
   model: Schema.optional(
     Schema.Struct({
       providerID: ProviderV2.ID,

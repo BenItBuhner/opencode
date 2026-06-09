@@ -256,6 +256,51 @@ describe("Session", () => {
       expect(paused?.status).toBe("paused")
       expect(paused?.revision).toBe(2)
 
+      const summarized = yield* session.addGoalSummary({
+        sessionID: created.id,
+        progress: 25,
+        headline: "Initial checkpoint",
+        summary: [
+          "## Progress",
+          "- Started the workflow.",
+          "",
+          "## Current State",
+          "- Goal state is stored.",
+          "",
+          "## Blockers",
+          "- None.",
+          "",
+          "## Next Steps",
+          "- Continue implementation.",
+        ].join("\n"),
+      })
+      expect(summarized?.progress).toBe(25)
+      expect(summarized?.summaries?.at(-1)?.headline).toBe("Initial checkpoint")
+      expect(summarized?.revision).toBe(3)
+
+      for (let i = 0; i < 30; i++) {
+        yield* session.addGoalSummary({
+          sessionID: created.id,
+          progress: Math.min(i, 100),
+          summary: [
+            "## Progress",
+            `- Checkpoint ${i}.`,
+            "",
+            "## Current State",
+            "- Still active.",
+            "",
+            "## Blockers",
+            "- None.",
+            "",
+            "## Next Steps",
+            "- Keep going.",
+          ].join("\n"),
+        })
+      }
+      const bounded = yield* session.getGoal(created.id)
+      expect(bounded?.summaries).toHaveLength(25)
+      expect(bounded?.summaries?.[0]?.summary).toContain("Checkpoint 5.")
+
       yield* session.clearGoal(created.id)
       const cleared = yield* session.get(created.id)
       expect(cleared.metadata?.source).toBe("test")

@@ -122,6 +122,12 @@ const EXAMPLES = [
   "prompt.example.25",
 ] as const
 
+function compactGoalProgressBar(progress: number) {
+  const value = Math.max(0, Math.min(100, Math.round(progress)))
+  const filled = Math.round(value / 20)
+  return `${"#".repeat(filled)}${"-".repeat(5 - filled)}`
+}
+
 export const PromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
   const navigate = useNavigate()
@@ -212,9 +218,24 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     if (!sessionID) return undefined
     const goal = sync.session.get(sessionID)?.metadata?.goal
     if (!goal || typeof goal !== "object") return undefined
-    const item = goal as { text?: unknown; status?: unknown }
+    const item = goal as { text?: unknown; status?: unknown; progress?: unknown; summaries?: unknown }
     if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
-    return { text: item.text, status: item.status }
+    const latestSummary =
+      Array.isArray(item.summaries) && item.summaries.length > 0
+        ? (item.summaries.at(-1) as { progress?: unknown; headline?: unknown } | undefined)
+        : undefined
+    const progress =
+      typeof item.progress === "number"
+        ? item.progress
+        : typeof latestSummary?.progress === "number"
+          ? latestSummary.progress
+          : undefined
+    return {
+      text: item.text,
+      status: item.status,
+      progress,
+      headline: typeof latestSummary?.headline === "string" ? latestSummary.headline : undefined,
+    }
   })
 
   const openComment = (item: { path: string; commentID?: string; commentOrigin?: "review" | "file" }) => {
@@ -1989,9 +2010,19 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                     </Show>
                     <Show when={sessionGoal()}>
                       {(goal) => (
-                        <div class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted">
-                          Goal {goal().status}: {goal().text}
-                        </div>
+                        <>
+                          <div class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted">
+                            Goal {goal().status}: {goal().text}
+                          </div>
+                          <Show when={goal().progress !== undefined}>
+                            <div
+                              class="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted"
+                              title={goal().headline}
+                            >
+                              {goal().progress}% {compactGoalProgressBar(goal().progress ?? 0)}
+                            </div>
+                          </Show>
+                        </>
                       )}
                     </Show>
                   </div>

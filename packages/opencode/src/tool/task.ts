@@ -39,11 +39,27 @@ const BACKGROUND_UPDATED = [
   "Do not poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
   "Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.",
 ].join("\n")
+const GOAL_TOOL_PERMISSIONS = [
+  "goal_set",
+  "goal_pause",
+  "goal_resume",
+  "goal_complete",
+  "goal_status",
+  "goal_summarize_state",
+] as const
 
 const BaseParameterFields = {
   description: Schema.String.annotate({ description: "A short (3-5 words) description of the task" }),
   prompt: Schema.String.annotate({ description: "The task for the agent to perform" }),
   subagent_type: Schema.String.annotate({ description: "The type of specialized agent to use for this task" }),
+  goal_mode: Schema.optional(Schema.Boolean).annotate({
+    description:
+      "Enable goal-mode harness behavior for this child session. Use only when the subagent must autonomously keep working toward a durable goal until it completes, pauses, or blocks.",
+  }),
+  goal: Schema.optional(Schema.String).annotate({
+    description:
+      "Optional child-specific goal text for goal_mode. If omitted, the parent session's active goal text is inherited.",
+  }),
   task_id: Schema.optional(Schema.String).annotate({
     description:
       "This should only be set if you mean to resume a previous task (you can pass a prior task_id and the task will continue the same subagent session as before instead of creating a fresh one)",
@@ -75,6 +91,16 @@ function renderOutput(input: {
     `</${tag}>`,
     "</task>",
   ].join("\n")
+}
+
+function withGoalToolPermissions(permission: Session.Info["permission"] = []) {
+  const existing = new Set(permission.map((rule) => `${rule.permission}:${rule.action}:${rule.pattern}`))
+  const goalRules = GOAL_TOOL_PERMISSIONS.flatMap((permission) => {
+    const key = `${permission}:allow:*`
+    if (existing.has(key)) return []
+    return [{ permission, action: "allow" as const, pattern: "*" }]
+  })
+  return [...permission, ...goalRules]
 }
 
 export const TaskTool = Tool.define(
@@ -124,25 +150,58 @@ export const TaskTool = Tool.define(
       const parentAgent = parent.agent
         ? yield* agent.get(parent.agent).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
+      const goalMode = params.goal_mode === true
+      const explicitGoal = params.goal?.trim()
+      const parentGoal = goalMode ? yield* sessions.getGoal(ctx.sessionID).pipe(Effect.orDie) : undefined
+      const existingChildGoal = goalMode && session ? yield* sessions.getGoal(session.id).pipe(Effect.orDie) : undefined
+      const goalText =
+        explicitGoal || existingChildGoal?.text || (parentGoal?.status === "active" ? parentGoal.text : undefined)
+      if (goalMode && !goalText) {
+        return yield* Effect.fail(
+          new Error("goal_mode requires a non-empty goal or an active parent session goal to inherit"),
+        )
+      }
+      const basePermission = [
+        ...deriveSubagentSessionPermission({
+          parentSessionPermission: parent.permission ?? [],
+          parentAgent,
+          subagent: next,
+        }),
+        ...(cfg.experimental?.primary_tools?.map((item) => ({
+          pattern: "*",
+          action: "allow" as const,
+          permission: item,
+        })) ?? []),
+      ]
       const nextSession =
         session ??
         (yield* sessions.create({
           parentID: ctx.sessionID,
           title: params.description + ` (@${next.name} subagent)`,
           agent: next.name,
-          permission: [
-            ...deriveSubagentSessionPermission({
-              parentSessionPermission: parent.permission ?? [],
-              parentAgent,
-              subagent: next,
-            }),
-            ...(cfg.experimental?.primary_tools?.map((item) => ({
-              pattern: "*",
-              action: "allow" as const,
-              permission: item,
-            })) ?? []),
-          ],
+          metadata: goalMode ? { goal_mode: true } : undefined,
+          permission: goalMode ? withGoalToolPermissions(basePermission) : basePermission,
         }))
+
+      if (goalMode) {
+        const current = yield* sessions.get(nextSession.id)
+        yield* sessions
+          .setMetadata({
+            sessionID: nextSession.id,
+            metadata: { ...(current.metadata ?? {}), goal_mode: true },
+          })
+          .pipe(Effect.orDie)
+        yield* sessions
+          .setPermission({
+            sessionID: nextSession.id,
+            permission: withGoalToolPermissions(current.permission ?? []),
+          })
+          .pipe(Effect.orDie)
+        const childGoal = yield* sessions.getGoal(nextSession.id).pipe(Effect.orDie)
+        if (!childGoal || (explicitGoal && childGoal.text !== explicitGoal)) {
+          yield* sessions.setGoal({ sessionID: nextSession.id, text: goalText!, status: "active" }).pipe(Effect.orDie)
+        }
+      }
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(
         Effect.provideService(Database.Service, database),
@@ -160,6 +219,7 @@ export const TaskTool = Tool.define(
         sessionId: nextSession.id,
         model,
         ...(runInBackground ? { background: true } : {}),
+        ...(goalMode ? { goalMode: true, goalText } : {}),
       }
 
       yield* ctx.metadata({
@@ -184,6 +244,7 @@ export const TaskTool = Tool.define(
           tools: {
             ...(next.permission.some((rule) => rule.permission === "todowrite") ? {} : { todowrite: false }),
             ...(next.permission.some((rule) => rule.permission === id) ? {} : { task: false }),
+            ...(goalMode ? Object.fromEntries(GOAL_TOOL_PERMISSIONS.map((permission) => [permission, true])) : {}),
             ...Object.fromEntries((cfg.experimental?.primary_tools ?? []).map((item) => [item, false])),
           },
           parts,

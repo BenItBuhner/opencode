@@ -380,6 +380,169 @@ describe("tool.task", () => {
     }),
   )
 
+  it.instance("goal_mode creates a goal-mode child with goal tools", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let seen: SessionPrompt.PromptInput | undefined
+
+      const result = yield* def.execute(
+        {
+          description: "ship workflow",
+          prompt: "Implement the workflow until complete",
+          subagent_type: "general",
+          goal_mode: true,
+          goal: "Ship the workflow",
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const child = yield* sessions.get(result.metadata.sessionId)
+      const goal = yield* sessions.getGoal(child.id)
+      expect(child.metadata?.goal_mode).toBe(true)
+      expect(goal?.text).toBe("Ship the workflow")
+      expect(goal?.status).toBe("active")
+      expect(result.metadata.goalMode).toBe(true)
+      expect(result.metadata.goalText).toBe("Ship the workflow")
+      expect(seen?.tools?.goal_complete).toBe(true)
+      expect(seen?.tools?.goal_summarize_state).toBe(true)
+      expect(child.permission?.some((rule) => rule.permission === "goal_complete" && rule.action === "allow")).toBe(
+        true,
+      )
+      expect(child.permission?.some((rule) => rule.permission === "goal_summarize_state" && rule.action === "allow")).toBe(
+        true,
+      )
+    }),
+  )
+
+  it.instance("goal_mode inherits an active parent goal when goal is omitted", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      yield* sessions.setGoal({ sessionID: chat.id, text: "Parent objective", status: "active" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const result = yield* def.execute(
+        {
+          description: "inherit goal",
+          prompt: "Work from the inherited goal",
+          subagent_type: "general",
+          goal_mode: true,
+        },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps: stubOps() },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+
+      const goal = yield* sessions.getGoal(result.metadata.sessionId)
+      expect(goal?.text).toBe("Parent objective")
+    }),
+  )
+
+  it.instance("goal_mode fails when no explicit or active parent goal exists", () =>
+    Effect.gen(function* () {
+      const { chat, assistant } = yield* seed()
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+
+      const exit = yield* def
+        .execute(
+          {
+            description: "missing goal",
+            prompt: "Try goal mode",
+            subagent_type: "general",
+            goal_mode: true,
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps() },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
+        .pipe(Effect.exit)
+
+      expect(Exit.isFailure(exit)).toBe(true)
+      if (Exit.isFailure(exit)) {
+        expect(String(exit.cause)).toContain("goal_mode requires")
+      }
+    }),
+  )
+
+  it.instance("goal_mode resume preserves existing child goal unless explicit goal is supplied", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Existing child",
+        agent: "general",
+        metadata: { goal_mode: true },
+      })
+      yield* sessions.setGoal({ sessionID: child.id, text: "Existing child goal", status: "active" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const ctx = {
+        sessionID: chat.id,
+        messageID: assistant.id,
+        agent: "build",
+        abort: new AbortController().signal,
+        extra: { promptOps: stubOps() },
+        messages: [],
+        metadata: () => Effect.void,
+        ask: () => Effect.void,
+      }
+
+      yield* def.execute(
+        {
+          description: "resume goal",
+          prompt: "Continue",
+          subagent_type: "general",
+          task_id: child.id,
+          goal_mode: true,
+          goal: "Parent supplied goal",
+        },
+        ctx,
+      )
+      expect((yield* sessions.getGoal(child.id))?.text).toBe("Parent supplied goal")
+
+      yield* def.execute(
+        {
+          description: "resume goal",
+          prompt: "Continue",
+          subagent_type: "general",
+          task_id: child.id,
+          goal_mode: true,
+        },
+        ctx,
+      )
+      expect((yield* sessions.getGoal(child.id))?.text).toBe("Parent supplied goal")
+    }),
+  )
+
   it.instance(
     "execute shapes child permissions for task, todowrite, and primary tools",
     () =>

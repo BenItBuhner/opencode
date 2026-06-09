@@ -47,6 +47,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 
 const log = Log.create({ service: "session" })
 const runtime = makeRuntime(Database.Service, Database.defaultLayer)
+const GOAL_SUMMARY_LIMIT = 25
 
 const parentTitlePrefix = "New session - "
 const childTitlePrefix = "Child session - "
@@ -210,12 +211,24 @@ const Model = Schema.Struct({
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
 export const GoalStatus = Schema.Literals(["active", "paused", "completed"])
+export const GoalProgress = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100))
+export const GoalSummary = Schema.Struct({
+  id: Schema.String,
+  created: NonNegativeInt,
+  progress: GoalProgress,
+  summary: Schema.String,
+  headline: optionalOmitUndefined(Schema.String),
+  revision: optionalOmitUndefined(NonNegativeInt),
+})
+export type GoalSummary = Types.DeepMutable<Schema.Schema.Type<typeof GoalSummary>>
 export const Goal = Schema.Struct({
   text: Schema.String,
   status: GoalStatus,
   created: NonNegativeInt,
   updated: NonNegativeInt,
   completed: optionalOmitUndefined(NonNegativeInt),
+  progress: optionalOmitUndefined(GoalProgress),
+  summaries: optionalOmitUndefined(Schema.Array(GoalSummary)),
   revision: optionalOmitUndefined(NonNegativeInt),
 })
 export type Goal = Types.DeepMutable<Schema.Schema.Type<typeof Goal>>
@@ -225,11 +238,31 @@ export const GoalUpdateInput = Schema.Struct({
   status: Schema.optional(GoalStatus),
 })
 export type GoalUpdateInput = Types.DeepMutable<Schema.Schema.Type<typeof GoalUpdateInput>>
+export const GoalSummaryInput = Schema.Struct({
+  sessionID: SessionID,
+  progress: GoalProgress,
+  summary: Schema.String,
+  headline: Schema.optional(Schema.String),
+})
+export type GoalSummaryInput = Types.DeepMutable<Schema.Schema.Type<typeof GoalSummaryInput>>
 
 const decodeGoal = Schema.decodeUnknownOption(Goal)
 
 export function goalFromMetadata(metadata: typeof Metadata.Type | undefined): Goal | undefined {
-  return Option.getOrUndefined(decodeGoal(metadata?.goal))
+  const goal = Option.getOrUndefined(decodeGoal(metadata?.goal))
+  if (!goal) return undefined
+  return {
+    ...goal,
+    summaries: goal.summaries?.map((summary) => ({ ...summary })),
+  }
+}
+
+export function isGoalHarnessAgent(agentName: string | undefined) {
+  return agentName === "goal"
+}
+
+export function isGoalHarnessSession(input: { metadata?: typeof Metadata.Type }, agentName?: string) {
+  return isGoalHarnessAgent(agentName) || input.metadata?.goal_mode === true
 }
 
 export const Info = Schema.Struct({
@@ -501,6 +534,7 @@ export interface Interface {
   readonly getGoal: (sessionID: SessionID) => Effect.Effect<Goal | undefined, NotFound>
   readonly setGoal: (input: { sessionID: SessionID; text: string; status?: typeof GoalStatus.Type }) => Effect.Effect<Goal, NotFound>
   readonly updateGoal: (input: GoalUpdateInput) => Effect.Effect<Goal | undefined, NotFound>
+  readonly addGoalSummary: (input: GoalSummaryInput) => Effect.Effect<Goal | undefined, NotFound>
   readonly clearGoal: (sessionID: SessionID) => Effect.Effect<void, NotFound>
   readonly setPermission: (input: { sessionID: SessionID; permission: PermissionV1.Ruleset }) => Effect.Effect<void>
   readonly setRevert: (input: {
@@ -888,6 +922,33 @@ export const layer: Layer.Layer<
       return goal
     })
 
+    const addGoalSummary = Effect.fn("Session.addGoalSummary")(function* (input: GoalSummaryInput) {
+      const current = yield* get(input.sessionID)
+      const existing = goalFromMetadata(current.metadata)
+      if (!existing) return undefined
+
+      const now = Date.now()
+      const revision = (existing.revision ?? 0) + 1
+      const summary: GoalSummary = {
+        id: `${now}-${revision}`,
+        created: now,
+        progress: input.progress,
+        summary: input.summary.trim(),
+        headline: input.headline?.trim() || undefined,
+        revision,
+      }
+      const summaries = [...(existing.summaries ?? []), summary].slice(-GOAL_SUMMARY_LIMIT)
+      const goal: Goal = {
+        ...existing,
+        progress: input.progress,
+        summaries,
+        updated: now,
+        revision,
+      }
+      yield* writeGoalMetadata({ session: current, goal })
+      return goal
+    })
+
     const clearGoal = Effect.fn("Session.clearGoal")(function* (sessionID: SessionID) {
       const current = yield* get(sessionID)
       yield* writeGoalMetadata({ session: current })
@@ -1034,6 +1095,7 @@ export const layer: Layer.Layer<
       getGoal,
       setGoal,
       updateGoal,
+      addGoalSummary,
       clearGoal,
       setPermission,
       setRevert,

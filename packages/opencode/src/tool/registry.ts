@@ -1,5 +1,12 @@
 import { PlanExitTool } from "./plan"
-import { GoalCompleteTool, GoalPauseTool, GoalResumeTool, GoalSetTool, GoalStatusTool } from "./goal"
+import {
+  GoalCompleteTool,
+  GoalPauseTool,
+  GoalResumeTool,
+  GoalSetTool,
+  GoalStatusTool,
+  GoalSummarizeStateTool,
+} from "./goal"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool } from "./shell"
@@ -129,6 +136,7 @@ export const layer: Layer.Layer<
     const goalResume = yield* GoalResumeTool
     const goalComplete = yield* GoalCompleteTool
     const goalStatus = yield* GoalStatusTool
+    const goalSummarizeState = yield* GoalSummarizeStateTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -250,6 +258,7 @@ export const layer: Layer.Layer<
           goalResume: Tool.init(goalResume),
           goalComplete: Tool.init(goalComplete),
           goalStatus: Tool.init(goalStatus),
+          goalSummarizeState: Tool.init(goalSummarizeState),
         })
 
         return {
@@ -274,6 +283,7 @@ export const layer: Layer.Layer<
             tool.goalResume,
             tool.goalComplete,
             tool.goalStatus,
+            tool.goalSummarizeState,
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
           ],

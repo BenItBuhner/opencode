@@ -107,7 +107,9 @@ it.instance("goal agent is primary and owns goal lifecycle tools", () =>
     expect(evalPerm(goal, "goal_resume")).toBe("allow")
     expect(evalPerm(goal, "goal_complete")).toBe("allow")
     expect(evalPerm(goal, "goal_status")).toBe("allow")
+    expect(evalPerm(goal, "goal_summarize_state")).toBe("allow")
     expect(evalPerm(build, "goal_set")).toBe("deny")
+    expect(evalPerm(build, "goal_summarize_state")).toBe("deny")
   }),
 )
 

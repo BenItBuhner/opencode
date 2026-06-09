@@ -118,6 +118,7 @@ export const layer = Layer.effect(
           goal_resume: "deny",
           goal_complete: "deny",
           goal_status: "deny",
+          goal_summarize_state: "deny",
           plan_enter: "deny",
           plan_exit: "deny",
           // mirrors github.com/github/gitignore Node.gitignore pattern for .env files
@@ -185,6 +186,7 @@ export const layer = Layer.effect(
                 goal_resume: "allow",
                 goal_complete: "allow",
                 goal_status: "allow",
+                goal_summarize_state: "allow",
               }),
               user,
             ),

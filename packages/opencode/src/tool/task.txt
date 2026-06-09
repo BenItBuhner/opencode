@@ -17,3 +17,5 @@ Usage notes:
 5. The agent's outputs should generally be trusted
 6. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
 7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.
+8. Set goal_mode=true when the subagent must autonomously keep working toward a durable, scoped objective until it completes, pauses, or blocks. Provide goal with the child-specific objective; if omitted, the active parent session goal is inherited.
+9. Goal-mode subagents receive the same goal harness tools and should use goal_summarize_state periodically, goal_pause when blocked or cooling down, and goal_complete when finished. Do not use goal_mode for one-shot research or simple lookup tasks.
