@@ -1168,7 +1168,8 @@ export const layer = Layer.effect(
       const goal = yield* sessions.getGoal(input.sessionID).pipe(Effect.orDie)
       if (goal?.status !== "active") return
       yield* sessions.updateGoal({ sessionID: input.sessionID, status: "paused" }).pipe(Effect.orDie)
-      yield* elog.with({ sessionID: input.sessionID }).warn("paused active goal after response error", {
+      yield* Effect.logWarning("paused active goal after response error", {
+        "session.id": input.sessionID,
         messageID: input.messageID,
         reason: input.reason,
       })
@@ -1442,7 +1443,10 @@ export const layer = Layer.effect(
                 ? yield* sessions.getGoal(sessionID).pipe(Effect.orDie)
                 : undefined
               if (activeGoal?.status === "active" && !isLastStep && !handle.message.error) {
-                yield* slog.info("continuing active goal after model stop", { messageID: handle.message.id })
+                yield* Effect.logInfo("continuing active goal after model stop", {
+                  "session.id": sessionID,
+                  messageID: handle.message.id,
+                })
                 return "continue" as const
               }
               return "break" as const

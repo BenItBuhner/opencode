@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { createMemo, createSignal, For, onMount, Show } from "solid-js"
-import { Locale } from "@/util/locale"
+import { Locale } from "../util/locale"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
 
