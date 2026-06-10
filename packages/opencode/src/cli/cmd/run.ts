@@ -797,10 +797,15 @@ export const RunCommand = effectCmd({
 
           const controller = new AbortController()
           const events = await client.event.subscribe(undefined, { signal: controller.signal })
-          loop(client, events).catch((e) => {
+          const completed = loop(client, events).catch((e) => {
             console.error(e)
-            process.exit(1)
+            process.exitCode = 1
           })
+          async function finish() {
+            if (args.attach) return
+            const error = await completed
+            if (error) process.exitCode = 1
+          }
 
           const model = pick(args.model)
           const result = await client.session.prompt({
@@ -813,7 +818,9 @@ export const RunCommand = effectCmd({
           if (result.error) {
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
+            return
           }
+          await finish()
           return
         }
 
