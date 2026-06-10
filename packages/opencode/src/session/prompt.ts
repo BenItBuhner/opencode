@@ -1679,6 +1679,7 @@ export const layer = Layer.effect(
 
       if (action === "complete" || action === "done") {
         const goal = yield* sessions.updateGoal({ sessionID: input.sessionID, status: "completed" }).pipe(Effect.orDie)
+        if (goal) yield* sessions.clearGoal(input.sessionID).pipe(Effect.orDie)
         return yield* goalCommandResponse({
           sessionID: input.sessionID,
           messageID: input.messageID,

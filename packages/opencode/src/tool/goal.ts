@@ -164,7 +164,7 @@ export const GoalCompleteTool = Tool.define<typeof EmptyParameters, Metadata, Se
     const session = yield* Session.Service
 
     return {
-      description: "Mark the current session goal as completed.",
+      description: "Mark the current session goal as completed and clear it from the session.",
       parameters: EmptyParameters,
       execute: (_params: Schema.Schema.Type<typeof EmptyParameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
@@ -176,6 +176,7 @@ export const GoalCompleteTool = Tool.define<typeof EmptyParameters, Metadata, Se
           })
 
           const goal = yield* session.updateGoal({ sessionID: ctx.sessionID, status: "completed" }).pipe(Effect.orDie)
+          if (goal) yield* session.clearGoal(ctx.sessionID).pipe(Effect.orDie)
           return {
             title: goal ? "Goal completed" : "No goal",
             output: formatGoal(goal),

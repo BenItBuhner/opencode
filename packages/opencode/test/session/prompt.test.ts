@@ -560,7 +560,19 @@ it.instance("goal loop continues after progress response until goal is completed
     expect(yield* llm.calls).toBe(3)
     expect(result.info.role).toBe("assistant")
     expect(result.parts.some((part) => part.type === "text" && part.text === "Goal complete.")).toBe(true)
-    expect((yield* sessions.getGoal(chat.id))?.status).toBe("completed")
+    expect(yield* sessions.getGoal(chat.id)).toBeUndefined()
+
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "goal",
+      model: ref,
+      noReply: true,
+      parts: [{ type: "text", text: "Start the next goal workflow" }],
+    })
+    expect(yield* sessions.getGoal(chat.id)).toMatchObject({
+      text: "Start the next goal workflow",
+      status: "active",
+    })
   }),
 )
 
@@ -595,7 +607,7 @@ it.instance("goal loop pauses the active goal after a provider response error", 
   }),
 )
 
-it.instance("goal loop persists structured state summaries", () =>
+it.instance("goal loop records structured state summaries before clearing completed goals", () =>
   Effect.gen(function* () {
     const { llm } = yield* useServerConfig(providerCfg)
 
@@ -631,12 +643,20 @@ it.instance("goal loop persists structured state summaries", () =>
     yield* llm.tool("goal_complete", {})
     yield* llm.text("Goal complete.")
 
-    yield* prompt.loop({ sessionID: chat.id })
+    const result = yield* prompt.loop({ sessionID: chat.id })
+    const summaryTool = result.parts.find((part) => part.type === "tool" && part.tool === "goal_summarize_state")
+    expect(summaryTool?.type).toBe("tool")
+    if (summaryTool?.type === "tool") {
+      expect(summaryTool.state.status).toBe("completed")
+      if (summaryTool.state.status === "completed") {
+        expect(summaryTool.state.metadata.summary).toMatchObject({
+          progress: 40,
+          headline: "Workflow started",
+        })
+      }
+    }
     const goal = yield* sessions.getGoal(chat.id)
-    expect(goal?.progress).toBe(40)
-    expect(goal?.summaries).toHaveLength(1)
-    expect(goal?.summaries?.[0]?.headline).toBe("Workflow started")
-    expect(goal?.status).toBe("completed")
+    expect(goal).toBeUndefined()
   }),
 )
 
@@ -665,7 +685,7 @@ it.instance("goal summary tool rejects invalid summary format", () =>
 
     yield* prompt.loop({ sessionID: chat.id })
     const goal = yield* sessions.getGoal(chat.id)
-    expect(goal?.summaries).toBeUndefined()
+    expect(goal).toBeUndefined()
 
     const messages = yield* MessageV2.filterCompactedEffect(chat.id)
     const summaryTool = messages
@@ -739,7 +759,7 @@ it.instance("goal-mode subagent sessions continue after progress until completed
     const result = yield* prompt.loop({ sessionID: chat.id })
     expect(yield* llm.calls).toBe(3)
     expect(result.info.role).toBe("assistant")
-    expect((yield* sessions.getGoal(chat.id))?.status).toBe("completed")
+    expect(yield* sessions.getGoal(chat.id)).toBeUndefined()
   }),
 )
 
@@ -771,6 +791,28 @@ it.instance("goal-mode subagent sessions pause after provider response errors", 
 
     yield* prompt.loop({ sessionID: chat.id })
     expect((yield* sessions.getGoal(chat.id))?.status).toBe("paused")
+  }),
+)
+
+it.instance("/goal complete clears the persisted session goal", () =>
+  Effect.gen(function* () {
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({ title: "Pinned" })
+    yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the command goal", status: "active" })
+
+    const result = yield* prompt.command({
+      sessionID: chat.id,
+      command: "goal",
+      arguments: "complete",
+      agent: "goal",
+      model: `${ref.providerID}/${ref.modelID}`,
+    })
+
+    expect(result.parts.some((part) => part.type === "text" && part.text.includes("Completed session goal"))).toBe(
+      true,
+    )
+    expect(yield* sessions.getGoal(chat.id)).toBeUndefined()
   }),
 )
 
