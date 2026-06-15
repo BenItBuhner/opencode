@@ -4,6 +4,7 @@ import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { PermissionV2 } from "../permission"
 import { QuestionV2 } from "../question"
+import { PositiveInt } from "../schema"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
 
@@ -18,10 +19,16 @@ export const description = `Use this tool when you need to ask the user question
 Usage notes:
 - When \`custom\` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set \`multiple: true\` to allow selecting more than one
+- You can specify an optional \`timeout\` in seconds. If not specified, questions time out after 300 seconds. If the user does not answer in time, the answer is returned as "User failed to answer in time (Ns)" so you can continue without blocking.
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label`
 
 export const Input = Schema.Struct({
   questions: Schema.Array(QuestionV2.Prompt).annotate({ description: "Questions to ask" }),
+  timeout: PositiveInt.check(Schema.isLessThanOrEqualTo(QuestionV2.MAX_TIMEOUT_SECONDS))
+    .pipe(Schema.optional)
+    .annotate({
+      description: `Optional timeout in seconds. Defaults to ${QuestionV2.DEFAULT_TIMEOUT_SECONDS} and may not exceed ${QuestionV2.MAX_TIMEOUT_SECONDS}.`,
+    }),
 })
 
 export const Output = Schema.Struct({
@@ -33,6 +40,10 @@ export const toModelOutput = (
   questions: ReadonlyArray<QuestionV2.Prompt>,
   answers: ReadonlyArray<QuestionV2.Answer>,
 ) => {
+  const timedOut = answers.every((answer) => answer.length === 1 && answer[0]?.startsWith("User failed to answer in time"))
+  if (timedOut) {
+    return `${answers[0]?.[0] ?? "User failed to answer in time"}. You can now continue without the user's answer.`
+  }
   const formatted = questions
     .map(
       (question, index) =>
@@ -74,6 +85,7 @@ export const layer = Layer.effectDiscard(
                       sessionID: context.sessionID,
                       questions: input.questions,
                       tool: { messageID: context.assistantMessageID, callID: context.toolCallID },
+                      timeout: input.timeout,
                     })
                     .pipe(Effect.orDie),
                 ),

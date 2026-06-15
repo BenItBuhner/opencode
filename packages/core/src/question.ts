@@ -1,6 +1,6 @@
 export * as QuestionV2 from "./question"
 
-import { Context, Deferred, Effect, Layer, Schema } from "effect"
+import { Context, Deferred, Duration, Effect, Layer, Schema } from "effect"
 import { EventV2 } from "./event"
 import { Identifier } from "./id/id"
 import { withStatics } from "./schema"
@@ -47,6 +47,7 @@ export const Request = Schema.Struct({
   sessionID: SessionSchema.ID,
   questions: Schema.Array(Info).annotate({ description: "Questions to ask" }),
   tool: Tool.pipe(Schema.optional),
+  timeout: Schema.Number.pipe(Schema.optional).annotate({ description: "Timeout in seconds" }),
 }).annotate({ identifier: "QuestionV2.Request" })
 export type Request = typeof Request.Type
 
@@ -79,6 +80,13 @@ export const Event = {
   }),
 }
 
+export const DEFAULT_TIMEOUT_SECONDS = 5 * 60
+export const MAX_TIMEOUT_SECONDS = 10 * 60
+
+export function timeoutMessage(timeout: number) {
+  return `User failed to answer in time (${timeout}s)`
+}
+
 export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("QuestionV2.RejectedError", {}) {
   override get message() {
     return "The user dismissed this question"
@@ -93,6 +101,7 @@ export interface AskInput {
   readonly sessionID: SessionSchema.ID
   readonly questions: ReadonlyArray<Info>
   readonly tool?: Tool
+  readonly timeout?: number
 }
 
 export interface ReplyInput {
@@ -141,11 +150,29 @@ export const layer = Layer.effect(
       Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
           const id = ID.ascending()
+          const timeout = Math.min(MAX_TIMEOUT_SECONDS, Math.max(1, Math.round(input.timeout ?? DEFAULT_TIMEOUT_SECONDS)))
           const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
           const request: Request = { id, ...input }
           pending.set(id, { request, deferred })
           return yield* events.publish(Event.Asked, request).pipe(
-            Effect.andThen(restore(Deferred.await(deferred))),
+            Effect.andThen(
+              restore(Deferred.await(deferred)).pipe(
+                Effect.timeoutOrElse({
+                  duration: Duration.seconds(timeout),
+                  orElse: () =>
+                    Effect.gen(function* () {
+                      const answers = input.questions.map(() => [timeoutMessage(timeout)])
+                      yield* events.publish(Event.Replied, {
+                        sessionID: request.sessionID,
+                        requestID: request.id,
+                        answers,
+                      })
+                      yield* Deferred.succeed(deferred, answers)
+                      return answers
+                    }),
+                }),
+              ),
+            ),
             Effect.ensuring(
               Effect.sync(() => {
                 pending.delete(id)

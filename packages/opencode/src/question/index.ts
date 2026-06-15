@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Deferred, Effect, Layer, Schema, Context } from "effect"
+import { Deferred, Duration, Effect, Layer, Schema, Context } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { SessionID, MessageID } from "@/session/schema"
 import { QuestionID } from "./schema"
@@ -60,6 +60,9 @@ export const Request = Schema.Struct({
     description: "Questions to ask",
   }),
   tool: Schema.optional(Tool),
+  timeout: Schema.optional(Schema.Number).annotate({
+    description: "Timeout in seconds",
+  }),
 }).annotate({ identifier: "QuestionRequest" })
 export type Request = Schema.Schema.Type<typeof Request>
 
@@ -90,6 +93,13 @@ export const Event = {
   Rejected: EventV2.define({ type: "question.rejected", schema: Rejected.fields }),
 }
 
+export const DEFAULT_TIMEOUT_SECONDS = 5 * 60
+export const MAX_TIMEOUT_SECONDS = 10 * 60
+
+export function timeoutMessage(timeout: number) {
+  return `User failed to answer in time (${timeout}s)`
+}
+
 export class RejectedError extends Schema.TaggedErrorClass<RejectedError>()("QuestionRejectedError", {}) {
   override get message() {
     return "The user dismissed this question"
@@ -116,6 +126,7 @@ export interface Interface {
     sessionID: SessionID
     questions: ReadonlyArray<Info>
     tool?: Tool
+    timeout?: number
   }) => Effect.Effect<ReadonlyArray<Answer>, RejectedError>
   readonly reply: (input: {
     requestID: QuestionID
@@ -154,10 +165,12 @@ export const layer = Layer.effect(
       sessionID: SessionID
       questions: ReadonlyArray<Info>
       tool?: Tool
+      timeout?: number
     }) {
       const pending = (yield* InstanceState.get(state)).pending
       const id = QuestionID.ascending()
-      yield* Effect.logInfo("asking", { id, questions: input.questions.length })
+      const timeout = Math.min(MAX_TIMEOUT_SECONDS, Math.max(1, Math.round(input.timeout ?? DEFAULT_TIMEOUT_SECONDS)))
+      yield* Effect.logInfo("asking", { id, questions: input.questions.length, timeout })
 
       const deferred = yield* Deferred.make<ReadonlyArray<Answer>, RejectedError>()
       const info: Request = {
@@ -165,15 +178,31 @@ export const layer = Layer.effect(
         sessionID: input.sessionID,
         questions: input.questions,
         tool: input.tool,
+        timeout,
       }
       pending.set(id, { info, deferred })
       yield* events.publish(Event.Asked, info)
 
-      return yield* Effect.ensuring(
-        Deferred.await(deferred),
-        Effect.sync(() => {
-          pending.delete(id)
+      return yield* Deferred.await(deferred).pipe(
+        Effect.timeoutOrElse({
+          duration: Duration.seconds(timeout),
+          orElse: () =>
+            Effect.gen(function* () {
+              const answers = input.questions.map(() => [timeoutMessage(timeout)])
+              yield* events.publish(Event.Replied, {
+                sessionID: info.sessionID,
+                requestID: info.id,
+                answers,
+              })
+              yield* Deferred.succeed(deferred, answers)
+              return answers
+            }),
         }),
+        Effect.ensuring(
+          Effect.sync(() => {
+            pending.delete(id)
+          }),
+        ),
       )
     })
 

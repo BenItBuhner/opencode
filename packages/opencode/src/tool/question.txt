@@ -7,4 +7,5 @@ Use this tool when you need to ask the user questions during execution. This all
 Usage notes:
 - When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
+- You can specify an optional `timeout` in seconds. If not specified, questions time out after 300 seconds. If the user does not answer in time, the answer is returned as "User failed to answer in time (Ns)" so you can continue without blocking.
 - If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label

@@ -25,6 +25,7 @@ const askEffect = Effect.fn("QuestionTest.ask")(function* (input: {
   sessionID: SessionID
   questions: ReadonlyArray<Question.Info>
   tool?: Question.Tool
+  timeout?: number
 }) {
   const question = yield* Question.Service
   return yield* question.ask(input)
@@ -156,6 +157,34 @@ it.instance(
       })
 
       expect(yield* Fiber.join(fiber)).toEqual([["Option 1"]])
+    }),
+  { git: true },
+)
+
+it.instance(
+  "ask - times out with a synthetic answer",
+  () =>
+    Effect.gen(function* () {
+      const fiber = yield* askEffect({
+        sessionID: SessionID.make("ses_test"),
+        timeout: 1,
+        questions: [
+          {
+            question: "What would you like to do?",
+            header: "Action",
+            options: [
+              { label: "Option 1", description: "First option" },
+              { label: "Option 2", description: "Second option" },
+            ],
+          },
+        ],
+      }).pipe(Effect.forkScoped)
+
+      const pending = yield* waitForPending(1)
+      expect(pending[0].timeout).toBe(1)
+
+      expect(yield* Fiber.join(fiber)).toEqual([[Question.timeoutMessage(1)]])
+      expect(yield* listEffect).toHaveLength(0)
     }),
   { git: true },
 )
