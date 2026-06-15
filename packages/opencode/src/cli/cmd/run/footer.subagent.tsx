@@ -1,8 +1,7 @@
 /** @jsxImportSource @opentui/solid */
 import type { ScrollBoxRenderable } from "@opentui/core"
 import { useKeyboard } from "@opentui/solid"
-import "opentui-spinner/solid"
-import { Show, createMemo, indexArray } from "solid-js"
+import { Show, createMemo, createSignal, indexArray, onCleanup, onMount } from "solid-js"
 import { SPINNER_FRAMES } from "@opencode-ai/tui/component/spinner"
 import { RunEntryContent, separatorRows } from "./scrollback.writer"
 import type { FooterSubagentDetail, FooterSubagentTab, RunDiffStyle } from "./types"
@@ -87,6 +86,11 @@ export function RunFooterSubagentBody(props: {
       <RunEntryContent commit={commit()} theme={theme()} opts={opts()} width={props.width()} />
     </box>
   ))
+  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
+  onMount(() => {
+    const interval = setInterval(() => setSpinnerFrame((value) => value + 1), 80)
+    onCleanup(() => clearInterval(interval))
+  })
   let scroll: ScrollBoxRenderable | undefined
 
   useKeyboard((event) => {
@@ -126,7 +130,9 @@ export function RunFooterSubagentBody(props: {
             <box width="100%" flexDirection="row" gap={1} paddingBottom={1} flexShrink={0}>
               {current().status === "running" ? (
                 <box flexShrink={0}>
-                  <spinner frames={SPINNER_FRAMES} interval={80} color={statusColor(footer(), current().status)} />
+                  <text fg={statusColor(footer(), current().status)}>
+                    {SPINNER_FRAMES[spinnerFrame() % SPINNER_FRAMES.length]}
+                  </text>
                 </box>
               ) : (
                 <text fg={statusColor(footer(), current().status)} wrapMode="none" truncate flexShrink={0}>
