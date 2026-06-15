@@ -1,7 +1,9 @@
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/theme"
 import { useDialog, type DialogContext } from "./dialog"
 import { useBindings } from "../keymap"
+import { getScrollAcceleration } from "../util/scroll"
 
 export type DialogAlertProps = {
   title: string
@@ -12,6 +14,9 @@ export type DialogAlertProps = {
 export function DialogAlert(props: DialogAlertProps) {
   const dialog = useDialog()
   const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
+  const scrollAcceleration = getScrollAcceleration()
+  const bodyHeight = () => Math.max(3, dimensions().height - 12)
 
   useBindings(() => ({
     bindings: [
@@ -36,9 +41,14 @@ export function DialogAlert(props: DialogAlertProps) {
           esc
         </text>
       </box>
-      <box paddingBottom={1}>
+      <scrollbox
+        paddingBottom={1}
+        maxHeight={bodyHeight()}
+        scrollbarOptions={{ visible: true }}
+        scrollAcceleration={scrollAcceleration}
+      >
         <text fg={theme.textMuted}>{props.message}</text>
-      </box>
+      </scrollbox>
       <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
         <box
           paddingLeft={3}

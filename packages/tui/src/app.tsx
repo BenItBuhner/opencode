@@ -542,6 +542,16 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
     if (workspace?.type !== "worktree" || !workspace.directory) return
     return workspace
   })
+  const activeSession = createMemo(() => {
+    if (route.data.type !== "session") return
+    return sync.session.get(route.data.sessionID)
+  })
+  const outOfWorkspaceAlwaysAllowed = createMemo(() => {
+    const rule = activeSession()?.permission?.findLast(
+      (item) => item.permission === "external_directory" && item.pattern === "*",
+    )
+    return rule?.action === "allow"
+  })
   const appCommands = createMemo(() =>
     [
       {
@@ -575,6 +585,70 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
           route.navigate({
             type: "home",
           })
+          dialog.clear()
+        },
+      },
+      {
+        name: "session.permission.external_directory.toggle",
+        title: "Toggle always allow out-of-workspace access",
+        desc: outOfWorkspaceAlwaysAllowed()
+          ? "Currently always allowed for this session"
+          : "Currently asks before out-of-workspace access",
+        category: "Permissions",
+        run: async () => {
+          if (route.data.type !== "session") {
+            toast.show({
+              variant: "warning",
+              message: "Open or start a session before changing out-of-workspace permissions",
+              duration: 4000,
+            })
+            dialog.clear()
+            return
+          }
+          const sessionID = route.data.sessionID
+          const allow = !outOfWorkspaceAlwaysAllowed()
+          await sdk.client.session
+            .update({
+              sessionID,
+              permission: [
+                {
+                  permission: "external_directory",
+                  pattern: "*",
+                  action: allow ? "allow" : "ask",
+                },
+              ],
+            })
+            .then(async () => {
+              if (allow) {
+                const pending = await sdk.client.permission.list().then((result) => result.data ?? [])
+                await Promise.all(
+                  pending
+                    .filter((item) => item.sessionID === sessionID && item.permission === "external_directory")
+                    .map((item) =>
+                      sdk.client.permission
+                        .reply({
+                          requestID: item.id,
+                          reply: "always",
+                        })
+                        .catch(() => undefined),
+                    ),
+                )
+              }
+              toast.show({
+                variant: "success",
+                message: allow
+                  ? "Always allowing out-of-workspace access for this session"
+                  : "Out-of-workspace access will ask for permission",
+                duration: 3000,
+              })
+            })
+            .catch((error) => {
+              toast.show({
+                variant: "error",
+                message: error instanceof Error ? error.message : "Failed to update out-of-workspace permission",
+                duration: 4000,
+              })
+            })
           dialog.clear()
         },
       },

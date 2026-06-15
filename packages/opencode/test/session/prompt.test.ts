@@ -636,8 +636,11 @@ it.instance("goal loop records structured state summaries before clearing comple
     yield* llm.tool("goal_complete", {})
     yield* llm.text("Goal complete.")
 
-    const result = yield* prompt.loop({ sessionID: chat.id })
-    const summaryTool = result.parts.find((part) => part.type === "tool" && part.tool === "goal_summarize_state")
+    yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* MessageV2.filterCompactedEffect(chat.id)
+    const summaryTool = messages
+      .flatMap((message) => message.parts)
+      .find((part) => part.type === "tool" && part.tool === "goal_summarize_state")
     expect(summaryTool?.type).toBe("tool")
     if (summaryTool?.type === "tool") {
       expect(summaryTool.state.status).toBe("completed")

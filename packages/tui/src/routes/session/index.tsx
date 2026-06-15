@@ -29,6 +29,7 @@ import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, 
 import { Prompt, type PromptRef } from "../../component/prompt"
 import type {
   AssistantMessage,
+  CompactionPart,
   Part,
   Provider,
   ToolPart,
@@ -1314,6 +1315,7 @@ export function Session() {
                         toBottom()
                       }}
                       sessionID={route.sessionID}
+                      hideContextUsage={sidebarVisible()}
                       right={<pluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
                     />
                   </pluginRuntime.Slot>
@@ -1386,7 +1388,7 @@ function UserMessage(props: {
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
-  const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
+  const compaction = createMemo(() => props.parts.find((x): x is CompactionPart => x.type === "compaction"))
 
   return (
     <>
@@ -1455,7 +1457,7 @@ function UserMessage(props: {
         <box
           marginTop={1}
           border={["top"]}
-          title=" Compaction "
+          title={compaction()!.auto ? " Auto Compaction " : " Compaction "}
           titleAlignment="center"
           borderColor={theme.borderActive}
         />
@@ -1487,7 +1489,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
   const childShortcut = useCommandShortcut("session.child.first")
   const backgroundShortcut = useCommandShortcut("session.background")
 
-  if (props.message.summary) return <CompactionSummary parts={props.parts} />
+  if (props.message.summary) return <CompactionSummary message={props.message} parts={props.parts} />
 
   return (
     <>
@@ -1578,8 +1580,10 @@ const PART_MAPPING = {
   reasoning: ReasoningPart,
 }
 
-function CompactionSummary(props: { parts: Part[] }) {
+function CompactionSummary(props: { message: AssistantMessage; parts: Part[] }) {
   const ctx = use()
+  const sync = useSync()
+  const renderer = useRenderer()
   const { theme, syntax } = useTheme()
   const [expanded, setExpanded] = createSignal(false)
   const summary = createMemo(() =>
@@ -1589,35 +1593,84 @@ function CompactionSummary(props: { parts: Part[] }) {
       .filter(Boolean)
       .join("\n\n"),
   )
+  const done = createMemo(() => props.message.time.completed !== undefined)
+  const failed = createMemo(() => props.message.error && props.message.error.name !== "MessageAbortedError")
+  // Turns summarized vs kept: everything before the compaction trigger gets
+  // summarized except the tail (tail_start_id onwards), which stays verbatim.
+  const stats = createMemo(() => {
+    const parentID = props.message.parentID
+    if (!parentID) return undefined
+    const tail = (sync.data.part[parentID] ?? []).find((part) => part.type === "compaction")?.tail_start_id
+    let summarized = 0
+    let kept = 0
+    for (const message of sync.data.message[props.message.sessionID] ?? []) {
+      if (message.role !== "user") continue
+      if (message.id >= parentID) break
+      const parts = sync.data.part[message.id] ?? []
+      if (parts.some((part) => part.type === "compaction")) continue
+      const texts = parts.filter((part) => part.type === "text")
+      if (texts.length && texts.every((part) => part.synthetic)) continue
+      if (tail && message.id >= tail) kept++
+      else summarized++
+    }
+    return { summarized, kept }
+  })
+  const tokens = createMemo(() => {
+    const usage = props.message.tokens
+    if (!usage) return 0
+    return usage.input + usage.cache.read
+  })
+  const toggle = () => {
+    if (renderer.getSelection()?.getSelectedText()) return
+    setExpanded((value) => !value)
+  }
 
   return (
-    <box
-      marginTop={1}
-      border={["top"]}
-      title=" Compaction "
-      titleAlignment="center"
-      borderColor={theme.borderActive}
-      flexShrink={0}
-    >
-      <box paddingLeft={3} paddingTop={1} gap={1}>
-        <box onMouseUp={() => setExpanded((value) => !value)}>
-          <text fg={theme.textMuted}>{expanded() ? "- " : "+ "}Compacted context summary</text>
+    <box paddingLeft={3} marginTop={1} gap={1} flexShrink={0} onMouseUp={toggle}>
+      <Show
+        when={done() || failed()}
+        fallback={
+          <Spinner color={theme.textMuted}>{(expanded() ? "- " : "+ ") + "Compacting context…"}</Spinner>
+        }
+      >
+        <text fg={theme.textMuted}>
+          {expanded() ? "- " : "+ "}Compacted context summary
+          <Show when={stats()}>
+            <span>
+              {" · "}
+              {stats()!.summarized} {stats()!.summarized === 1 ? "turn" : "turns"} summarized
+            </span>
+            <Show when={stats()!.kept > 0}>
+              <span>
+                {" · "}last {stats()!.kept} kept verbatim
+              </span>
+            </Show>
+          </Show>
+          <Show when={done() && tokens() > 0}>
+            <span>
+              {" · "}
+              {Locale.number(tokens())} tokens compacted
+            </span>
+          </Show>
+        </text>
+      </Show>
+      <Show when={failed()}>
+        <text fg={theme.error}>Compaction failed: {props.message.error?.data.message}</text>
+      </Show>
+      <Show when={expanded() && summary()}>
+        <box>
+          <markdown
+            syntaxStyle={syntax()}
+            streaming={!done()}
+            internalBlockMode="top-level"
+            content={summary()}
+            tableOptions={{ style: "grid" }}
+            conceal={ctx.conceal()}
+            fg={theme.markdownText}
+            bg={theme.background}
+          />
         </box>
-        <Show when={expanded() && summary()}>
-          <box>
-            <markdown
-              syntaxStyle={syntax()}
-              streaming={false}
-              internalBlockMode="top-level"
-              content={summary()}
-              tableOptions={{ style: "grid" }}
-              conceal={ctx.conceal()}
-              fg={theme.markdownText}
-              bg={theme.background}
-            />
-          </box>
-        </Show>
-      </box>
+      </Show>
     </box>
   )
 }

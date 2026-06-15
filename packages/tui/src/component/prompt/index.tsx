@@ -35,7 +35,7 @@ import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
-import { DialogGoalSummaries, type GoalSummaryView } from "../dialog-goal-summaries"
+import { DialogGoalSummaries, type GoalSummariesView, type GoalSummaryView } from "../dialog-goal-summaries"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
@@ -66,6 +66,7 @@ export type PromptProps = {
   ref?: (ref: PromptRef | undefined) => void
   hint?: JSX.Element
   right?: JSX.Element
+  hideContextUsage?: boolean
   showPlaceholder?: boolean
   placeholders?: {
     normal?: string[]
@@ -101,10 +102,19 @@ const money = new Intl.NumberFormat("en-US", {
 
 const DRAFT_RETENTION_MIN_CHARS = 20
 
+type FooterGoalView = GoalSummariesView & {
+  status: string
+  created?: number
+}
+
 function compactProgressBar(progress: number) {
   const value = Math.max(0, Math.min(100, Math.round(progress)))
-  const filled = Math.round(value / 25)
-  return `${"#".repeat(filled)}${"-".repeat(4 - filled)}`
+  const segments = 12
+  const filled = Math.round((value / 100) * segments)
+  return {
+    filled: "━".repeat(filled),
+    empty: "─".repeat(segments - filled),
+  }
 }
 
 function randomIndex(count: number) {
@@ -165,7 +175,7 @@ export function Prompt(props: PromptProps) {
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const renderer = useRenderer()
-  const sessionGoal = createMemo(() => {
+  const sessionGoal = createMemo((): FooterGoalView | undefined => {
     const sessionID = props.sessionID
     if (!sessionID) return undefined
     const goal = sync.session.get(sessionID)?.metadata?.goal
@@ -197,19 +207,50 @@ export function Prompt(props: PromptProps) {
       summaries,
     }
   })
+  const latestUserMessage = createMemo(() => {
+    const sessionID = props.sessionID
+    if (!sessionID) return undefined
+    return (sync.data.message[sessionID] ?? []).findLast((message): message is UserMessage => message.role === "user")
+  })
+  const [retainedGoal, setRetainedGoal] = createSignal<FooterGoalView>()
+  createEffect(
+    on(
+      () => props.sessionID,
+      () => setRetainedGoal(undefined),
+    ),
+  )
+  createEffect(
+    on(
+      () => sessionGoal(),
+      (goal) => {
+        if (goal) setRetainedGoal(goal)
+      },
+    ),
+  )
+  createEffect(
+    on(
+      () => latestUserMessage()?.id,
+      () => {
+        if (sessionGoal()) return
+        const latest = latestUserMessage()
+        if (latest && latest.agent !== "goal") setRetainedGoal(undefined)
+      },
+    ),
+  )
+  const displayGoal = createMemo(() => sessionGoal() ?? retainedGoal())
   const [goalNow, setGoalNow] = createSignal(Date.now())
   onMount(() => {
     const timer = setInterval(() => setGoalNow(Date.now()), 1000)
     onCleanup(() => clearInterval(timer))
   })
   const goalElapsed = createMemo(() => {
-    const goal = sessionGoal()
+    const goal = displayGoal()
     if (!goal || goal.status !== "active" || goal.created === undefined) return
     return formatDuration(Math.floor((goalNow() - goal.created) / 1000)) || "0s"
   })
   const openGoalDetails = () => {
     if (renderer.getSelection()?.getSelectedText()) return
-    const goal = sessionGoal()
+    const goal = displayGoal()
     if (!goal) return
     const elapsed = goalElapsed()
     void DialogAlert.show(
@@ -227,7 +268,7 @@ export function Prompt(props: PromptProps) {
   }
   const openGoalSummaries = () => {
     if (renderer.getSelection()?.getSelectedText()) return
-    const goal = sessionGoal()
+    const goal = displayGoal()
     if (!goal) return
     dialog.replace(() => <DialogGoalSummaries goal={goal} />)
   }
@@ -343,9 +384,12 @@ export function Prompt(props: PromptProps) {
     const model = sync.data.provider.find((item) => item.id === last.providerID)?.models[last.modelID]
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     const cost = session?.cost ?? 0
+    const context = props.hideContextUsage ? undefined : pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens)
+    const formattedCost = cost > 0 ? money.format(cost) : undefined
+    if (!context && !formattedCost) return
     return {
-      context: pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens),
-      cost: cost > 0 ? money.format(cost) : undefined,
+      context,
+      cost: formattedCost,
     }
   })
 
@@ -1718,17 +1762,25 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={sessionGoal()}>
+              <Show when={displayGoal()}>
                 {(goal) => (
                   <box flexDirection="row" gap={1}>
                     <text fg={theme.accent} onMouseUp={openGoalDetails}>
                       goal
                     </text>
                     <Show when={goal().progress !== undefined}>
-                      <box flexDirection="row" gap={1} onMouseUp={openGoalSummaries}>
-                        <text fg={theme.accent}>{goal().progress}%</text>
-                        <text fg={theme.textMuted}>{compactProgressBar(goal().progress ?? 0)}</text>
-                      </box>
+                      {(() => {
+                        const progressBar = createMemo(() => compactProgressBar(goal().progress ?? 0))
+                        return (
+                          <box flexDirection="row" gap={1} onMouseUp={openGoalSummaries}>
+                            <text fg={theme.accent}>{goal().progress}%</text>
+                            <text wrapMode="none">
+                              <span style={{ fg: theme.accent }}>{progressBar().filled}</span>
+                              <span style={{ fg: theme.textMuted }}>{progressBar().empty}</span>
+                            </text>
+                          </box>
+                        )
+                      })()}
                     </Show>
                     <Show when={goalElapsed()}>{(elapsed) => <text fg={theme.textMuted}>{elapsed()}</text>}</Show>
                   </box>

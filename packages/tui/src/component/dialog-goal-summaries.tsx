@@ -1,8 +1,10 @@
 import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createSignal, For, onMount, Show } from "solid-js"
 import { Locale } from "../util/locale"
 import { useTheme } from "../context/theme"
 import { useDialog } from "../ui/dialog"
+import { getScrollAcceleration } from "../util/scroll"
 
 export type GoalSummaryView = {
   id?: string
@@ -76,6 +78,8 @@ function SummaryCard(props: { summary: GoalSummaryView; latest?: boolean }) {
 export function DialogGoalSummaries(props: { goal: GoalSummariesView }) {
   const dialog = useDialog()
   const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
+  const scrollAcceleration = getScrollAcceleration()
   const [showMore, setShowMore] = createSignal(false)
 
   onMount(() => {
@@ -86,6 +90,7 @@ export function DialogGoalSummaries(props: { goal: GoalSummariesView }) {
   const latest = createMemo(() => summaries().at(-1))
   const older = createMemo(() => summaries().slice(0, -1).toReversed())
   const progress = createMemo(() => Math.max(0, Math.min(100, Math.round(props.goal.progress ?? latest()?.progress ?? 0))))
+  const bodyHeight = () => Math.max(4, dimensions().height - 13)
 
   return (
     <box paddingLeft={2} paddingRight={2} gap={1}>
@@ -103,21 +108,27 @@ export function DialogGoalSummaries(props: { goal: GoalSummariesView }) {
           {progress()}% {progressBar(progress())}
         </text>
       </box>
-      <Show
-        when={latest()}
-        fallback={<text fg={theme.textMuted}>No goal state summaries have been recorded yet.</text>}
+      <scrollbox
+        maxHeight={bodyHeight()}
+        scrollbarOptions={{ visible: true }}
+        scrollAcceleration={scrollAcceleration}
       >
-        {(item) => <SummaryCard latest summary={item()} />}
-      </Show>
+        <Show
+          when={latest()}
+          fallback={<text fg={theme.textMuted}>No goal state summaries have been recorded yet.</text>}
+        >
+          {(item) => <SummaryCard latest summary={item()} />}
+        </Show>
+        <Show when={showMore()}>
+          <For each={older()}>{(item) => <SummaryCard summary={item} />}</For>
+        </Show>
+      </scrollbox>
       <Show when={older().length > 0 && !showMore()}>
         <box flexDirection="row" justifyContent="flex-end" paddingBottom={1}>
           <box paddingLeft={2} paddingRight={2} backgroundColor={theme.primary} onMouseUp={() => setShowMore(true)}>
             <text fg={theme.selectedListItemText}>show more</text>
           </box>
         </box>
-      </Show>
-      <Show when={showMore()}>
-        <For each={older()}>{(item) => <SummaryCard summary={item} />}</For>
       </Show>
     </box>
   )

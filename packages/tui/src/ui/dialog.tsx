@@ -24,6 +24,8 @@ export function Dialog(
     if (props.size === "large") return 88
     return 60
   }
+  const maxWidth = () => Math.max(20, dimensions().width - 2)
+  const maxHeight = () => Math.max(8, dimensions().height - 4)
 
   return (
     <box
@@ -40,9 +42,9 @@ export function Dialog(
       width={dimensions().width}
       height={dimensions().height}
       alignItems="center"
+      justifyContent="center"
       position="absolute"
       zIndex={3000}
-      paddingTop={dimensions().height / 4}
       left={0}
       top={0}
       backgroundColor={RGBA.fromInts(0, 0, 0, 150)}
@@ -53,7 +55,8 @@ export function Dialog(
           e.stopPropagation()
         }}
         width={width()}
-        maxWidth={dimensions().width - 2}
+        maxWidth={maxWidth()}
+        maxHeight={maxHeight()}
         backgroundColor={theme.backgroundPanel}
         paddingTop={1}
       >
