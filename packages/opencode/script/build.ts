@@ -221,6 +221,14 @@ for (const item of targets) {
         os: [item.os],
         cpu: [item.arch],
         ...(item.abi ? { libc: [item.abi] } : {}),
+        ...(item.os === "win32"
+          ? {}
+          : {
+              scripts: {
+                postinstall:
+                  "node -e \"require('fs').chmodSync(require('path').join(process.cwd(),'bin','opencode'),0o755)\"",
+              },
+            }),
       },
       null,
       2,

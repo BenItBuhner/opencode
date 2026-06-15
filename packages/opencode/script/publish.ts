@@ -86,6 +86,10 @@ await Bun.file(`./dist/${packageDirName}/package.json`).write(
       bin: {
         [commandName]: `./bin/${commandName}`,
       },
+      scripts: {
+        postinstall:
+          "node -e \"if(process.platform!=='win32')require('fs').chmodSync(require('path').join(process.cwd(),'bin','opencode-goal-mode'),0o755)\"",
+      },
       version: version,
       license: pkg.license,
       os: ["darwin", "linux", "win32"],
