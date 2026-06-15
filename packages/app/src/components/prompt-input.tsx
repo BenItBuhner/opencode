@@ -290,9 +290,9 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
   }
 
   const sessionGoal = createMemo(() => {
-    const sessionID = params.id
+    const sessionID = props.controls.session.id
     if (!sessionID) return undefined
-    const goal = sync.session.get(sessionID)?.metadata?.goal
+    const goal = sync().session.get(sessionID)?.metadata?.goal
     if (!goal || typeof goal !== "object") return undefined
     const item = goal as { text?: unknown; status?: unknown; progress?: unknown; summaries?: unknown }
     if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
