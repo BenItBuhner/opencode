@@ -77,15 +77,15 @@ export const layer = Layer.effect(
 
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput) {
       const { approved, pending } = yield* InstanceState.get(state)
-      const { ruleset, ...request } = input
+      const { ruleset, overrides = [], ...request } = input
       let needsAsk = false
 
       for (const pattern of request.patterns) {
-        const rule = evaluate(request.permission, pattern, ruleset, approved)
+        const rule = evaluate(request.permission, pattern, ruleset, approved, overrides)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
-            ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
+            ruleset: [...ruleset, ...overrides].filter((rule) => Wildcard.match(request.permission, rule.permission)),
           })
         }
         if (rule.action === "allow") continue

@@ -10,6 +10,7 @@ import {
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
+import "opentui-spinner/solid"
 import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
@@ -41,7 +42,7 @@ import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
-import { createFrames } from "../../ui/spinner"
+import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
 import { DialogAlert } from "../../ui/dialog-alert"
@@ -384,7 +385,7 @@ export function Prompt(props: PromptProps) {
     const pct = model?.limit.context ? `${Math.round((tokens / model.limit.context) * 100)}%` : undefined
     const cost = session?.cost ?? 0
     const context = props.hideContextUsage ? undefined : pct ? `${Locale.number(tokens)} (${pct})` : Locale.number(tokens)
-    const formattedCost = cost > 0 ? money.format(cost) : undefined
+    const formattedCost = props.hideContextUsage ? undefined : cost > 0 ? money.format(cost) : undefined
     if (!context && !formattedCost) return
     return {
       context,
@@ -1448,13 +1449,14 @@ export function Prompt(props: PromptProps) {
         // enableFading: false,
         minAlpha: 0.3,
       }),
-      color,
+      color: createColors({
+        color,
+        style: "blocks",
+        inactiveFactor: 0.6,
+        // enableFading: false,
+        minAlpha: 0.3,
+      }),
     }
-  })
-  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
-  onMount(() => {
-    const interval = setInterval(() => setSpinnerFrame((value) => value + 1), 40)
-    onCleanup(() => clearInterval(interval))
   })
   const maxHeight = createMemo(() => tuiConfig.prompt?.max_height ?? Math.max(6, Math.floor(dimensions().height / 3)))
   const moveLabelWidth = createMemo(() => Math.max(12, Math.min(44, dimensions().width - 48)))
@@ -1631,9 +1633,7 @@ export function Prompt(props: PromptProps) {
                 <box flexShrink={0} flexDirection="row" gap={1}>
                   <box marginLeft={1}>
                     <Show when={kv.get("animations_enabled", true)} fallback={<text fg={theme.textMuted}>[⋯]</text>}>
-                      <text fg={spinnerDef().color}>
-                        {spinnerDef().frames[spinnerFrame() % spinnerDef().frames.length]}
-                      </text>
+                      <spinner color={spinnerDef().color} frames={spinnerDef().frames} interval={40} />
                     </Show>
                   </box>
                   <box flexDirection="row" gap={1} flexShrink={0}>

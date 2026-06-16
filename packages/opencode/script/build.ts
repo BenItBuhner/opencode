@@ -185,7 +185,13 @@ for (const item of targets) {
       windows: {},
     },
     files: embeddedFileMap ? { "opencode-web-ui.gen.ts": embeddedFileMap } : {},
-    entrypoints: ["./src/index.ts", parserWorker, workerPath, ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : [])],
+    entrypoints: [
+      "./src/index.ts",
+      "@opencode-ai/tui/ui/register-spinner",
+      parserWorker,
+      workerPath,
+      ...(embeddedFileMap ? ["opencode-web-ui.gen.ts"] : []),
+    ],
     define: {
       FFF_LIBC: JSON.stringify(item.abi === "musl" ? "musl" : "gnu"),
       OPENCODE_VERSION: `'${Script.version}'`,

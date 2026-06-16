@@ -1,4 +1,5 @@
 import { render, TimeToFirstDraw, useRenderer, useTerminalDimensions } from "@opentui/solid"
+import "./ui/register-spinner"
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui"
 import { Deferred, Effect } from "effect"
 import { Global } from "@opencode-ai/core/global"
@@ -590,10 +591,10 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
       },
       {
         name: "session.permission.external_directory.toggle",
-        title: "Toggle always allow out-of-workspace access",
+        title: "Toggle out-of-workspace access",
         desc: outOfWorkspaceAlwaysAllowed()
-          ? "Currently always allowed for this session"
-          : "Currently asks before out-of-workspace access",
+          ? "Currently allowed without prompts for this session"
+          : "Currently asks before accessing external files",
         category: "Permissions",
         run: async () => {
           if (route.data.type !== "session") {
@@ -628,7 +629,7 @@ function App(props: { onSnapshot?: () => Promise<string[]>; pluginHost: TuiPlugi
                       sdk.client.permission
                         .reply({
                           requestID: item.id,
-                          reply: "always",
+                          reply: "once",
                         })
                         .catch(() => undefined),
                     ),

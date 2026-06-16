@@ -58,6 +58,7 @@ export const AskInput = Schema.Struct({
   ...Request.fields,
   id: ID.pipe(Schema.optional),
   ruleset: Ruleset,
+  overrides: Ruleset.pipe(Schema.optional),
 }).annotate({ identifier: "PermissionAskInput" })
 export type AskInput = typeof AskInput.Type
 

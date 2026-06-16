@@ -807,6 +807,58 @@ it.instance(
 )
 
 it.instance(
+  "ask - session overrides win over persisted approval",
+  () =>
+    Effect.gen(function* () {
+      const baseline = [{ permission: "external_directory", pattern: "*", action: "ask" }] satisfies PermissionV1.Ruleset
+      const approved = yield* ask({
+        id: PermissionV1.ID.make("per_test3_override_a"),
+        sessionID: SessionID.make("session_test"),
+        permission: "external_directory",
+        patterns: ["/tmp/outside/*"],
+        metadata: {},
+        always: ["/tmp/outside/*"],
+        ruleset: baseline,
+      }).pipe(Effect.forkScoped)
+
+      yield* waitForPending(1)
+      yield* reply({ requestID: PermissionV1.ID.make("per_test3_override_a"), reply: "always" })
+      yield* Fiber.join(approved)
+
+      const askAgain = yield* ask({
+        id: PermissionV1.ID.make("per_test3_override_b"),
+        sessionID: SessionID.make("session_test"),
+        permission: "external_directory",
+        patterns: ["/tmp/outside/*"],
+        metadata: {},
+        always: ["/tmp/outside/*"],
+        ruleset: baseline,
+        overrides: [{ permission: "external_directory", pattern: "*", action: "ask" }],
+      }).pipe(Effect.forkScoped)
+
+      expect((yield* waitForPending(1)).map((item) => item.id)).toEqual([
+        PermissionV1.ID.make("per_test3_override_b"),
+      ])
+      yield* rejectAll()
+      yield* Fiber.await(askAgain)
+
+      const denied = yield* fail(
+        ask({
+          sessionID: SessionID.make("session_test"),
+          permission: "external_directory",
+          patterns: ["/tmp/outside/*"],
+          metadata: {},
+          always: ["/tmp/outside/*"],
+          ruleset: baseline,
+          overrides: [{ permission: "external_directory", pattern: "*", action: "deny" }],
+        }),
+      )
+      expect(denied).toBeInstanceOf(PermissionV1.DeniedError)
+    }),
+  { git: true },
+)
+
+it.instance(
   "reply - reject cancels all pending for same session",
   () =>
     Effect.gen(function* () {

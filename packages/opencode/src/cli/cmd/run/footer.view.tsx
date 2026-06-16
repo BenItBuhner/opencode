@@ -9,8 +9,9 @@
 // The view itself is stateless except for derived memos.
 /** @jsxImportSource @opentui/solid */
 import { useTerminalDimensions } from "@opentui/solid"
-import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js"
-import { createFrames } from "@opencode-ai/tui/ui/spinner"
+import { For, Match, Show, Switch, createEffect, createMemo, createSignal, onCleanup } from "solid-js"
+import "opentui-spinner/solid"
+import { createColors, createFrames } from "@opencode-ai/tui/ui/spinner"
 import {
   RUN_SUBAGENT_PANEL_ROWS,
   RunCommandMenuBody,
@@ -259,13 +260,13 @@ export function RunFooterView(props: RunFooterViewProps) {
         inactiveFactor: 0.6,
         minAlpha: 0.3,
       }),
-      color: theme().highlight,
+      color: createColors({
+        color: theme().highlight,
+        style: "blocks",
+        inactiveFactor: 0.6,
+        minAlpha: 0.3,
+      }),
     }
-  })
-  const [spinnerFrame, setSpinnerFrame] = createSignal(0)
-  onMount(() => {
-    const interval = setInterval(() => setSpinnerFrame((value) => value + 1), 40)
-    onCleanup(() => clearInterval(interval))
   })
   const permission = createMemo<Extract<FooterView, { type: "permission" }> | undefined>(() => {
     const view = active()
@@ -838,7 +839,7 @@ export function RunFooterView(props: RunFooterViewProps) {
                 >
                   <Show when={busy() && !exiting()}>
                     <box flexShrink={0}>
-                      <text fg={spin().color}>{spin().frames[spinnerFrame() % spin().frames.length]}</text>
+                      <spinner color={spin().color} frames={spin().frames} interval={40} />
                     </box>
                   </Show>
 
