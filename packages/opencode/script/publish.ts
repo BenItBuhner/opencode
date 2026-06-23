@@ -19,9 +19,24 @@ async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
 }
 
+function ensureBinExecutable(dir: string) {
+  const binDir = path.join(dir, "bin")
+  if (!fs.existsSync(binDir)) return
+  for (const name of fs.readdirSync(binDir)) {
+    const target = path.join(binDir, name)
+    if (!fs.statSync(target).isFile()) continue
+    try {
+      fs.chmodSync(target, 0o755)
+    } catch {
+      // Publishing from Windows cannot always set Unix modes in the tarball.
+    }
+  }
+}
+
 async function publish(dir: string, name: string, version: string) {
   // GitHub artifact downloads can drop the executable bit, and Docker uses the
   // unpacked dist binaries directly rather than the published tarball.
+  ensureBinExecutable(dir)
   if (process.platform !== "win32") await $`chmod -R 755 .`.cwd(dir)
   if (await published(name, version)) {
     console.log(`already published ${name}@${version}`)
@@ -75,22 +90,24 @@ const version = process.env.OPENCODE_GOAL_MODE_META_VERSION ?? Object.values(bin
 
 await $`mkdir -p ./dist/${packageDirName}`
 await $`mkdir -p ./dist/${packageDirName}/bin`
-await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}`
-await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/opencode`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}.mjs`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/opencode.mjs`
+await $`cp ./script/npm-postinstall-chmod.mjs ./dist/${packageDirName}/postinstall.mjs`
 await Bun.file(`./dist/${packageDirName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
+ensureBinExecutable(`./dist/${packageDirName}`)
 
 await Bun.file(`./dist/${packageDirName}/package.json`).write(
   JSON.stringify(
     {
       name: packageName,
-      files: ["bin", "LICENSE"],
+      type: "module",
+      files: ["bin", "postinstall.mjs", "LICENSE"],
       bin: {
-        [commandName]: `./bin/${commandName}`,
-        opencode: "./bin/opencode",
+        [commandName]: `./bin/${commandName}.mjs`,
+        opencode: "./bin/opencode.mjs",
       },
       scripts: {
-        postinstall:
-          "node -e \"if(process.platform!=='win32'){const fs=require('fs');const p=require('path');for(const n of ['opengoal','opencode'])fs.chmodSync(p.join(process.cwd(),'bin',n),0o755)}\"",
+        postinstall: "node postinstall.mjs",
       },
       version: version,
       license: pkg.license,

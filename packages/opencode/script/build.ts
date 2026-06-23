@@ -218,6 +218,12 @@ for (const item of targets) {
   }
 
   await $`rm -rf ./dist/${name}/bin/tui`
+  await $`cp ./script/npm-postinstall-chmod.mjs ./dist/${name}/postinstall.mjs`
+  try {
+    fs.chmodSync(`dist/${name}/bin/${pkg.name}`, 0o755)
+  } catch {
+    // Publishing from Windows cannot always set Unix modes in the tarball.
+  }
   await Bun.file(`dist/${name}/package.json`).write(
     JSON.stringify(
       {
@@ -230,8 +236,10 @@ for (const item of targets) {
         ...(item.os === "win32"
           ? {}
           : {
+              type: "module",
+              files: ["bin", "postinstall.mjs"],
               scripts: {
-                postinstall: `node -e "require('fs').chmodSync(require('path').join(process.cwd(),'bin','${pkg.name}'),0o755)"`,
+                postinstall: "node postinstall.mjs",
               },
             }),
       },
