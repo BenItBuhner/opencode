@@ -13,6 +13,7 @@ const packageName = "@benitbuhner/opengoal"
 const packageDirName = "opengoal"
 const commandName = "opengoal"
 const publishExtraRegistries = process.env.OPENCODE_GOAL_MODE_PUBLISH_REGISTRIES === "1"
+const npmTag = process.env.OPENCODE_NPM_TAG ?? "latest"
 const packOnly = process.env.OPENCODE_GOAL_MODE_PACK_ONLY === "1"
 
 async function published(name: string, version: string) {
@@ -52,7 +53,7 @@ async function publish(dir: string, name: string, version: string) {
     fs.writeFileSync(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n")
   }
   try {
-    await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+    await $`npm publish *.tgz --access public --tag ${npmTag}`.cwd(dir)
   } finally {
     fs.rmSync(npmrc, { force: true })
   }
