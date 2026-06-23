@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.schemastore.org/package.json",
   "version": "1.17.7",
-  "name": "opencode",
+  "name": "opengoal",
   "type": "module",
   "license": "MIT",
   "private": true,
@@ -16,6 +16,7 @@
     "dev:temporary": "bun run --conditions=browser ./src/temporary.ts"
   },
   "bin": {
+    "opengoal": "./bin/opencode",
     "opencode": "./bin/opencode"
   },
   "exports": {

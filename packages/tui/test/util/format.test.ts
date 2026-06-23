@@ -32,17 +32,19 @@ describe("util.format", () => {
       expect(formatDuration(86399)).toBe("23h 59m")
     })
 
-    test("formats days under a week", () => {
-      expect(formatDuration(86400)).toBe("~1 day")
-      expect(formatDuration(172800)).toBe("~2 days")
-      expect(formatDuration(259200)).toBe("~3 days")
-      expect(formatDuration(604799)).toBe("~6 days")
+    test("formats days with hours and minutes", () => {
+      expect(formatDuration(86400)).toBe("1d")
+      expect(formatDuration(90060)).toBe("1d 1h 1m")
+      expect(formatDuration(172800)).toBe("2d")
+      expect(formatDuration(259200)).toBe("3d")
+      expect(formatDuration(604799)).toBe("6d 23h 59m")
     })
 
-    test("formats weeks", () => {
-      expect(formatDuration(604800)).toBe("~1 week")
-      expect(formatDuration(1209600)).toBe("~2 weeks")
-      expect(formatDuration(1609200)).toBe("~2 weeks")
+    test("keeps day-hour-minute precision beyond a week", () => {
+      expect(formatDuration(604800)).toBe("7d")
+      expect(formatDuration(608400)).toBe("7d 1h")
+      expect(formatDuration(1209600)).toBe("14d")
+      expect(formatDuration(1609200)).toBe("18d 15h")
     })
 
     test("handles boundary values correctly", () => {
@@ -51,9 +53,9 @@ describe("util.format", () => {
       expect(formatDuration(3599)).toBe("59m 59s")
       expect(formatDuration(3600)).toBe("1h")
       expect(formatDuration(86399)).toBe("23h 59m")
-      expect(formatDuration(86400)).toBe("~1 day")
-      expect(formatDuration(604799)).toBe("~6 days")
-      expect(formatDuration(604800)).toBe("~1 week")
+      expect(formatDuration(86400)).toBe("1d")
+      expect(formatDuration(604799)).toBe("6d 23h 59m")
+      expect(formatDuration(604800)).toBe("7d")
     })
   })
 })

@@ -35,13 +35,15 @@ import { computePromptTraits } from "../../prompt/traits"
 import { expandPastedTextPlaceholders, expandTrackedPastedText } from "../../prompt/part"
 import { usePromptStash } from "../../prompt/stash"
 import { DialogStash } from "../dialog-stash"
-import { DialogGoalSummaries, type GoalSummariesView, type GoalSummaryView } from "../dialog-goal-summaries"
+import { DialogGoalSummaries } from "../dialog-goal-summaries"
+import { createGoalElapsed, createGoalStatus, goalDetailsMessage, GoalInlineStatus } from "../goal-status"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
 import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
+import { BTW_METADATA, createBtwTitle, parseBtwPrompt } from "../../util/session"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
 import { DialogProvider as DialogProviderConnect } from "../dialog-provider"
@@ -57,6 +59,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { lifecycleQueue } from "./lifecycle-queue"
 
 export type PromptProps = {
   sessionID?: string
@@ -67,7 +70,11 @@ export type PromptProps = {
   hint?: JSX.Element
   right?: JSX.Element
   hideContextUsage?: boolean
+  hideGoalInfo?: boolean
   showPlaceholder?: boolean
+  allowDialogFocus?: boolean
+  closeDialogOnSubmit?: boolean
+  bindingMode?: string
   placeholders?: {
     normal?: string[]
     shell?: string[]
@@ -101,21 +108,6 @@ const money = new Intl.NumberFormat("en-US", {
 })
 
 const DRAFT_RETENTION_MIN_CHARS = 20
-
-type FooterGoalView = GoalSummariesView & {
-  status: string
-  created?: number
-}
-
-function compactProgressBar(progress: number) {
-  const value = Math.max(0, Math.min(100, Math.round(progress)))
-  const segments = 12
-  const filled = Math.round((value / 100) * segments)
-  return {
-    filled: "━".repeat(filled),
-    empty: "─".repeat(segments - filled),
-  }
-}
 
 function randomIndex(count: number) {
   if (count <= 0) return 0
@@ -154,6 +146,8 @@ function formatEditorContext(selection: EditorSelection) {
 
 let stashed: { prompt: PromptInfo; cursor: number } | undefined
 
+type SubmitDelivery = "steer" | "queue"
+
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
   let anchor: BoxRenderable
@@ -175,96 +169,18 @@ export function Prompt(props: PromptProps) {
   const toast = useToast()
   const status = createMemo(() => sync.data.session_status?.[props.sessionID ?? ""] ?? { type: "idle" })
   const renderer = useRenderer()
-  const sessionGoal = createMemo((): FooterGoalView | undefined => {
-    const sessionID = props.sessionID
-    if (!sessionID) return undefined
-    const goal = sync.session.get(sessionID)?.metadata?.goal
-    if (!goal || typeof goal !== "object") return undefined
-    const item = goal as {
-      text?: unknown
-      status?: unknown
-      created?: unknown
-      progress?: unknown
-      summaries?: unknown
-    }
-    if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
-    const summaries = Array.isArray(item.summaries)
-      ? item.summaries
-          .filter((summary): summary is GoalSummaryView => summary !== null && typeof summary === "object")
-          .map((summary) => ({
-            id: typeof summary.id === "string" ? summary.id : undefined,
-            created: typeof summary.created === "number" ? summary.created : undefined,
-            progress: typeof summary.progress === "number" ? summary.progress : undefined,
-            summary: typeof summary.summary === "string" ? summary.summary : undefined,
-            headline: typeof summary.headline === "string" ? summary.headline : undefined,
-          }))
-      : undefined
-    return {
-      text: item.text,
-      status: item.status,
-      created: typeof item.created === "number" ? item.created : undefined,
-      progress: typeof item.progress === "number" ? item.progress : summaries?.at(-1)?.progress,
-      summaries,
-    }
+  const displayGoal = createGoalStatus({
+    sessionID: () => props.sessionID,
+    goal: (sessionID) => sync.session.get(sessionID)?.metadata?.goal,
+    messages: (sessionID) => sync.data.message[sessionID] ?? [],
   })
-  const latestUserMessage = createMemo(() => {
-    const sessionID = props.sessionID
-    if (!sessionID) return undefined
-    return (sync.data.message[sessionID] ?? []).findLast((message): message is UserMessage => message.role === "user")
-  })
-  const [retainedGoal, setRetainedGoal] = createSignal<FooterGoalView>()
-  createEffect(
-    on(
-      () => props.sessionID,
-      () => setRetainedGoal(undefined),
-    ),
-  )
-  createEffect(
-    on(
-      () => sessionGoal(),
-      (goal) => {
-        if (goal) setRetainedGoal(goal)
-      },
-    ),
-  )
-  createEffect(
-    on(
-      () => latestUserMessage()?.id,
-      () => {
-        if (sessionGoal()) return
-        const latest = latestUserMessage()
-        if (latest && latest.agent !== "goal") setRetainedGoal(undefined)
-      },
-    ),
-  )
-  const displayGoal = createMemo(() => sessionGoal() ?? retainedGoal())
-  const [goalNow, setGoalNow] = createSignal(Date.now())
-  onMount(() => {
-    const timer = setInterval(() => setGoalNow(Date.now()), 1000)
-    onCleanup(() => clearInterval(timer))
-  })
-  const goalElapsed = createMemo(() => {
-    const goal = displayGoal()
-    if (!goal || goal.status !== "active" || goal.created === undefined) return
-    return formatDuration(Math.floor((goalNow() - goal.created) / 1000)) || "0s"
-  })
+  const goalElapsed = createGoalElapsed(displayGoal)
   const openGoalDetails = () => {
     if (renderer.getSelection()?.getSelectedText()) return
     const goal = displayGoal()
     if (!goal) return
     const elapsed = goalElapsed()
-    void DialogAlert.show(
-      dialog,
-      "Goal Details",
-      [
-        `Status: ${goal.status}`,
-        elapsed ? `Running: ${elapsed}` : undefined,
-        "",
-        goal.text,
-      ]
-        .filter((line) => line !== undefined)
-        .join("\n"),
-    )
+    void DialogAlert.show(dialog, "Goal Details", goalDetailsMessage(goal, elapsed))
   }
   const openGoalSummaries = () => {
     if (renderer.getSelection()?.getSelectedText()) return
@@ -276,6 +192,8 @@ export function Prompt(props: PromptProps) {
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
+  const steerSubmitShortcut = useCommandShortcut("input.submit.steer")
+  const queueSubmitShortcut = useCommandShortcut("input.submit")
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const exit = useExit()
   const dimensions = useTerminalDimensions()
@@ -463,10 +381,10 @@ export function Prompt(props: PromptProps) {
         hidden: true,
         run: async () => {
           if (!input.focused) return
-          const handled = await submit()
+          const handled = await submit({ delivery: "queue" })
           if (!handled) return
 
-          dialog.clear()
+          if (props.closeDialogOnSubmit !== false) dialog.clear()
         },
       },
       {
@@ -676,7 +594,7 @@ export function Prompt(props: PromptProps) {
   }))
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: props.bindingMode ?? OPENCODE_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
       "prompt.editor",
@@ -719,7 +637,7 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
     },
     submit() {
-      void submit()
+      void submit({ delivery: "queue" })
     },
   }
 
@@ -745,7 +663,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || (!props.allowDialogFocus && dialog.stack.length > 0)) {
       if (input.focused) input.blur()
       return
     }
@@ -1038,8 +956,50 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  useBindings(() => {
+    return {
+      target: inputTarget,
+      enabled: (() => {
+        cursorVersion()
+        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
+      })(),
+      commands: [
+        {
+          name: "input.submit.steer",
+          title: "Steer after current response",
+          category: "Prompt",
+          hidden: true,
+          run: async () => {
+            await submit({ delivery: "steer" })
+          },
+        },
+      ],
+      bindings: tuiConfig.keybinds.get("input.submit.steer"),
+    }
+  })
+
+  let flushingLifecycleQueue = false
+  createEffect(
+    on(
+      () => [props.sessionID, status().type] as const,
+      ([sessionID, sessionStatus]) => {
+        if (flushingLifecycleQueue || !sessionID || sessionStatus !== "idle") return
+        const next = lifecycleQueue.shift(sessionID)
+        if (!next) return
+        flushingLifecycleQueue = true
+        input.setText(next.prompt.input)
+        setStore("prompt", next.prompt)
+        setStore("mode", next.mode)
+        restoreExtmarksFromParts(next.prompt.parts)
+        void submit({ delivery: "steer", force: true }).finally(() => {
+          flushingLifecycleQueue = false
+        })
+      },
+    ),
+  )
+
   let submitting = false
-  async function submit() {
+  async function submit(options?: { delivery?: SubmitDelivery; force?: boolean }) {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
     // a second call slips past the empty-input check before the first call
@@ -1049,13 +1009,13 @@ export function Prompt(props: PromptProps) {
     if (submitting) return false
     submitting = true
     try {
-      return await submitInner()
+      return await submitInner(options?.delivery ?? "steer", options?.force)
     } finally {
       submitting = false
     }
   }
 
-  async function submitInner() {
+  async function submitInner(delivery: SubmitDelivery = "steer", force = false) {
     workspace.clearNotice()
 
     // IME: double-defer may fire before onContentChange flushes the last
@@ -1082,6 +1042,31 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
+    if (
+      !force &&
+      delivery === "queue" &&
+      props.sessionID &&
+      status().type !== "idle"
+    ) {
+      lifecycleQueue.enqueue(props.sessionID, {
+        prompt: structuredClone(unwrap(store.prompt)),
+        mode: store.mode,
+      })
+      history.append({
+        ...store.prompt,
+        mode: store.mode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+      input.clear()
+      return true
+    }
+
     const workspaceSession = props.sessionID ? sync.session.get(props.sessionID) : undefined
     const workspaceID = workspaceSession?.workspaceID
     const workspaceStatus = workspaceID ? (project.workspace.status(workspaceID) ?? "error") : undefined
@@ -1098,6 +1083,99 @@ export function Prompt(props: PromptProps) {
     }
 
     const variant = local.model.variant.current()
+    const inputText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+
+    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+    const btwQuestion = props.allowDialogFocus ? undefined : parseBtwPrompt(inputText)
+    if (btwQuestion !== undefined) {
+      const parentID = props.sessionID ? (sync.session.get(props.sessionID)?.parentID ?? props.sessionID) : undefined
+      if (!parentID) {
+        toast.show({
+          title: "BTW needs a session",
+          message: "Use /btw from inside an existing session.",
+          variant: "warning",
+        })
+        return false
+      }
+
+      const parent = sync.session.get(parentID)
+      const res = await sdk.client.session.create({
+        workspace: parent?.workspaceID ?? workspaceSession?.workspaceID ?? project.workspace.current(),
+        parentID,
+        title: createBtwTitle(btwQuestion),
+        agent: agent.name,
+        model: {
+          providerID: selectedModel.providerID,
+          id: selectedModel.modelID,
+          variant,
+        },
+        metadata: BTW_METADATA,
+      })
+      if (res.error || !res.data) {
+        toast.show({
+          title: "Failed to start BTW chat",
+          message: errorMessage(res.error ?? "no response"),
+          variant: "error",
+        })
+        return false
+      }
+
+      await sync.session.sync(res.data.id).catch(() => undefined)
+      if (btwQuestion) {
+        sdk.client.session
+          .prompt(
+            {
+              sessionID: res.data.id,
+              ...selectedModel,
+              agent: agent.name,
+              model: selectedModel,
+              variant,
+              parts: [
+                {
+                  type: "text",
+                  text: btwQuestion,
+                },
+                ...nonTextParts,
+              ],
+            },
+            { throwOnError: true },
+          )
+          .catch((error) => {
+            toast.show({
+              title: "Failed to send BTW prompt",
+              message: errorMessage(error),
+              variant: "error",
+            })
+          })
+      }
+
+      history.append({
+        ...store.prompt,
+        mode: store.mode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+      route.navigate({
+        type: "session",
+        sessionID: res.data.id,
+      })
+      input.clear()
+      return true
+    }
+
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
@@ -1133,19 +1211,6 @@ export function Prompt(props: PromptProps) {
 
       sessionID = res.data.id
     }
-
-    const inputText = expandTrackedPastedText(
-      store.prompt.input,
-      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
-        if (part?.type !== "text") return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      }),
-    )
-
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
@@ -1507,7 +1572,7 @@ export function Prompt(props: PromptProps) {
               onSubmit={() => {
                 // IME: double-defer so the last composed character (e.g. Korean
                 // hangul) is flushed to plainText before we read it for submission.
-                setTimeout(() => setTimeout(() => submit(), 0), 0)
+                setTimeout(() => setTimeout(() => submit({ delivery: "queue" }), 0), 0)
               }}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
@@ -1762,28 +1827,14 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={displayGoal()}>
+              <Show when={props.hideGoalInfo ? undefined : displayGoal()}>
                 {(goal) => (
-                  <box flexDirection="row" gap={1}>
-                    <text fg={theme.accent} onMouseUp={openGoalDetails}>
-                      goal
-                    </text>
-                    <Show when={goal().progress !== undefined}>
-                      {(() => {
-                        const progressBar = createMemo(() => compactProgressBar(goal().progress ?? 0))
-                        return (
-                          <box flexDirection="row" gap={1} onMouseUp={openGoalSummaries}>
-                            <text fg={theme.accent}>{goal().progress}%</text>
-                            <text wrapMode="none">
-                              <span style={{ fg: theme.accent }}>{progressBar().filled}</span>
-                              <span style={{ fg: theme.textMuted }}>{progressBar().empty}</span>
-                            </text>
-                          </box>
-                        )
-                      })()}
-                    </Show>
-                    <Show when={goalElapsed()}>{(elapsed) => <text fg={theme.textMuted}>{elapsed()}</text>}</Show>
-                  </box>
+                  <GoalInlineStatus
+                    goal={goal()}
+                    elapsed={goalElapsed()}
+                    onDetails={openGoalDetails}
+                    onSummaries={openGoalSummaries}
+                  />
                 )}
               </Show>
               <Switch>
@@ -1798,6 +1849,10 @@ export function Prompt(props: PromptProps) {
                     </Match>
                     <Match when={true}>
                       <text fg={theme.text}>
+                        {steerSubmitShortcut()} <span style={{ fg: theme.textMuted }}>steer</span>
+                        {" · "}
+                        {queueSubmitShortcut()} <span style={{ fg: theme.textMuted }}>queue</span>
+                        {" · "}
                         {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
                       </text>
                     </Match>

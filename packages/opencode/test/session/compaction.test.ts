@@ -388,7 +388,7 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 75_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
+        const tokens = { input: 90_000, output: 5_000, reasoning: 0, cache: { read: 0, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
     ),
@@ -412,9 +412,37 @@ describe("session.compaction.isOverflow", () => {
       Effect.gen(function* () {
         const compact = yield* SessionCompaction.Service
         const model = createModel({ context: 100_000, output: 32_000 })
-        const tokens = { input: 60_000, output: 10_000, reasoning: 0, cache: { read: 10_000, write: 0 } }
+        const tokens = { input: 80_000, output: 10_000, reasoning: 0, cache: { read: 5_000, write: 0 } }
         expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
       }),
+    ),
+  )
+
+  it.live(
+    "uses 90 percent of context by default",
+    provideTmpdirInstance(() =>
+      Effect.gen(function* () {
+        const compact = yield* SessionCompaction.Service
+        const model = createModel({ context: 100_000, output: 32_000 })
+        const below = { input: 89_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        const at = { input: 90_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+        expect(yield* compact.isOverflow({ tokens: below, model })).toBe(false)
+        expect(yield* compact.isOverflow({ tokens: at, model })).toBe(true)
+      }),
+    ),
+  )
+
+  it.live(
+    "explicit reserved tokens override threshold",
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const compact = yield* SessionCompaction.Service
+          const model = createModel({ context: 100_000, output: 32_000 })
+          const tokens = { input: 85_000, output: 0, reasoning: 0, cache: { read: 0, write: 0 } }
+          expect(yield* compact.isOverflow({ tokens, model })).toBe(true)
+        }),
+      { config: { compaction: { reserved: 20_000 } } },
     ),
   )
 

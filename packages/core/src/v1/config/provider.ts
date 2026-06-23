@@ -112,6 +112,10 @@ export const Info = Schema.Struct({
           description:
             "Timeout in milliseconds between streamed SSE chunks for this provider. If no chunk arrives within this window, the request is aborted.",
         }),
+        discoverModels: Schema.optional(Schema.Boolean).annotate({
+          description:
+            "Discover OpenAI-compatible model metadata from the provider's /models route. Defaults to true when no models are configured.",
+        }),
       }),
       [Schema.Record(Schema.String, Schema.Any)],
     ),

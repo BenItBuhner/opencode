@@ -20,7 +20,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { EventV2 } from "@opencode-ai/core/event"
 
-const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
+const disableShare = process.env["OPENGOAL_DISABLE_SHARE"] ?? process.env["OPENCODE_DISABLE_SHARE"]
+const disabled = disableShare === "true" || disableShare === "1"
 
 export type Api = {
   create: string

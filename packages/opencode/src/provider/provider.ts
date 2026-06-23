@@ -1168,6 +1168,251 @@ function cost(c: ModelsDev.Model["cost"]): Model["cost"] {
   return result
 }
 
+type ConfigProviderInfo = NonNullable<ConfigV1.Info["provider"]>[string]
+
+type DiscoveredModel = {
+  id: string
+  name?: string
+  cost?: {
+    input?: number
+    output?: number
+    cache?: {
+      read?: number
+      write?: number
+    }
+  }
+  limit?: Partial<Model["limit"]>
+  capabilities?: Partial<Model["capabilities"]>
+}
+
+function readString(input: unknown, ...keys: string[]) {
+  if (!isRecord(input)) return
+  return keys.map((key) => input[key]).find((value): value is string => typeof value === "string" && value.length > 0)
+}
+
+function readRecord(input: unknown, ...keys: string[]) {
+  if (!isRecord(input)) return
+  return keys.map((key) => input[key]).find(isRecord)
+}
+
+function readArray(input: unknown, ...keys: string[]) {
+  if (!isRecord(input)) return
+  return keys.map((key) => input[key]).find(Array.isArray)
+}
+
+function readNumber(input: unknown, ...keys: string[]) {
+  if (!isRecord(input)) return
+  for (const key of keys) {
+    const value = input[key]
+    const number = typeof value === "string" ? Number(value) : value
+    if (typeof number === "number" && Number.isFinite(number) && number > 0) return number
+  }
+}
+
+function pricePerMillion(input: unknown, ...keys: string[]) {
+  const value = readNumber(input, ...keys)
+  if (value === undefined) return
+  return value < 0.001 ? value * 1_000_000 : value
+}
+
+function modalities(input: unknown, ...keys: string[]) {
+  const raw = readArray(input, ...keys)
+  if (!raw) return
+  const allowed = new Set(["text", "audio", "image", "video", "pdf"])
+  const result = raw
+    .map((item) => (typeof item === "string" ? item.toLowerCase() : undefined))
+    .filter((item): item is "text" | "audio" | "image" | "video" | "pdf" => item !== undefined && allowed.has(item))
+  return result.length ? result : undefined
+}
+
+function remoteModelItems(payload: unknown) {
+  if (Array.isArray(payload)) return payload
+  const data = readArray(payload, "data", "models")
+  return data ?? []
+}
+
+function discoveredModel(input: unknown): DiscoveredModel | undefined {
+  const id = readString(input, "id", "name")
+  if (!id) return
+
+  const pricing = readRecord(input, "pricing", "cost")
+  const architecture = readRecord(input, "architecture")
+  const topProvider = readRecord(input, "top_provider", "topProvider")
+  const limits = readRecord(readRecord(input, "capabilities"), "limits")
+  const supported = readArray(input, "supported_parameters", "supportedParameters")?.filter(
+    (item): item is string => typeof item === "string",
+  )
+  const inputModalities = modalities(input, "input_modalities", "inputModalities") ?? modalities(architecture, "input_modalities")
+  const outputModalities =
+    modalities(input, "output_modalities", "outputModalities") ?? modalities(architecture, "output_modalities")
+  const context =
+    readNumber(input, "context_length", "contextLength", "context_window", "contextWindow", "max_context_length") ??
+    readNumber(limits, "max_context_window_tokens", "maxContextWindowTokens") ??
+    readNumber(input, "max_prompt_tokens", "maxPromptTokens", "max_input_tokens", "maxInputTokens")
+  const output =
+    readNumber(
+      input,
+      "max_output_tokens",
+      "maxOutputTokens",
+      "max_completion_tokens",
+      "maxCompletionTokens",
+      "max_tokens",
+      "maxTokens",
+    ) ??
+    readNumber(topProvider, "max_completion_tokens", "maxCompletionTokens") ??
+    readNumber(limits, "max_output_tokens", "maxOutputTokens")
+
+  return {
+    id,
+    name: readString(input, "name", "display_name", "displayName", "canonical_slug", "canonicalSlug") ?? id,
+    limit: {
+      context,
+      input: readNumber(input, "max_prompt_tokens", "maxPromptTokens", "max_input_tokens", "maxInputTokens"),
+      output,
+    },
+    cost: pricing
+      ? {
+          input: pricePerMillion(
+            pricing,
+            "input",
+            "prompt",
+            "input_cost_per_million",
+            "prompt_cost_per_million",
+            "input_cost_per_token",
+            "prompt_cost_per_token",
+          ),
+          output: pricePerMillion(
+            pricing,
+            "output",
+            "completion",
+            "output_cost_per_million",
+            "completion_cost_per_million",
+            "output_cost_per_token",
+            "completion_cost_per_token",
+          ),
+          cache: {
+            read: pricePerMillion(pricing, "cache_read", "cacheRead", "input_cache_read", "cached_prompt"),
+            write: pricePerMillion(pricing, "cache_write", "cacheWrite", "input_cache_write"),
+          },
+        }
+      : undefined,
+    capabilities: {
+      reasoning: supported?.includes("reasoning") || supported?.includes("reasoning_effort") || undefined,
+      toolcall: supported?.includes("tools") || supported?.includes("tool_choice") || undefined,
+      input: inputModalities
+        ? {
+            text: inputModalities.includes("text"),
+            audio: inputModalities.includes("audio"),
+            image: inputModalities.includes("image"),
+            video: inputModalities.includes("video"),
+            pdf: inputModalities.includes("pdf"),
+          }
+        : undefined,
+      output: outputModalities
+        ? {
+            text: outputModalities.includes("text"),
+            audio: outputModalities.includes("audio"),
+            image: outputModalities.includes("image"),
+            video: outputModalities.includes("video"),
+            pdf: outputModalities.includes("pdf"),
+          }
+        : undefined,
+    },
+  }
+}
+
+async function discoverOpenAICompatibleModels(input: {
+  provider: ConfigProviderInfo
+  baseURL: string
+  apiKey?: string
+  apiNpm: string
+}) {
+  if (input.apiNpm !== "@ai-sdk/openai-compatible") return []
+  const url = new URL(input.baseURL.endsWith("/") ? input.baseURL : `${input.baseURL}/`)
+  url.pathname = path.posix.join(url.pathname, "models")
+  const response = await fetch(url, {
+    headers: {
+      ...Object.fromEntries(
+        Object.entries(readRecord(input.provider.options, "headers") ?? {}).filter(
+          (entry): entry is [string, string] => typeof entry[1] === "string",
+        ),
+      ),
+      ...(input.apiKey ? { authorization: `Bearer ${input.apiKey}` } : {}),
+    },
+    signal: AbortSignal.timeout(2_500),
+  })
+  if (!response.ok) return []
+  return remoteModelItems(await response.json()).flatMap((item) => {
+    const model = discoveredModel(item)
+    if (!model) return []
+    if (input.provider.whitelist && !input.provider.whitelist.includes(model.id)) return []
+    if (input.provider.blacklist?.includes(model.id)) return []
+    return [model]
+  })
+}
+
+function mergeDiscoveredModel(input: {
+  provider: Info
+  model: DiscoveredModel
+  apiNpm: string
+  apiURL: string
+}) {
+  const existingKey = input.provider.models[input.model.id]
+    ? input.model.id
+    : Object.keys(input.provider.models).find((modelID) => input.provider.models[modelID].api.id === input.model.id)
+  const existing = existingKey ? input.provider.models[existingKey] : undefined
+  if (!existing) {
+    input.provider.models[input.model.id] = {
+      id: ModelV2.ID.make(input.model.id),
+      api: { id: input.model.id, npm: input.apiNpm, url: input.apiURL },
+      status: "active",
+      name: input.model.name ?? input.model.id,
+      providerID: input.provider.id,
+      capabilities: {
+        temperature: false,
+        reasoning: input.model.capabilities?.reasoning ?? false,
+        attachment:
+          input.model.capabilities?.input?.audio === true ||
+          input.model.capabilities?.input?.image === true ||
+          input.model.capabilities?.input?.video === true ||
+          input.model.capabilities?.input?.pdf === true,
+        toolcall: input.model.capabilities?.toolcall ?? true,
+        input: input.model.capabilities?.input ?? { text: true, audio: false, image: false, video: false, pdf: false },
+        output: input.model.capabilities?.output ?? { text: true, audio: false, image: false, video: false, pdf: false },
+        interleaved: false,
+      },
+      cost: {
+        input: input.model.cost?.input ?? 0,
+        output: input.model.cost?.output ?? 0,
+        cache: {
+          read: input.model.cost?.cache?.read ?? 0,
+          write: input.model.cost?.cache?.write ?? 0,
+        },
+      },
+      options: {},
+      limit: {
+        context: input.model.limit?.context ?? 0,
+        input: input.model.limit?.input,
+        output: input.model.limit?.output ?? 0,
+      },
+      headers: {},
+      family: "",
+      release_date: "",
+      variants: {},
+    }
+    return
+  }
+
+  existing.name = existing.name === existing.id ? (input.model.name ?? existing.name) : existing.name
+  existing.limit.context = existing.limit.context || input.model.limit?.context || 0
+  existing.limit.input = existing.limit.input ?? input.model.limit?.input
+  existing.limit.output = existing.limit.output || input.model.limit?.output || 0
+  existing.cost.input = existing.cost.input || input.model.cost?.input || 0
+  existing.cost.output = existing.cost.output || input.model.cost?.output || 0
+  existing.cost.cache.read = existing.cost.cache.read || input.model.cost?.cache?.read || 0
+  existing.cost.cache.write = existing.cost.cache.write || input.model.cost?.cache?.write || 0
+}
+
 function fromModelsDevModel(provider: ModelsDev.Provider, model: ModelsDev.Model): Model {
   const base: Model = {
     id: ModelV2.ID.make(model.id),
@@ -1468,8 +1713,44 @@ export const layer = Layer.effect(
           database[providerID] = parsed
         }
 
-        // load env
         const envs = yield* env.all()
+        const auths = yield* auth.all().pipe(Effect.orDie)
+        for (const [providerID, provider] of configProviders) {
+          const current = database[providerID]
+          if (!current) continue
+          const apiNpm = provider.npm ?? modelsDev[providerID]?.npm ?? "@ai-sdk/openai-compatible"
+          const baseURL =
+            provider.options?.baseURL ??
+            provider.api ??
+            Object.values(current.models).find((model) => model.api.url.length > 0)?.api.url
+          if (typeof baseURL !== "string" || baseURL.length === 0) continue
+          const shouldDiscover =
+            provider.options?.discoverModels ?? Object.keys(provider.models ?? {}).length === 0
+          if (!shouldDiscover) continue
+          const apiKey =
+            provider.options?.apiKey ??
+            (auths[providerID]?.type === "api" ? auths[providerID].key : undefined) ??
+            current.env.map((item) => envs[item]).find((item): item is string => typeof item === "string")
+
+          const discovered = yield* Effect.tryPromise(() =>
+            discoverOpenAICompatibleModels({
+              provider,
+              baseURL,
+              apiKey,
+              apiNpm,
+            }),
+          ).pipe(Effect.catch(() => Effect.succeed([])))
+          for (const model of discovered) {
+            mergeDiscoveredModel({
+              provider: current,
+              model,
+              apiNpm,
+              apiURL: provider.api ?? baseURL,
+            })
+          }
+        }
+
+        // load env
         for (const [id, provider] of Object.entries(database)) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
@@ -1482,7 +1763,6 @@ export const layer = Layer.effect(
         }
 
         // load apikeys
-        const auths = yield* auth.all().pipe(Effect.orDie)
         for (const [id, provider] of Object.entries(auths)) {
           const providerID = ProviderV2.ID.make(id)
           if (disabled.has(providerID)) continue
@@ -1623,6 +1903,7 @@ export const layer = Layer.effect(
       try {
         const provider = s.providers[model.providerID]
         const options = { ...provider.options }
+        delete options["discoverModels"]
 
         if (
           model.providerID === "google-vertex" &&

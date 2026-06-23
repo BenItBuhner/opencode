@@ -124,8 +124,8 @@ export const Definitions = {
   provider_connect: keybind("none", "Connect provider"),
   console_org_switch: keybind("none", "Switch console organization"),
   agent_list: keybind("<leader>a", "List agents"),
-  agent_cycle: keybind("tab", "Next agent"),
-  agent_cycle_reverse: keybind("shift+tab", "Previous agent"),
+  agent_cycle: keybind("shift+tab", "Next agent"),
+  agent_cycle_reverse: keybind("ctrl+shift+tab", "Previous agent"),
   variant_cycle: keybind("ctrl+t", "Cycle model variants"),
   variant_list: keybind("none", "List model variants"),
 
@@ -157,7 +157,8 @@ export const Definitions = {
 
   input_clear: keybind("ctrl+c", "Clear input field"),
   input_paste: keybind({ key: "ctrl+v", preventDefault: false }, "Paste from clipboard"),
-  input_submit: keybind("return", "Submit input"),
+  input_submit: keybind("return", "Queue input until the agent run completes"),
+  input_submit_steer: keybind({ key: "tab", preventDefault: true }, "Steer input after the current response"),
   input_newline: keybind("shift+return,ctrl+return,alt+return,ctrl+j", "Insert newline in input"),
   input_move_left: keybind("left,ctrl+b", "Move cursor left in input"),
   input_move_right: keybind("right,ctrl+f", "Move cursor right in input"),
@@ -358,6 +359,7 @@ export const CommandMap = {
   input_clear: "prompt.clear",
   input_paste: "prompt.paste",
   input_submit: "input.submit",
+  input_submit_steer: "input.submit.steer",
   input_newline: "input.newline",
   input_move_left: "input.move.left",
   input_move_right: "input.move.right",

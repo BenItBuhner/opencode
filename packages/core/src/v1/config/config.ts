@@ -158,6 +158,10 @@ export const Info = Schema.Struct({
       preserve_recent_tokens: Schema.optional(NonNegativeInt).annotate({
         description: "Maximum number of tokens from recent turns to preserve verbatim after compaction (default: up to 32k)",
       }),
+      threshold: Schema.optional(Schema.Finite.check(Schema.isBetween({ minimum: 0, maximum: 1 }))).annotate({
+        description:
+          "Context usage ratio that triggers automatic compaction when reserved is not set (default: 0.9).",
+      }),
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),

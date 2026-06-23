@@ -26,27 +26,10 @@ function progressBar(progress: number) {
   return `[${"#".repeat(filled)}${"-".repeat(10 - filled)}]`
 }
 
-function sections(markdown: string | undefined) {
-  const result: { title: string; bullets: string[] }[] = []
-  let current: { title: string; bullets: string[] } | undefined
-  for (const raw of (markdown ?? "").split(/\r?\n/)) {
-    const line = raw.trim()
-    if (!line) continue
-    if (line.startsWith("## ")) {
-      current = { title: line.slice(3).trim(), bullets: [] }
-      result.push(current)
-      continue
-    }
-    if (!current || !line.startsWith("- ")) continue
-    current.bullets.push(line.slice(2).trim())
-  }
-  return result
-}
-
 function SummaryCard(props: { summary: GoalSummaryView; latest?: boolean }) {
-  const { theme } = useTheme()
-  const parsed = createMemo(() => sections(props.summary.summary))
+  const { theme, syntax } = useTheme()
   const progress = createMemo(() => Math.max(0, Math.min(100, Math.round(props.summary.progress ?? 0))))
+  const summary = createMemo(() => props.summary.summary?.trim())
 
   return (
     <box gap={1} paddingTop={props.latest ? 0 : 1}>
@@ -61,16 +44,21 @@ function SummaryCard(props: { summary: GoalSummaryView; latest?: boolean }) {
       <Show when={props.summary.created}>
         {(created) => <text fg={theme.textMuted}>{Locale.datetime(created())}</text>}
       </Show>
-      <For each={parsed()}>
-        {(section) => (
-          <box gap={1}>
-            <text attributes={TextAttributes.BOLD} fg={theme.text}>
-              {section.title}
-            </text>
-            <For each={section.bullets}>{(bullet) => <text fg={theme.textMuted}>- {bullet}</text>}</For>
+      <Show when={summary()} fallback={<text fg={theme.textMuted}>No summary content recorded.</text>}>
+        {(content) => (
+          <box>
+            <markdown
+              syntaxStyle={syntax()}
+              streaming={false}
+              internalBlockMode="top-level"
+              content={content()}
+              tableOptions={{ style: "grid" }}
+              fg={theme.markdownText}
+              bg={theme.background}
+            />
           </box>
         )}
-      </For>
+      </Show>
     </box>
   )
 }

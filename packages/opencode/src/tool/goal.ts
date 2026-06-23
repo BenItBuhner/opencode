@@ -5,6 +5,10 @@ import { Session } from "../session/session"
 const EmptyParameters = Schema.Struct({})
 const SetParameters = Schema.Struct({
   text: Schema.String.annotate({ description: "The durable session goal to work toward" }),
+  complete_override_confirmation: Schema.optional(Schema.String).annotate({
+    description:
+      "Required only when replacing a different existing goal. Set this to the exact current goal text shown by the previous goal_set warning to confirm the override.",
+  }),
 })
 const SummarizeStateParameters = Schema.Struct({
   progress: Session.GoalProgress.annotate({
@@ -12,7 +16,7 @@ const SummarizeStateParameters = Schema.Struct({
   }),
   summary: Schema.String.annotate({
     description:
-      "A structured markdown state summary. Must include ## Progress, ## Current State, ## Blockers, and ## Next Steps sections, each with bullet items.",
+      "A markdown state summary of goal progress. Use paragraphs, headings, bullets, numbered lists, code blocks, or other markdown structure that best fits the current state.",
   }),
   headline: Schema.optional(Schema.String).annotate({
     description: "Optional one-line preview of the current state for compact UI displays.",
@@ -36,40 +40,24 @@ function formatGoal(goal: Session.Goal | undefined) {
     .join("\n")
 }
 
-const REQUIRED_SUMMARY_SECTIONS = ["Progress", "Current State", "Blockers", "Next Steps"]
-
 function validateSummaryFormat(summary: string) {
-  const sections = new Map<string, number>()
-  let current: string | undefined
+  if (!summary.trim()) throw new Error("Goal summary cannot be empty.")
+}
 
-  for (const raw of summary.trim().split(/\r?\n/)) {
-    const line = raw.trimEnd()
-    if (!line.trim()) continue
-
-    const heading = line.match(/^(#{1,6})\s+(.+)$/)
-    if (heading) {
-      if (heading[1] !== "##") throw new Error(`Goal summary headings must use size 2 markdown headers: ${line}`)
-      current = heading[2]?.trim()
-      if (!current) throw new Error("Goal summary headings cannot be empty.")
-      sections.set(current, sections.get(current) ?? 0)
-      continue
-    }
-
-    if (!current) throw new Error("Goal summary content must appear under size 2 markdown headers.")
-    if (!line.trimStart().startsWith("- ")) {
-      throw new Error(`Goal summary section "${current}" must use bullet list items.`)
-    }
-    sections.set(current, (sections.get(current) ?? 0) + 1)
-  }
-
-  for (const section of REQUIRED_SUMMARY_SECTIONS) {
-    if (!sections.has(section)) throw new Error(`Goal summary is missing the ## ${section} section.`)
-    if ((sections.get(section) ?? 0) === 0) throw new Error(`Goal summary section ## ${section} needs at least one bullet.`)
-  }
-
-  for (const [section, bullets] of sections) {
-    if (bullets === 0) throw new Error(`Goal summary section ## ${section} needs at least one bullet.`)
-  }
+function formatOverrideWarning(input: { existing: Session.Goal; requested: string }) {
+  return [
+    "A session goal is already set, and the requested goal would replace it.",
+    "Only override the current goal if the user explicitly asked to change goals.",
+    "",
+    "Current goal, verbatim:",
+    input.existing.text,
+    "",
+    "Requested replacement:",
+    input.requested.trim(),
+    "",
+    "To confirm this destructive replacement, call goal_set again with the same text and:",
+    `complete_override_confirmation: ${JSON.stringify(input.existing.text)}`,
+  ].join("\n")
 }
 
 export const GoalSetTool = Tool.define<typeof SetParameters, Metadata, Session.Service>(
@@ -78,7 +66,8 @@ export const GoalSetTool = Tool.define<typeof SetParameters, Metadata, Session.S
     const session = yield* Session.Service
 
     return {
-      description: "Set or replace the durable goal for this session and mark it active.",
+      description:
+        "Set the durable goal for this session and mark it active. If a different goal already exists, this tool refuses to replace it unless complete_override_confirmation exactly matches the current goal text from the previous warning.",
       parameters: SetParameters,
       execute: (params: Schema.Schema.Type<typeof SetParameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {
@@ -88,6 +77,13 @@ export const GoalSetTool = Tool.define<typeof SetParameters, Metadata, Session.S
             always: ["*"],
             metadata: {},
           })
+
+          const existing = yield* session.getGoal(ctx.sessionID).pipe(Effect.orDie)
+          if (existing && existing.text.trim() !== params.text.trim()) {
+            if (params.complete_override_confirmation !== existing.text) {
+              throw new Error(formatOverrideWarning({ existing, requested: params.text }))
+            }
+          }
 
           const goal = yield* session
             .setGoal({ sessionID: ctx.sessionID, text: params.text, status: "active" })

@@ -12,6 +12,48 @@ import PROMPT_PLAN from "./prompt/plan.txt"
 import BUILD_SWITCH from "./prompt/build-switch.txt"
 import PLAN_MODE from "./prompt/plan-mode.txt"
 
+const DEFAULT_GOAL_REMINDER_THRESHOLD = 5
+const GOAL_REMINDER_THRESHOLD_ENV = "OPENCODE_GOAL_REMINDER_THRESHOLD"
+
+function goalReminderThreshold() {
+  const raw = process.env[GOAL_REMINDER_THRESHOLD_ENV]?.trim()
+  if (!raw) return DEFAULT_GOAL_REMINDER_THRESHOLD
+  const threshold = Number(raw)
+  if (!Number.isInteger(threshold) || threshold < 0) return DEFAULT_GOAL_REMINDER_THRESHOLD
+  return threshold
+}
+
+function consecutiveAssistantResponsesWithoutToolCalls(messages: SessionV1.WithParts[]) {
+  return messages.reduceRight(
+    (state, message) => {
+      if (state.done) return state
+      if (message.info.role !== "assistant") return { ...state, done: true }
+      if (message.parts.some((part) => part.type === "tool")) return { ...state, done: true }
+      return { count: state.count + 1, done: false }
+    },
+    { count: 0, done: false },
+  ).count
+}
+
+function goalStatusReminder(goal: Session.Goal, count: number) {
+  return [
+    "<system-reminder>",
+    `You are actively in a session goal and have produced ${count} consecutive assistant responses without any tool calls.`,
+    `Goal: ${goal.text}`,
+    `Status: ${goal.status}`,
+    goal.progress === undefined ? undefined : `Progress: ${goal.progress}%`,
+    "",
+    "You must make the goal state explicit now:",
+    "- If the goal is complete, call goal_complete before giving the final summary.",
+    "- If the goal is blocked, call goal_summarize_state with the blocker in ## Blockers, then ask the user the blocking question or pause the goal.",
+    "- If the goal should be paused, call goal_pause.",
+    "- If the goal is still active and unblocked, take the next concrete tool-backed action instead of another progress-only response.",
+    "</system-reminder>",
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n")
+}
+
 export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   messages: SessionV1.WithParts[]
   agent: Agent.Info
@@ -69,6 +111,19 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
           ].join("\n"),
       synthetic: true,
     })
+
+    const reminderThreshold = goalReminderThreshold()
+    const noToolResponses = consecutiveAssistantResponsesWithoutToolCalls(input.messages)
+    if (goal?.status === "active" && reminderThreshold > 0 && noToolResponses >= reminderThreshold) {
+      userMessage.parts.push({
+        id: PartID.ascending(),
+        messageID: userMessage.info.id,
+        sessionID: userMessage.info.sessionID,
+        type: "text",
+        text: goalStatusReminder(goal, noToolResponses),
+        synthetic: true,
+      })
+    }
   }
 
   if (!flags.experimentalPlanMode) {

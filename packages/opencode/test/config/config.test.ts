@@ -323,7 +323,7 @@ it.effect("creates global jsonc config with schema when no global configs exist"
     Effect.gen(function* () {
       yield* Config.use.get().pipe(provideInstanceEffect(dir))
 
-      const content = yield* FSUtil.use.readFileString(path.join(dir, "opencode.jsonc"))
+      const content = yield* FSUtil.use.readFileString(path.join(dir, "opengoal.jsonc"))
       expect(content).toContain('"$schema": "https://opencode.ai/config.json"')
     }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
   ),
@@ -339,7 +339,7 @@ it.effect("does not create global config when OPENCODE_CONFIG_DIR is set", () =>
         Effect.gen(function* () {
           yield* Config.use.get().pipe(provideInstanceEffect(dir))
 
-          expect(yield* FSUtil.use.existsSafe(path.join(dir, "opencode.jsonc"))).toBe(false)
+          expect(yield* FSUtil.use.existsSafe(path.join(dir, "opengoal.jsonc"))).toBe(false)
         }).pipe(Effect.provide(testInstanceStoreLayer), Effect.provide(CrossSpawnSpawner.defaultLayer)),
       ),
     )
@@ -759,6 +759,28 @@ it.instance("loads config from .opencode directory", () =>
     const test = yield* TestInstance
     yield* FSUtil.use.writeWithDirs(
       path.join(test.directory, ".opencode", "agent", "test.md"),
+      `---
+model: test/model
+---
+Test agent prompt`,
+    )
+
+    const config = yield* Config.use.get()
+    expect(config.agent?.["test"]).toEqual(
+      expect.objectContaining({
+        name: "test",
+        model: "test/model",
+        prompt: "Test agent prompt",
+      }),
+    )
+  }),
+)
+
+it.instance("loads config from .opengoal directory", () =>
+  Effect.gen(function* () {
+    const test = yield* TestInstance
+    yield* FSUtil.use.writeWithDirs(
+      path.join(test.directory, ".opengoal", "agent", "test.md"),
       `---
 model: test/model
 ---
@@ -1928,6 +1950,26 @@ describe("OPENCODE_CONFIG_CONTENT token substitution", () => {
         }),
       )
     }),
+  )
+})
+
+describe("OPENGOAL_CONFIG_CONTENT token substitution", () => {
+  it.instance("substitutes {env:} tokens in OPENGOAL_CONFIG_CONTENT", () =>
+    withProcessEnv(
+      "TEST_CONFIG_VAR",
+      "test_api_key_12345",
+      withProcessEnv(
+        "OPENGOAL_CONFIG_CONTENT",
+        JSON.stringify({
+          $schema: "https://opencode.ai/config.json",
+          username: "{env:TEST_CONFIG_VAR}",
+        }),
+        Effect.gen(function* () {
+          const config = yield* Config.use.get()
+          expect(config.username).toBe("test_api_key_12345")
+        }),
+      ),
+    ),
   )
 })
 

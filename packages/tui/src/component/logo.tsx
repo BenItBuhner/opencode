@@ -61,6 +61,7 @@ const shimmerConfig: ShimmerConfig = {
 // _ = full shadow cell (space with bg=shadow)
 // ^ = letter top, shadow bottom (▀ with fg=letter, bg=shadow)
 // ~ = shadow top only (▀ with fg=shadow)
+// . = transparent cell inside a glyph
 const GAP = 1
 const WIDTH = 0.76
 const GAIN = 2.3
@@ -190,7 +191,7 @@ function noise(x: number, y: number, t: number) {
 }
 
 function lit(char: string) {
-  return char !== " " && char !== "_" && char !== "~" && char !== ","
+  return char !== " " && char !== "_" && char !== "~" && char !== "," && char !== "."
 }
 
 function key(x: number, y: number) {
@@ -691,10 +692,10 @@ export function Logo(props: { shape?: LogoShape; ink?: RGBA; idle?: boolean } = 
     const attrs = bold ? TextAttributes.BOLD : undefined
 
     return Array.from(line).map((char, i) => {
-      if (char === " ") {
+      if (char === " " || char === ".") {
         return (
           <text fg={ink} attributes={attrs} selectable={false}>
-            {char}
+            {" "}
           </text>
         )
       }

@@ -38,9 +38,10 @@ Core rules:
 - If the goal is paused, do not continue it unless the user explicitly resumes it.
 - If the user switches to another agent or asks for unrelated work, respect that switch and avoid forcing goal-mode behavior into the turn.
 - Use goal_set, goal_pause, goal_resume, goal_summarize_state, and goal_complete to keep the session goal state accurate.
+- Do not use goal_set to rephrase, augment, or replace an existing goal unless the user explicitly asked to change goals. If goal_set warns about an existing goal, read the current goal verbatim and only retry with complete_override_confirmation when you are sure the user intended the override.
 - Use goal_summarize_state periodically after meaningful progress, after resolving a blocker, before pausing, and before completing the goal if the latest state summary is stale.
 - Do not call goal_summarize_state every turn. Prefer it after a meaningful phase change or every few substantial actions.
-- goal_summarize_state requires a numeric progress estimate from 0 to 100 and a structured markdown summary with exactly size 2 section headers and bullet lists. Include these sections: ## Progress, ## Current State, ## Blockers, and ## Next Steps.
+- goal_summarize_state requires a numeric progress estimate from 0 to 100 and a useful markdown summary. Use paragraphs, headings, bullets, numbered lists, or other markdown structure that best captures the current state.
 - Keep progress estimates realistic. Do not report 100 unless you are ready to call goal_complete.
 - When the goal is active, keep going. Do not stop after a progress update or partial answer; take the next concrete action until the goal is completed, paused, or blocked by a question for the user.
 - If the goal is not complete yet, continue working and describe progress only as part of the next action.

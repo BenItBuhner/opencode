@@ -314,6 +314,23 @@ const useServerConfig = Effect.fn("test.useServerConfig")(function* (config: (ur
   return { dir, llm }
 })
 
+function withGoalReminderThreshold<A, E, R>(value: string | undefined, fx: () => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = process.env.OPENCODE_GOAL_REMINDER_THRESHOLD
+      if (value === undefined) delete process.env.OPENCODE_GOAL_REMINDER_THRESHOLD
+      else process.env.OPENCODE_GOAL_REMINDER_THRESHOLD = value
+      return previous
+    }),
+    () => fx(),
+    (previous) =>
+      Effect.sync(() => {
+        if (previous === undefined) delete process.env.OPENCODE_GOAL_REMINDER_THRESHOLD
+        else process.env.OPENCODE_GOAL_REMINDER_THRESHOLD = previous
+      }),
+  )
+}
+
 // Wait for a session's runner to enter a busy state. SessionStatus is flipped
 // inside Runner.startShell's serialized transition, so cancel can't no-op once
 // we observe it.
@@ -567,6 +584,74 @@ it.instance("goal loop continues after progress response until goal is completed
       status: "active",
     })
   }),
+)
+
+it.instance("goal loop injects configurable no-tool response reminders", () =>
+  withGoalReminderThreshold(undefined, () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
+
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({ title: "Pinned" })
+
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "goal",
+        model: ref,
+        noReply: true,
+        parts: [{ type: "text", text: "Finish the goal workflow" }],
+      })
+
+      yield* Effect.forEach(
+        ["Progress 1", "Progress 2", "Progress 3", "Progress 4", "Progress 5"],
+        (text) => llm.text(text),
+        { discard: true },
+      )
+      yield* llm.tool("goal_complete", {})
+      yield* llm.text("Goal complete.")
+
+      yield* prompt.loop({ sessionID: chat.id })
+      const inputs = yield* llm.inputs
+      const serialized = inputs.map((input) => JSON.stringify(input))
+      expect(serialized.join("\n")).not.toContain("4 consecutive assistant responses without any tool calls")
+      const defaultReminder = serialized.find((input) =>
+        input.includes("5 consecutive assistant responses without any tool calls"),
+      )
+      expect(defaultReminder).toContain("Finish the goal workflow")
+      expect(defaultReminder).toContain("goal_complete")
+      expect(defaultReminder).toContain("goal_pause")
+
+      yield* llm.reset
+      yield* withGoalReminderThreshold("2", () =>
+        Effect.gen(function* () {
+          const custom = yield* sessions.create({ title: "Pinned" })
+
+          yield* prompt.prompt({
+            sessionID: custom.id,
+            agent: "goal",
+            model: ref,
+            noReply: true,
+            parts: [{ type: "text", text: "Finish the configurable goal workflow" }],
+          })
+
+          yield* llm.text("Progress 1")
+          yield* llm.text("Progress 2")
+          yield* llm.tool("goal_complete", {})
+          yield* llm.text("Goal complete.")
+
+          yield* prompt.loop({ sessionID: custom.id })
+          const customInputs = (yield* llm.inputs).map((input) => JSON.stringify(input))
+          expect(customInputs.join("\n")).not.toContain("1 consecutive assistant responses without any tool calls")
+          const customReminder = customInputs.find((input) =>
+            input.includes("2 consecutive assistant responses without any tool calls"),
+          )
+          expect(customReminder).toContain("Finish the configurable goal workflow")
+        }),
+      )
+    }),
+  ),
+  20_000,
 )
 
 it.instance("goal loop pauses the active goal after a provider response error", () =>

@@ -9,9 +9,9 @@ import { fileURLToPath } from "url"
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 
-const packageName = "@benitbuhner/opencode-goal-mode"
-const packageDirName = "opencode-goal-mode"
-const commandName = "opencode-goal-mode"
+const packageName = "@benitbuhner/opengoal"
+const packageDirName = "opengoal"
+const commandName = "opengoal"
 const publishExtraRegistries = process.env.OPENCODE_GOAL_MODE_PUBLISH_REGISTRIES === "1"
 const packOnly = process.env.OPENCODE_GOAL_MODE_PACK_ONLY === "1"
 
@@ -56,7 +56,7 @@ for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" }
   if (filepath === `${packageDirName}/package.json` || filepath === `${packageDirName}\\package.json`) continue
   const item = await Bun.file(`./dist/${filepath}`).json()
   const dir = `./dist/${filepath.replace(/[\\/]package\.json$/, "")}`
-  const name = String(item.name).replace(/^opencode-/, `${packageName}-`)
+  const name = String(item.name).replace(/^opengoal-/, `${packageName}-`)
   await Bun.file(`./dist/${filepath}`).write(
     JSON.stringify(
       {
@@ -76,6 +76,7 @@ const version = process.env.OPENCODE_GOAL_MODE_META_VERSION ?? Object.values(bin
 await $`mkdir -p ./dist/${packageDirName}`
 await $`mkdir -p ./dist/${packageDirName}/bin`
 await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/opencode`
 await Bun.file(`./dist/${packageDirName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
 
 await Bun.file(`./dist/${packageDirName}/package.json`).write(
@@ -85,10 +86,11 @@ await Bun.file(`./dist/${packageDirName}/package.json`).write(
       files: ["bin", "LICENSE"],
       bin: {
         [commandName]: `./bin/${commandName}`,
+        opencode: "./bin/opencode",
       },
       scripts: {
         postinstall:
-          "node -e \"if(process.platform!=='win32')require('fs').chmodSync(require('path').join(process.cwd(),'bin','opencode-goal-mode'),0o755)\"",
+          "node -e \"if(process.platform!=='win32'){const fs=require('fs');const p=require('path');for(const n of ['opengoal','opencode'])fs.chmodSync(p.join(process.cwd(),'bin',n),0o755)}\"",
       },
       version: version,
       license: pkg.license,

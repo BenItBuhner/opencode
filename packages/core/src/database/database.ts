@@ -6,6 +6,7 @@ import { Context, Effect, Layer } from "effect"
 import { Global } from "../global"
 import { Flag } from "../flag/flag"
 import { isAbsolute, join } from "path"
+import { existsSync } from "fs"
 import { DatabaseMigration } from "./migration"
 import { InstallationChannel } from "../installation/version"
 import { LayerNode } from "../effect/layer-node"
@@ -48,10 +49,20 @@ export function path() {
   if (
     ["latest", "beta", "prod"].includes(InstallationChannel) ||
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "1" ||
+    process.env.OPENGOAL_DISABLE_CHANNEL_DB === "1" ||
+    process.env.OPENGOAL_DISABLE_CHANNEL_DB === "true" ||
     process.env.OPENCODE_DISABLE_CHANNEL_DB === "true"
   )
-    return join(Global.Path.data, "opencode.db")
-  return join(Global.Path.data, `opencode-${InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")}.db`)
+    return existingOrNext("opengoal.db", "opencode.db")
+  const channel = InstallationChannel.replace(/[^a-zA-Z0-9._-]/g, "-")
+  return existingOrNext(`opengoal-${channel}.db`, `opencode-${channel}.db`)
+}
+
+function existingOrNext(next: string, legacy: string) {
+  const nextPath = join(Global.Path.data, next)
+  const legacyPath = join(Global.Path.data, legacy)
+  if (!existsSync(nextPath) && existsSync(legacyPath)) return legacyPath
+  return nextPath
 }
 
 export const defaultLayer = Layer.unwrap(

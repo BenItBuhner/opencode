@@ -187,27 +187,31 @@ describe("Config", () => {
                   "providers": { "last": ${JSON.stringify(provider)} },
                 }`,
               ),
+              fs.writeFile(
+                path.join(tmp.path, "opengoal.jsonc"),
+                JSON.stringify({ $schema: "new", providers: { new: provider } }),
+              ),
             ]),
           )
           return yield* Effect.gen(function* () {
             const config = yield* Config.Service
             const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
 
-            expect(documents).toHaveLength(3)
-            expect(documents.map((document) => document.type)).toEqual(["document", "document", "document"])
-            expect(documents.map((document) => document.info.$schema)).toEqual(["base", "middle", "last"])
+            expect(documents).toHaveLength(4)
+            expect(documents.map((document) => document.type)).toEqual(["document", "document", "document", "document"])
+            expect(documents.map((document) => document.info.$schema)).toEqual(["base", "middle", "last", "new"])
             expect(documents[0]).toBeInstanceOf(Config.Document)
             expect(documents[0]?.path).toBe(path.join(tmp.path, "config.json"))
-            expect(documents[2]?.info.providers?.last).toBeInstanceOf(ConfigProvider.Info)
+            expect(documents[3]?.info.providers?.new).toBeInstanceOf(ConfigProvider.Info)
 
             yield* Effect.promise(() =>
-              fs.writeFile(path.join(tmp.path, "opencode.jsonc"), JSON.stringify({ $schema: "changed" })),
+              fs.writeFile(path.join(tmp.path, "opengoal.jsonc"), JSON.stringify({ $schema: "changed" })),
             )
             expect(
               (yield* config.entries())
                 .filter((entry) => entry.type === "document")
                 .map((document) => document.info.$schema),
-            ).toEqual(["base", "middle", "last"])
+            ).toEqual(["base", "middle", "last", "new"])
           }).pipe(Effect.provide(testLayer(tmp.path)))
         }),
       ),

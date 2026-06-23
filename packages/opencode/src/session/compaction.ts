@@ -183,7 +183,6 @@ export const layer = Layer.effect(
         cfg: yield* config.get(),
         tokens: input.tokens,
         model: input.model,
-        outputTokenMax: flags.outputTokenMax,
       })
     })
 

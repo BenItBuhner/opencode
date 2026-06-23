@@ -13,8 +13,9 @@ export const files = Effect.fn("ConfigPaths.projectFiles")(function* (
   worktree?: string,
 ) {
   const afs = yield* FSUtil.Service
+  const names = name === "opencode" ? ["opencode", "opengoal"] : [name]
   return (yield* afs.up({
-    targets: [`${name}.jsonc`, `${name}.json`],
+    targets: names.flatMap((item) => [`${item}.jsonc`, `${item}.json`]),
     start: directory,
     stop: worktree,
   })).toReversed()
@@ -26,13 +27,13 @@ export const directories = Effect.fn("ConfigPaths.directories")(function* (direc
     Global.Path.config,
     ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
       ? yield* afs.up({
-          targets: [".opencode"],
+          targets: [".opencode", ".opengoal"],
           start: directory,
           stop: worktree,
         })
       : []),
     ...(yield* afs.up({
-      targets: [".opencode"],
+      targets: [".opencode", ".opengoal"],
       start: Global.Path.home,
       stop: Global.Path.home,
     })),

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test"
+import { afterEach, expect, mock, test } from "bun:test"
 import { mkdir, unlink } from "fs/promises"
 import path from "path"
 import { Effect, Layer } from "effect"
@@ -22,6 +22,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
 const originalEnv = new Map<string, string | undefined>()
+const originalFetch = globalThis.fetch
 
 const rememberEnv = (k: string) => {
   if (!originalEnv.has(k)) originalEnv.set(k, process.env[k])
@@ -48,6 +49,7 @@ const remove = (k: string) =>
   })
 
 afterEach(async () => {
+  globalThis.fetch = originalFetch
   for (const [key, value] of originalEnv) {
     if (value === undefined) delete process.env[key]
     else process.env[key] = value
@@ -852,6 +854,110 @@ it.instance(
             },
           },
           options: { apiKey: "new-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "discovers OpenAI-compatible model metadata from models route",
+  Effect.gen(function* () {
+    const fetchMock = mock((input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe("https://discover.example/v1/models")
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer discover-key")
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "remote-model",
+                name: "Remote Model",
+                context_length: 131_072,
+                top_provider: { max_completion_tokens: 16_384 },
+                pricing: {
+                  prompt: "0.0000004",
+                  completion: "0.0000016",
+                  input_cache_read: "0.00000004",
+                },
+                architecture: {
+                  input_modalities: ["text", "image"],
+                  output_modalities: ["text"],
+                },
+                supported_parameters: ["tools", "reasoning_effort"],
+              },
+            ],
+          }),
+        ),
+      )
+    })
+    globalThis.fetch = fetchMock as unknown as typeof fetch
+
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("discovered-compatible")].models["remote-model"]
+    expect(model.name).toBe("Remote Model")
+    expect(model.limit.context).toBe(131_072)
+    expect(model.limit.output).toBe(16_384)
+    expect(model.cost.input).toBeCloseTo(0.4)
+    expect(model.cost.output).toBeCloseTo(1.6)
+    expect(model.cost.cache.read).toBeCloseTo(0.04)
+    expect(model.capabilities.input.image).toBe(true)
+    expect(model.capabilities.output.text).toBe(true)
+    expect(model.capabilities.toolcall).toBe(true)
+    expect(model.capabilities.reasoning).toBe(true)
+  }),
+  {
+    config: {
+      provider: {
+        "discovered-compatible": {
+          name: "Discovered",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://discover.example/v1",
+          options: { apiKey: "discover-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "discovered OpenAI-compatible metadata enriches configured model stubs",
+  Effect.gen(function* () {
+    globalThis.fetch = mock(() =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({
+            data: [
+              {
+                id: "stub-model",
+                name: "Remote Stub Name",
+                max_context_length: 65_536,
+                max_output_tokens: 8_192,
+                pricing: { input: 0.2, output: 0.8 },
+              },
+            ],
+          }),
+        ),
+      ),
+    ) as unknown as typeof fetch
+
+    const providers = yield* list
+    const model = providers[ProviderV2.ID.make("stub-discovery")].models["stub-model"]
+    expect(model.name).toBe("Local Stub Name")
+    expect(model.limit.context).toBe(65_536)
+    expect(model.limit.output).toBe(8_192)
+    expect(model.cost.input).toBe(0.2)
+    expect(model.cost.output).toBe(0.8)
+  }),
+  {
+    config: {
+      provider: {
+        "stub-discovery": {
+          name: "Stub Discovery",
+          npm: "@ai-sdk/openai-compatible",
+          api: "https://stub.example/v1",
+          models: { "stub-model": { name: "Local Stub Name" } },
+          options: { apiKey: "stub-key", discoverModels: true },
         },
       },
     },
