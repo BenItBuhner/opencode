@@ -8,6 +8,7 @@
   </a>
 </p>
 <p align="center">The open source AI coding agent.</p>
+<p align="center"><sub>This fork ships as <strong>OpenGoal</strong> — OpenCode with durable session goals.</sub></p>
 <p align="center">
   <a href="https://opencode.ai/discord"><img alt="Discord" src="https://img.shields.io/discord/1391832426048651334?style=flat-square&label=discord" /></a>
   <a href="https://www.npmjs.com/package/opencode-ai"><img alt="npm" src="https://img.shields.io/npm/v/opencode-ai?style=flat-square" /></a>
@@ -45,6 +46,16 @@
 
 ### Installation
 
+For **OpenGoal** (this fork), install from npm:
+
+```bash
+npm i -g @benitbuhner/opengoal
+```
+
+This installs the `opengoal` command; `opencode` is provided as a compatible alias. Requires [Node.js](https://nodejs.org/) on Linux and macOS.
+
+Upstream OpenCode installs:
+
 ```bash
 # YOLO
 curl -fsSL https://opencode.ai/install | bash
@@ -63,6 +74,16 @@ nix run nixpkgs#opencode           # or github:anomalyco/opencode for latest dev
 
 > [!TIP]
 > Remove versions older than 0.1.x before installing.
+
+### Goal mode
+
+OpenGoal adds a **session goal** — durable state for what you are trying to accomplish in a chat, separate from whichever agent is active.
+
+- Set, pause, resume, or complete a goal from the TUI; progress and summaries stay attached to the session.
+- The **goal** agent keeps turns oriented toward the active goal without taking over unrelated work when you switch agents.
+- Goal status appears in the session sidebar; use `Tab` to steer input into the current response and `Enter` to queue while the session is busy.
+
+Goal state is persisted for the session so you can leave and return without losing the thread.
 
 ### Desktop App (BETA)
 
@@ -99,13 +120,14 @@ XDG_BIN_DIR=$HOME/.local/bin curl -fsSL https://opencode.ai/install | bash
 
 ### Agents
 
-OpenCode includes two built-in agents you can switch between with the `Tab` key.
+OpenCode includes built-in agents you can switch between (use `Shift+Tab` in the TUI).
 
 - **build** - Default, full-access agent for development work
 - **plan** - Read-only agent for analysis and code exploration
   - Denies file edits by default
   - Asks permission before running bash commands
   - Ideal for exploring unfamiliar codebases or planning changes
+- **goal** - Tracks the active session goal, progress, and summaries (see [Goal mode](#goal-mode))
 
 Also included is a **general** subagent for complex searches and multistep tasks.
 This is used internally and can be invoked using `@general` in messages.
