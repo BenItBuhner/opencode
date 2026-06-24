@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { compactProgressBar, parseGoalStatus } from "../../src/component/goal-status"
+import { compactProgressBar, goalActiveSecondsAt, parseGoalStatus } from "../../src/component/goal-status"
 
 describe("goal status", () => {
   test("parses valid goal metadata and derives latest summary progress", () => {
@@ -34,5 +34,33 @@ describe("goal status", () => {
   test("clamps compact progress bars", () => {
     expect(compactProgressBar(-10)).toEqual({ filled: "", empty: "────────────" })
     expect(compactProgressBar(150)).toEqual({ filled: "━━━━━━━━━━━━", empty: "" })
+  })
+
+  test("counts active goal duration without paused wall time", () => {
+    expect(
+      goalActiveSecondsAt(
+        {
+          text: "Ship the sidebar goal panel",
+          status: "active",
+          created: 1_000,
+          activeSeconds: 120,
+          activeSince: 10_000,
+        },
+        25_000,
+      ),
+    ).toBe(135)
+  })
+
+  test("parses active timing fields from goal metadata", () => {
+    const goal = parseGoalStatus({
+      text: "Ship the sidebar goal panel",
+      status: "active",
+      created: 1_000,
+      activeSeconds: 30,
+      activeSince: 5_000,
+    })
+
+    expect(goal?.activeSeconds).toBe(30)
+    expect(goal?.activeSince).toBe(5_000)
   })
 })

@@ -244,6 +244,8 @@ describe("Session", () => {
       const goal = yield* session.setGoal({ sessionID: created.id, text: "ship goal mode" })
       expect(goal.status).toBe("active")
       expect(goal.revision).toBe(1)
+      expect(goal.activeSeconds).toBe(0)
+      expect(goal.activeSince).toBeTypeOf("number")
 
       const withGoal = yield* session.get(created.id)
       expect(withGoal.metadata?.source).toBe("test")
@@ -252,6 +254,13 @@ describe("Session", () => {
       const paused = yield* session.updateGoal({ sessionID: created.id, status: "paused" })
       expect(paused?.status).toBe("paused")
       expect(paused?.revision).toBe(2)
+      expect(paused?.activeSince).toBeUndefined()
+      expect(paused?.activeSeconds).toBeTypeOf("number")
+
+      const resumed = yield* session.updateGoal({ sessionID: created.id, status: "active" })
+      expect(resumed?.status).toBe("active")
+      expect(resumed?.activeSeconds).toBe(paused?.activeSeconds)
+      expect(resumed?.activeSince).toBeTypeOf("number")
 
       const summarized = yield* session.addGoalSummary({
         sessionID: created.id,
@@ -273,7 +282,7 @@ describe("Session", () => {
       })
       expect(summarized?.progress).toBe(25)
       expect(summarized?.summaries?.at(-1)?.headline).toBe("Initial checkpoint")
-      expect(summarized?.revision).toBe(3)
+      expect(summarized?.revision).toBe(4)
 
       for (let i = 0; i < 30; i++) {
         yield* session.addGoalSummary({

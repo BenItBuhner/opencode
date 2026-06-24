@@ -22,6 +22,8 @@ export type GoalSummariesView = {
 export type GoalStatusView = GoalSummariesView & {
   status: string
   created?: number
+  activeSeconds?: number
+  activeSince?: number
 }
 
 export function parseGoalStatus(value: unknown): GoalStatusView | undefined {
@@ -32,6 +34,8 @@ export function parseGoalStatus(value: unknown): GoalStatusView | undefined {
     created?: unknown
     progress?: unknown
     summaries?: unknown
+    activeSeconds?: unknown
+    activeSince?: unknown
   }
   if (typeof item.text !== "string" || typeof item.status !== "string") return undefined
 
@@ -51,9 +55,19 @@ export function parseGoalStatus(value: unknown): GoalStatusView | undefined {
     text: item.text,
     status: item.status,
     created: typeof item.created === "number" ? item.created : undefined,
+    activeSeconds: typeof item.activeSeconds === "number" ? item.activeSeconds : undefined,
+    activeSince: typeof item.activeSince === "number" ? item.activeSince : undefined,
     progress: typeof item.progress === "number" ? item.progress : summaries?.at(-1)?.progress,
     summaries,
   }
+}
+
+export function goalActiveSecondsAt(goal: GoalStatusView, now: number) {
+  const accumulated = goal.activeSeconds ?? 0
+  if (goal.status !== "active") return accumulated
+  const since = goal.activeSince ?? goal.created
+  if (since === undefined) return accumulated
+  return accumulated + Math.max(0, Math.floor((now - since) / 1000))
 }
 
 export function compactProgressBar(progress: number) {
@@ -121,8 +135,8 @@ export function createGoalElapsed(goal: () => GoalStatusView | undefined) {
 
   return createMemo(() => {
     const item = goal()
-    if (!item || item.status !== "active" || item.created === undefined) return
-    return formatDuration(Math.floor((now() - item.created) / 1000)) || "0s"
+    if (!item || item.status !== "active") return
+    return formatDuration(goalActiveSecondsAt(item, now())) || "0s"
   })
 }
 

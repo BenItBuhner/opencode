@@ -230,6 +230,8 @@ export const Goal = Schema.Struct({
   progress: optionalOmitUndefined(GoalProgress),
   summaries: optionalOmitUndefined(Schema.Array(GoalSummary)),
   revision: optionalOmitUndefined(NonNegativeInt),
+  activeSeconds: optionalOmitUndefined(NonNegativeInt),
+  activeSince: optionalOmitUndefined(NonNegativeInt),
 })
 export type Goal = Types.DeepMutable<Schema.Schema.Type<typeof Goal>>
 export const GoalUpdateInput = Schema.Struct({
@@ -255,6 +257,52 @@ export function goalFromMetadata(metadata: typeof Metadata.Type | undefined): Go
     ...goal,
     summaries: goal.summaries?.map((summary) => ({ ...summary })),
   }
+}
+
+export function goalActiveSecondsAt(goal: Goal, now: number) {
+  const accumulated = goal.activeSeconds ?? 0
+  if (goal.status !== "active") return accumulated
+  const since = goal.activeSince ?? goal.created
+  return accumulated + Math.max(0, Math.floor((now - since) / 1000))
+}
+
+export function goalActiveTiming(
+  existing: Goal | undefined,
+  status: typeof GoalStatus.Type,
+  now: number,
+  reset: boolean,
+): Pick<Goal, "activeSeconds" | "activeSince"> {
+  if (reset || !existing) {
+    return {
+      activeSeconds: 0,
+      activeSince: status === "active" ? now : undefined,
+    }
+  }
+
+  const activeSeconds = existing.activeSeconds ?? 0
+  const wasActive = existing.status === "active"
+  const isActive = status === "active"
+
+  if (wasActive && !isActive) {
+    const since = existing.activeSince ?? existing.created
+    return {
+      activeSeconds: activeSeconds + Math.max(0, Math.floor((now - since) / 1000)),
+      activeSince: undefined,
+    }
+  }
+
+  if (!wasActive && isActive) {
+    return { activeSeconds, activeSince: now }
+  }
+
+  if (wasActive && isActive) {
+    return {
+      activeSeconds,
+      activeSince: existing.activeSince ?? now,
+    }
+  }
+
+  return { activeSeconds, activeSince: undefined }
 }
 
 export function isGoalHarnessAgent(agentName: string | undefined) {
@@ -888,6 +936,8 @@ export const layer: Layer.Layer<
       const existing = goalFromMetadata(current.metadata)
       const now = Date.now()
       const status = input.status ?? "active"
+      const reset = !existing || input.text.trim() !== existing.text
+      const timing = goalActiveTiming(existing, status, now, reset)
       const goal: Goal = {
         text: input.text.trim(),
         status,
@@ -895,6 +945,7 @@ export const layer: Layer.Layer<
         updated: now,
         completed: status === "completed" ? (existing?.completed ?? now) : undefined,
         revision: (existing?.revision ?? 0) + 1,
+        ...timing,
       }
       yield* writeGoalMetadata({ session: current, goal })
       return goal
@@ -910,13 +961,17 @@ export const layer: Layer.Layer<
 
       const now = Date.now()
       const status = input.status ?? existing.status
+      const text = input.text === undefined ? existing.text : input.text.trim()
+      const reset = text !== existing.text
+      const timing = goalActiveTiming(existing, status, now, reset)
       const goal: Goal = {
         ...existing,
-        text: input.text === undefined ? existing.text : input.text.trim(),
+        text,
         status,
         updated: now,
         completed: status === "completed" ? (existing.completed ?? now) : undefined,
         revision: (existing.revision ?? 0) + 1,
+        ...timing,
       }
       yield* writeGoalMetadata({ session: current, goal })
       return goal
