@@ -156,3 +156,13 @@ const table = sqliteTable("session", {
 - Keep delivery vocabulary explicit. Prompts steer by default and coalesce into the active activity at the next safe provider-turn boundary. Explicit `queue` inputs open FIFO future activities one at a time after the active activity settles.
 - Keep EventV2 replay owner claims separate from clustered Session execution ownership.
 - Keep the System Context algebra, registry, and built-ins in `src/system-context`; keep Context Source producers with their observed domains, and keep Session History selection plus Context Epoch persistence Session-owned.
+
+## Cursor Cloud specific instructions
+
+- Runtime is **Bun** (pinned `bun@1.3.14` via `packageManager`); it lives at `~/.bun/bin` and is on `PATH` (added to `~/.bashrc` at setup). The startup update script runs `bun install` from the repo root; no separate Node install is needed for the core agent.
+- `bun install` may rewrite one line in `bun.lock` (the git-hosted `ghostty-web` dep resolves to its latest branch commit). This is harmless install churn — do not commit it.
+- The AI agent works **fully offline with no provider API key**: the built-in free "OpenCode Zen" (`Big Pickle`) model is the default and returns real completions. Use it to exercise the agent loop end-to-end without secrets. `/connect` (TUI) is only needed for external providers (Claude/GPT/Gemini/etc.).
+- No external datastore is required — persistence is embedded SQLite. Sessions/projects are written locally on first use.
+- Run commands (see `CONTRIBUTING.md`): `bun dev` = TUI (server runs in a worker thread); `bun dev serve --port 4096` = headless HTTP API; `bun dev .` runs the TUI against this repo. The TUI is interactive — launch it via `tmux`, never as a blocking foreground command (see `packages/opencode/AGENTS.md`).
+- Web UI (`packages/app`): start backend `bun dev serve --port 4096`, then from `packages/app` run `bun dev -- --port 4444` and open `http://localhost:4444` (it targets the backend at :4096). See `packages/app/AGENTS.md`; do not restart a running server/app process.
+- `test/tool/parameters.test.ts` has 2 pre-existing snapshot mismatches on `dev` ("wire shape" for `question`/`task`, where source tool fields drifted from committed `.snap`). These are unrelated to environment setup.
