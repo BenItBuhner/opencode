@@ -11,16 +11,19 @@
 //! Usage: opencode-server --db <path> --directory <cwd> [--port <port>]
 
 mod bus;
+mod config;
 mod file;
 mod float_check;
 mod identifier;
 mod message;
 mod project;
+mod provider;
 mod session;
 mod slug;
+mod vcs;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -41,6 +44,7 @@ struct App {
     path: String,
     version: String,
     port: u16,
+    paths: config::Paths,
 }
 
 struct Failure(StatusCode, String);
@@ -476,6 +480,173 @@ async fn project_current(State(app): State<App>) -> Result<Json<Value>, Failure>
     Ok(Json(serde_json::to_value(found).expect("serializable")))
 }
 
+async fn health(State(app): State<App>) -> Json<Value> {
+    Json(json!({ "healthy": true, "version": app.version }))
+}
+
+async fn config_get(State(app): State<App>) -> Json<Value> {
+    Json(config::instance(&app.directory, &app.worktree))
+}
+
+async fn config_update(
+    State(app): State<App>,
+    Json(payload): Json<Value>,
+) -> Result<Json<Value>, Failure> {
+    Ok(Json(
+        config::update_instance(&app.directory, payload)
+            .map_err(|error| Failure(StatusCode::BAD_REQUEST, error.to_string()))?,
+    ))
+}
+
+async fn global_config_get() -> Json<Value> {
+    Json(config::global())
+}
+
+async fn global_config_update(Json(payload): Json<Value>) -> Result<Json<Value>, Failure> {
+    Ok(Json(config::update_global(payload).map_err(|error| {
+        Failure(StatusCode::BAD_REQUEST, error.to_string())
+    })?))
+}
+
+async fn provider_list(State(app): State<App>) -> Json<Value> {
+    Json(provider::list(&config::instance(
+        &app.directory,
+        &app.worktree,
+    )))
+}
+
+async fn provider_auth(State(app): State<App>) -> Json<Value> {
+    Json(provider::auth_methods(&config::instance(
+        &app.directory,
+        &app.worktree,
+    )))
+}
+
+async fn provider_authorize() -> Json<Value> {
+    Json(Value::Null)
+}
+
+async fn provider_callback() -> Json<Value> {
+    Json(Value::Bool(true))
+}
+
+async fn config_providers(State(app): State<App>) -> Json<Value> {
+    Json(provider::config_providers(&config::instance(
+        &app.directory,
+        &app.worktree,
+    )))
+}
+
+async fn path_info(State(app): State<App>) -> Json<Value> {
+    Json(json!({
+        "home": app.paths.home,
+        "state": app.paths.state,
+        "config": app.paths.config,
+        "worktree": app.worktree,
+        "directory": app.directory,
+    }))
+}
+
+async fn vcs_info(State(app): State<App>) -> Json<Value> {
+    Json(vcs::info(&app.directory))
+}
+
+async fn vcs_status(State(app): State<App>) -> Json<Value> {
+    Json(Value::Array(vcs::status(&app.directory)))
+}
+
+#[derive(Deserialize)]
+struct VcsDiffQuery {
+    mode: String,
+    context: Option<i64>,
+}
+
+async fn vcs_diff(State(app): State<App>, Query(query): Query<VcsDiffQuery>) -> Json<Value> {
+    Json(Value::Array(vcs::diff(
+        &app.directory,
+        &query.mode,
+        query.context,
+    )))
+}
+
+async fn vcs_diff_raw(State(app): State<App>) -> Response {
+    (
+        [(header::CONTENT_TYPE, "text/x-diff; charset=utf-8")],
+        vcs::diff_raw(&app.directory),
+    )
+        .into_response()
+}
+
+async fn vcs_apply() -> Json<Value> {
+    Json(json!({ "applied": false }))
+}
+
+async fn command_list(State(app): State<App>) -> Json<Value> {
+    let config = config::instance(&app.directory, &app.worktree);
+    let configured = config
+        .get("command")
+        .and_then(Value::as_object)
+        .map(|commands| {
+            commands
+                .iter()
+                .map(|(name, command)| {
+                    json!({
+                        "name": name,
+                        "description": command.get("description").cloned().unwrap_or(Value::Null),
+                        "agent": command.get("agent").cloned().unwrap_or(Value::Null),
+                        "model": command.get("model").cloned().unwrap_or(Value::Null),
+                        "source": "command",
+                        "template": command.get("template").cloned().unwrap_or(Value::String(String::new())),
+                        "subtask": command.get("subtask").cloned().unwrap_or(Value::Null),
+                        "hints": [],
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    Json(Value::Array(
+        [
+            json!({
+                "name": "init",
+                "description": "guided AGENTS.md setup",
+                "source": "command",
+                "template": "",
+                "hints": [],
+            }),
+            json!({
+                "name": "review",
+                "description": "review changes [commit|branch|pr], defaults to uncommitted",
+                "source": "command",
+                "template": "",
+                "subtask": true,
+                "hints": [],
+            }),
+            json!({
+                "name": "goal",
+                "description": "manage the session goal: set, edit, pause, resume, complete, status, clear",
+                "source": "command",
+                "template": "$ARGUMENTS",
+                "hints": ["$ARGUMENTS"],
+            }),
+        ]
+        .into_iter()
+        .chain(configured)
+        .collect(),
+    ))
+}
+
+async fn empty_array() -> Json<Value> {
+    Json(Value::Array(vec![]))
+}
+
+async fn dispose_true() -> Json<Value> {
+    Json(Value::Bool(true))
+}
+
+async fn global_upgrade() -> Json<Value> {
+    Json(json!({ "success": false, "error": "Rust server upgrade is not implemented" }))
+}
+
 #[derive(Deserialize)]
 struct FindTextQuery {
     pattern: String,
@@ -643,9 +814,55 @@ async fn main() {
         path,
         version: std::env::var("OPENCODE_VERSION").unwrap_or_else(|_| "local".into()),
         port,
+        paths: config::paths(),
     };
 
     let router = Router::new()
+        .route("/global/health", get(health))
+        .route(
+            "/global/config",
+            get(global_config_get).patch(global_config_update),
+        )
+        .route("/global/dispose", get(dispose_true).post(dispose_true))
+        .route("/global/upgrade", get(global_upgrade).post(global_upgrade))
+        .route("/config", get(config_get).patch(config_update))
+        .route("/config/providers", get(config_providers))
+        .route("/provider", get(provider_list))
+        .route("/provider/auth", get(provider_auth))
+        .route(
+            "/provider/{provider_id}/oauth/authorize",
+            get(provider_authorize).post(provider_authorize),
+        )
+        .route(
+            "/provider/{provider_id}/oauth/callback",
+            get(provider_callback).post(provider_callback),
+        )
+        .route("/permission", get(empty_array))
+        .route(
+            "/permission/{request_id}/reply",
+            get(dispose_true).post(dispose_true),
+        )
+        .route("/question", get(empty_array))
+        .route(
+            "/question/{request_id}/reply",
+            get(dispose_true).post(dispose_true),
+        )
+        .route(
+            "/question/{request_id}/reject",
+            get(dispose_true).post(dispose_true),
+        )
+        .route("/instance/dispose", get(dispose_true).post(dispose_true))
+        .route("/path", get(path_info))
+        .route("/vcs", get(vcs_info))
+        .route("/vcs/status", get(vcs_status))
+        .route("/vcs/diff", get(vcs_diff))
+        .route("/vcs/diff/raw", get(vcs_diff_raw))
+        .route("/vcs/apply", get(vcs_apply).post(vcs_apply))
+        .route("/command", get(command_list))
+        .route("/agent", get(empty_array))
+        .route("/skill", get(empty_array))
+        .route("/lsp", get(empty_array))
+        .route("/formatter", get(empty_array))
         .route("/session", get(list_sessions).post(create_session))
         .route("/session/status", get(session_status))
         .route(
