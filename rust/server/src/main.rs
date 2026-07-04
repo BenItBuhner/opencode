@@ -10,6 +10,7 @@
 //!
 //! Usage: opencode-server --db <path> --directory <cwd> [--port <port>]
 
+mod b64;
 mod bus;
 mod config;
 mod file;
@@ -20,12 +21,13 @@ mod project;
 mod provider;
 mod session;
 mod slug;
+mod v2;
 mod vcs;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use r2d2_sqlite::SqliteConnectionManager;
 use serde::Deserialize;
@@ -347,52 +349,14 @@ fn require_session(conn: &rusqlite::Connection, id: &str) -> Result<(), Failure>
 }
 
 fn encode_cursor(cursor: &(String, i64)) -> String {
-    use std::fmt::Write;
-    let raw = format!("{{\"id\":\"{}\",\"time\":{}}}", cursor.0, cursor.1);
-    // base64url without padding, matching Buffer#toString("base64url").
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let bytes = raw.as_bytes();
-    let mut out = String::new();
-    for chunk in bytes.chunks(3) {
-        let buffer = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let value = u32::from_be_bytes([0, buffer[0], buffer[1], buffer[2]]);
-        let chars = [
-            ALPHABET[((value >> 18) & 63) as usize],
-            ALPHABET[((value >> 12) & 63) as usize],
-            ALPHABET[((value >> 6) & 63) as usize],
-            ALPHABET[(value & 63) as usize],
-        ];
-        let keep = match chunk.len() {
-            1 => 2,
-            2 => 3,
-            _ => 4,
-        };
-        for ch in &chars[..keep] {
-            write!(out, "{}", *ch as char).expect("write to string");
-        }
-    }
-    out
+    b64::encode(&format!(
+        "{{\"id\":\"{}\",\"time\":{}}}",
+        cursor.0, cursor.1
+    ))
 }
 
 fn decode_cursor(input: &str) -> Option<(String, i64)> {
-    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
-    let index_of = |ch: u8| ALPHABET.iter().position(|item| *item == ch);
-    let chars: Vec<u8> = input.bytes().collect();
-    let mut bytes: Vec<u8> = vec![];
-    for chunk in chars.chunks(4) {
-        let mut value: u32 = 0;
-        for (position, ch) in chunk.iter().enumerate() {
-            value |= (index_of(*ch)? as u32) << (18 - 6 * position);
-        }
-        let keep = chunk.len().checked_sub(1)?;
-        let raw = value.to_be_bytes();
-        bytes.extend_from_slice(&raw[1..1 + keep]);
-    }
-    let parsed: Value = serde_json::from_slice(&bytes).ok()?;
+    let parsed: Value = serde_json::from_slice(&b64::decode(input)?).ok()?;
     Some((
         parsed.get("id")?.as_str()?.to_string(),
         parsed.get("time")?.as_i64()?,
@@ -964,6 +928,311 @@ async fn file_status() -> Json<Value> {
     Json(Value::Array(vec![]))
 }
 
+// ---------------------------------------------------------------------------
+// v2 (/api) surface — wire-parity port of packages/server handlers
+// ---------------------------------------------------------------------------
+
+/// Tagged error responses matching the effect HttpApi encoding of
+/// Schema.TaggedErrorClass values (packages/protocol/src/errors.ts).
+fn v2_session_not_found(session_id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "_tag": "SessionNotFoundError",
+            "sessionID": session_id,
+            "message": format!("Session not found: {session_id}"),
+        })),
+    )
+        .into_response()
+}
+
+fn v2_invalid_cursor(message: &str) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({ "_tag": "InvalidCursorError", "message": message })),
+    )
+        .into_response()
+}
+
+async fn api_health() -> Json<Value> {
+    Json(json!({ "healthy": true }))
+}
+
+async fn api_session_active() -> Json<Value> {
+    // The Rust server never owns a Session drain, so the active set is empty
+    // (matching a Bun process with no foreground drains).
+    Json(json!({ "data": {} }))
+}
+
+#[derive(Deserialize)]
+struct ApiSessionsQuery {
+    workspace: Option<String>,
+    limit: Option<i64>,
+    order: Option<String>,
+    search: Option<String>,
+    directory: Option<String>,
+    project: Option<String>,
+    subpath: Option<String>,
+    cursor: Option<String>,
+}
+
+async fn api_session_list(
+    State(app): State<App>,
+    Query(query): Query<ApiSessionsQuery>,
+) -> Result<Response, Failure> {
+    let resolved = match query.cursor.as_deref() {
+        Some(cursor) => match v2::parse_cursor(cursor) {
+            Some(parsed) => parsed,
+            None => return Ok(v2_invalid_cursor("Invalid cursor")),
+        },
+        None => v2::ListQuery {
+            workspace: query.workspace,
+            order: query.order,
+            search: query.search,
+            directory: query.directory,
+            project: query.project,
+            subpath: query.subpath,
+            anchor: None,
+        },
+    };
+    let conn = app.pool.get()?;
+    Ok(Json(v2::list(&conn, &resolved, query.limit.unwrap_or(50))?).into_response())
+}
+
+#[derive(Deserialize)]
+struct ApiCreatePayload {
+    id: Option<String>,
+    agent: Option<String>,
+    model: Option<Value>,
+    location: Option<Value>,
+}
+
+async fn api_session_create(
+    State(app): State<App>,
+    Json(payload): Json<ApiCreatePayload>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    // Reusing a Session ID adopts the existing Session.
+    if let Some(id) = payload.id.as_deref() {
+        if let Some(existing) = v2::get(&conn, id)? {
+            return Ok(Json(json!({ "data": existing })).into_response());
+        }
+    }
+    let directory = payload
+        .location
+        .as_ref()
+        .and_then(|location| location.get("directory"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+        .unwrap_or_else(|| app.directory.clone());
+    let workspace_id = payload
+        .location
+        .as_ref()
+        .and_then(|location| location.get("workspaceID"))
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let (project_id, worktree) = resolve_project(&conn, &directory)?;
+    let path = directory
+        .strip_prefix(worktree.trim_end_matches('/'))
+        .map(|rest| rest.trim_start_matches('/').to_string())
+        .unwrap_or_default();
+    let id = payload
+        .id
+        .unwrap_or_else(|| format!("ses_{}", identifier::descending()));
+    let timestamp = now();
+    let model = payload.model.map(|model| {
+        json!({
+            "id": model.get("id").cloned().unwrap_or(Value::Null),
+            "providerID": model.get("providerID").cloned().unwrap_or(Value::Null),
+            "variant": model.get("variant").cloned().unwrap_or(Value::String("default".into())),
+        })
+    });
+    conn.execute(
+        "INSERT INTO session (id, project_id, workspace_id, slug, directory, path, title, \
+         version, metadata, agent, model, cost, tokens_input, tokens_output, tokens_reasoning, \
+         tokens_cache_read, tokens_cache_write, time_created, time_updated) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?)",
+        rusqlite::params![
+            id,
+            project_id,
+            workspace_id,
+            slug::create(),
+            directory,
+            path,
+            format!("New session - {}", chrono_iso(timestamp)),
+            app.version,
+            payload.agent,
+            model.map(|value| value.to_string()),
+            timestamp,
+            timestamp,
+        ],
+    )?;
+    let v1_info = session::get(&conn, &id)?.expect("row just inserted");
+    publish_session_event(
+        &app,
+        "session.created",
+        &id,
+        &serde_json::to_value(&v1_info).expect("serializable"),
+    )?;
+    let info = v2::get(&conn, &id)?.expect("row just inserted");
+    Ok(Json(json!({ "data": info })).into_response())
+}
+
+async fn api_session_get(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    Ok(match v2::get(&conn, &id)? {
+        Some(info) => Json(json!({ "data": info })).into_response(),
+        None => v2_session_not_found(&id),
+    })
+}
+
+async fn api_session_prompt(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Response, Failure> {
+    let mut conn = app.pool.get()?;
+    Ok(match v2::admit(&mut conn, &id, &payload) {
+        Ok(admitted) => Json(json!({ "data": admitted })).into_response(),
+        Err(v2::AdmitError::NotFound) => v2_session_not_found(&id),
+        Err(v2::AdmitError::Conflict(message_id)) => (
+            StatusCode::CONFLICT,
+            Json(json!({
+                "_tag": "ConflictError",
+                "message": format!(
+                    "Prompt message ID conflicts with an existing durable record: {message_id}"
+                ),
+                "resource": message_id,
+            })),
+        )
+            .into_response(),
+        Err(v2::AdmitError::BadRequest(message)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "message": message }))).into_response()
+        }
+        Err(v2::AdmitError::Storage(message)) => {
+            return Err(Failure(StatusCode::INTERNAL_SERVER_ERROR, message));
+        }
+    })
+}
+
+#[derive(Deserialize)]
+struct ApiHistoryQuery {
+    after: Option<i64>,
+    limit: Option<i64>,
+}
+
+async fn api_session_history(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ApiHistoryQuery>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    Ok(Json(v2::history(
+        &conn,
+        &id,
+        query.after,
+        query.limit.unwrap_or(50).clamp(1, 100),
+    )?)
+    .into_response())
+}
+
+#[derive(Deserialize)]
+struct ApiMessagesQuery {
+    limit: Option<i64>,
+    order: Option<String>,
+    cursor: Option<String>,
+}
+
+async fn api_session_messages(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ApiMessagesQuery>,
+) -> Result<Response, Failure> {
+    if query.cursor.is_some() && query.order.is_some() {
+        return Ok(v2_invalid_cursor("Cursor cannot be combined with order"));
+    }
+    let decoded = match query.cursor.as_deref() {
+        Some(cursor) => {
+            let parsed = b64::decode(cursor)
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| {
+                    Some((
+                        value.get("id")?.as_str()?.to_string(),
+                        value.get("order")?.as_str()?.to_string(),
+                        value.get("direction")?.as_str()?.to_string(),
+                    ))
+                });
+            match parsed {
+                Some(parsed) => Some(parsed),
+                None => return Ok(v2_invalid_cursor("Invalid cursor")),
+            }
+        }
+        None => None,
+    };
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let order = decoded
+        .as_ref()
+        .map(|(_, order, _)| order.clone())
+        .or(query.order)
+        .unwrap_or_else(|| "desc".into());
+    let page = v2::messages(
+        &conn,
+        &id,
+        &v2::MessagesQuery {
+            limit: query.limit.unwrap_or(50).clamp(1, 200),
+            order,
+            cursor_id: decoded.as_ref().map(|(id, _, _)| id.clone()),
+            direction: decoded.map(|(_, _, direction)| direction),
+        },
+    )?;
+    Ok(Json(page.expect("session checked above")).into_response())
+}
+
+async fn api_session_message(
+    State(app): State<App>,
+    Path((id, message_id)): Path<(String, String)>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    Ok(match v2::message(&conn, &id, &message_id)? {
+        Some(message) => Json(json!({ "data": message })).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "_tag": "MessageNotFoundError",
+                "sessionID": id,
+                "messageID": message_id,
+                "message": format!("Message not found: {message_id}"),
+            })),
+        )
+            .into_response(),
+    })
+}
+
+async fn api_session_interrupt(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    // V2 interruption targets the active process-local ownership chain; the
+    // Rust server owns no drains, so interruption is always a no-op.
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 /// Millisecond-precision ISO-8601 UTC timestamp matching Date#toISOString,
 /// without pulling in a date crate for one format.
 fn chrono_iso(millis: i64) -> String {
@@ -1114,6 +1383,21 @@ async fn main() {
         .route("/file", get(file_list))
         .route("/file/content", get(file_content))
         .route("/file/status", get(file_status))
+        .route("/api/health", get(api_health))
+        .route(
+            "/api/session",
+            get(api_session_list).post(api_session_create),
+        )
+        .route("/api/session/active", get(api_session_active))
+        .route("/api/session/{id}", get(api_session_get))
+        .route("/api/session/{id}/prompt", post(api_session_prompt))
+        .route("/api/session/{id}/history", get(api_session_history))
+        .route("/api/session/{id}/message", get(api_session_messages))
+        .route(
+            "/api/session/{id}/message/{message_id}",
+            get(api_session_message),
+        )
+        .route("/api/session/{id}/interrupt", post(api_session_interrupt))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

@@ -17,6 +17,10 @@ pub fn descending() -> String {
     create(true, now_millis())
 }
 
+pub fn ascending() -> String {
+    create(false, now_millis())
+}
+
 fn now_millis() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

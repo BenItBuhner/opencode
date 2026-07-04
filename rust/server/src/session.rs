@@ -46,6 +46,9 @@ pub struct Time {
     pub archived: Option<i64>,
 }
 
+/// Field order matches the SessionInfo schema struct
+/// (packages/schema/src/v1/session.ts) so serialization is byte-identical to
+/// the Bun encoder output.
 #[derive(Serialize)]
 pub struct Info {
     pub id: String,
@@ -59,6 +62,13 @@ pub struct Info {
     pub path: Option<String>,
     #[serde(rename = "parentID", skip_serializing_if = "Option::is_none")]
     pub parent_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary: Option<Summary>,
+    /// Value so whole doubles serialize like JSON.stringify ("0", not "0.0").
+    pub cost: Value,
+    pub tokens: Tokens,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<Share>,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent: Option<String>,
@@ -66,18 +76,12 @@ pub struct Info {
     pub model: Option<Value>,
     pub version: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub summary: Option<Summary>,
-    pub cost: f64,
-    pub tokens: Tokens,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub share: Option<Share>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<Value>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub revert: Option<Value>,
+    pub time: Time,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permission: Option<Value>,
-    pub time: Time,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub revert: Option<Value>,
 }
 
 pub const COLUMNS: &str = "id, project_id, workspace_id, parent_id, slug, directory, path, title, \
@@ -121,7 +125,7 @@ pub fn from_row(row: &Row) -> rusqlite::Result<Info> {
         share: share_url.map(|url| Share { url }),
         summary,
         metadata: json_column(row, 14)?,
-        cost: row.get(15)?,
+        cost: crate::v2::js_number(row.get(15)?),
         tokens: Tokens {
             input: row.get(16)?,
             output: row.get(17)?,

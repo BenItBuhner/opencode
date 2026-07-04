@@ -6,4 +6,5 @@ license.workspace = true
 description = "Tiny Rust client for the Rust OpenCode server surface"
 
 [dependencies]
-serde_json = { version = "1", features = ["float_roundtrip"] }
+# preserve_order keeps pretty-printed responses in server key order.
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
