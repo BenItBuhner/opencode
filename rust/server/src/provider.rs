@@ -63,6 +63,12 @@ fn connected(config: &Value) -> BTreeMap<String, Value> {
         }
     }
 
+    if !disabled.contains("opencode") {
+        if let Some(provider) = opencode_provider(&catalog) {
+            providers.insert("opencode".into(), provider);
+        }
+    }
+
     for (id, mut provider) in catalog {
         if disabled.contains(&id) {
             continue;
@@ -90,6 +96,31 @@ fn connected(config: &Value) -> BTreeMap<String, Value> {
     }
 
     providers
+}
+
+fn opencode_provider(catalog: &BTreeMap<String, Value>) -> Option<Value> {
+    let mut provider = catalog.get("opencode")?.clone();
+    let keep = [
+        "mimo-v2.5-free",
+        "nemotron-3-ultra-free",
+        "deepseek-v4-flash-free",
+        "north-mini-code-free",
+        "big-pickle",
+    ];
+    let models = keep
+        .into_iter()
+        .filter_map(|id| {
+            provider
+                .get("models")
+                .and_then(Value::as_object)
+                .and_then(|models| models.get(id))
+                .cloned()
+                .map(|model| (id.to_string(), model))
+        })
+        .collect::<Map<_, _>>();
+    provider["models"] = Value::Object(models);
+    provider["options"] = json!({ "apiKey": "public" });
+    Some(provider)
 }
 
 fn configured(config: &Value, catalog: &BTreeMap<String, Value>) -> BTreeMap<String, Value> {

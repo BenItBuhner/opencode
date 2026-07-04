@@ -630,9 +630,91 @@ async fn command_list(State(app): State<App>) -> Json<Value> {
             }),
         ]
         .into_iter()
+        .chain(markdown_commands(&app.worktree))
         .chain(configured)
         .collect(),
     ))
+}
+
+async fn agent_list(State(app): State<App>) -> Json<Value> {
+    Json(Value::Array(
+        [
+            json!({
+                "name": "build",
+                "description": "The default agent. Executes tools based on configured permissions.",
+                "mode": "primary",
+                "native": true,
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "plan",
+                "description": "Plan mode. Disallows all edit tools.",
+                "mode": "primary",
+                "native": true,
+                "color": "warning",
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "goal",
+                "description": "Goal mode. Works against a durable session goal that can be paused, edited, resumed, or completed.",
+                "mode": "primary",
+                "native": true,
+                "color": "accent",
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "general",
+                "description": "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.",
+                "mode": "subagent",
+                "native": true,
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "explore",
+                "description": "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.",
+                "mode": "subagent",
+                "native": true,
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "compaction",
+                "mode": "primary",
+                "native": true,
+                "hidden": true,
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "title",
+                "mode": "primary",
+                "native": true,
+                "hidden": true,
+                "temperature": 0.5,
+                "permission": [],
+                "options": {},
+            }),
+            json!({
+                "name": "summary",
+                "mode": "primary",
+                "native": true,
+                "hidden": true,
+                "permission": [],
+                "options": {},
+            }),
+        ]
+        .into_iter()
+        .chain(markdown_agents(&app.worktree))
+        .collect(),
+    ))
+}
+
+async fn skill_list(State(app): State<App>) -> Json<Value> {
+    Json(Value::Array(markdown_skills(&app.worktree)))
 }
 
 async fn empty_array() -> Json<Value> {
@@ -645,6 +727,131 @@ async fn dispose_true() -> Json<Value> {
 
 async fn global_upgrade() -> Json<Value> {
     Json(json!({ "success": false, "error": "Rust server upgrade is not implemented" }))
+}
+
+fn markdown_commands(worktree: &str) -> Vec<Value> {
+    markdown_files(&std::path::Path::new(worktree).join(".opencode/command"))
+        .into_iter()
+        .filter_map(|path| {
+            let parsed = parse_markdown(&path)?;
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            Some(json!({
+                "name": parsed.frontmatter.get("name").and_then(Value::as_str).unwrap_or(&name),
+                "description": parsed.frontmatter.get("description").cloned().unwrap_or(Value::Null),
+                "agent": parsed.frontmatter.get("agent").cloned().unwrap_or(Value::Null),
+                "model": parsed.frontmatter.get("model").cloned().unwrap_or(Value::Null),
+                "source": "command",
+                "template": parsed.content.trim(),
+                "subtask": parsed.frontmatter.get("subtask").cloned().unwrap_or(Value::Null),
+                "hints": command_hints(&parsed.content),
+            }))
+        })
+        .collect()
+}
+
+fn markdown_agents(worktree: &str) -> Vec<Value> {
+    markdown_files(&std::path::Path::new(worktree).join(".opencode/agent"))
+        .into_iter()
+        .filter_map(|path| {
+            let parsed = parse_markdown(&path)?;
+            let name = path.file_stem()?.to_string_lossy().into_owned();
+            Some(json!({
+                "name": parsed.frontmatter.get("name").and_then(Value::as_str).unwrap_or(&name),
+                "description": parsed.frontmatter.get("description").cloned().unwrap_or(Value::Null),
+                "mode": parsed.frontmatter.get("mode").cloned().unwrap_or(Value::String("all".into())),
+                "native": false,
+                "hidden": parsed.frontmatter.get("hidden").cloned().unwrap_or(Value::Null),
+                "prompt": parsed.content.trim(),
+                "permission": [],
+                "options": {},
+            }))
+        })
+        .collect()
+}
+
+fn markdown_skills(worktree: &str) -> Vec<Value> {
+    markdown_files(&std::path::Path::new(worktree).join(".opencode/skills"))
+        .into_iter()
+        .filter(|path| path.file_name().is_some_and(|name| name == "SKILL.md"))
+        .filter_map(|path| {
+            let parsed = parse_markdown(&path)?;
+            let name = parsed.frontmatter.get("name")?.as_str()?;
+            Some(json!({
+                "name": name,
+                "description": parsed.frontmatter.get("description").cloned().unwrap_or(Value::Null),
+                "location": path.to_string_lossy(),
+                "content": parsed.content,
+            }))
+        })
+        .collect()
+}
+
+fn markdown_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return vec![];
+    };
+    entries
+        .filter_map(Result::ok)
+        .flat_map(|entry| {
+            let path = entry.path();
+            if path.is_dir() {
+                return markdown_files(&path);
+            }
+            if path.extension().is_some_and(|extension| extension == "md") {
+                return vec![path];
+            }
+            vec![]
+        })
+        .collect()
+}
+
+struct Markdown {
+    frontmatter: serde_json::Map<String, Value>,
+    content: String,
+}
+
+fn parse_markdown(path: &std::path::Path) -> Option<Markdown> {
+    let text = std::fs::read_to_string(path).ok()?;
+    if !text.starts_with("---\n") {
+        return Some(Markdown {
+            frontmatter: serde_json::Map::new(),
+            content: text,
+        });
+    }
+    let rest = &text[4..];
+    let (frontmatter, content) = rest.split_once("\n---\n")?;
+    Some(Markdown {
+        frontmatter: frontmatter
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .map(|(key, value)| {
+                let value = value.trim().trim_matches('"').trim_matches('\'');
+                (
+                    key.trim().to_string(),
+                    match value {
+                        "true" => Value::Bool(true),
+                        "false" => Value::Bool(false),
+                        _ => Value::String(value.to_string()),
+                    },
+                )
+            })
+            .collect(),
+        content: content.to_string(),
+    })
+}
+
+fn command_hints(template: &str) -> Vec<Value> {
+    let mut hints = vec![];
+    if template.contains("$ARGUMENTS") {
+        hints.push(Value::String("$ARGUMENTS".into()));
+    }
+    for index in 1..10 {
+        let hint = format!("${index}");
+        if template.contains(&hint) {
+            hints.push(Value::String(hint));
+        }
+    }
+    hints
 }
 
 #[derive(Deserialize)]
@@ -859,8 +1066,8 @@ async fn main() {
         .route("/vcs/diff/raw", get(vcs_diff_raw))
         .route("/vcs/apply", get(vcs_apply).post(vcs_apply))
         .route("/command", get(command_list))
-        .route("/agent", get(empty_array))
-        .route("/skill", get(empty_array))
+        .route("/agent", get(agent_list))
+        .route("/skill", get(skill_list))
         .route("/lsp", get(empty_array))
         .route("/formatter", get(empty_array))
         .route("/session", get(list_sessions).post(create_session))
