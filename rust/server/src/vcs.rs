@@ -154,7 +154,7 @@ fn diff_items(directory: &str, ref_name: &str) -> Vec<Item> {
         .filter_map(|line| {
             let mut parts = line.split('\t');
             let code = parts.next()?.to_string();
-            let file = parts.last()?.to_string();
+            let file = parts.next_back()?.to_string();
             Some(Item {
                 status: status_from_code(&code),
                 code,
@@ -173,7 +173,7 @@ fn numstat(directory: &str, ref_name: &str) -> Vec<Stat> {
             Some(Stat {
                 additions: parts.next()?.parse().unwrap_or(0),
                 deletions: parts.next()?.parse().unwrap_or(0),
-                file: parts.last()?.to_string(),
+                file: parts.next_back()?.to_string(),
             })
         })
         .collect()
