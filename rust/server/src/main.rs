@@ -10,7 +10,10 @@
 //!
 //! Usage: opencode-server --db <path> --directory <cwd> [--port <port>]
 
+mod float_check;
 mod identifier;
+mod message;
+mod project;
 mod session;
 mod slug;
 
@@ -33,6 +36,7 @@ struct App {
     directory: String,
     path: String,
     version: String,
+    port: u16,
 }
 
 struct Failure(StatusCode, String);
@@ -226,6 +230,169 @@ async fn update_session(
     Ok(Json(serde_json::to_value(updated).expect("serializable")))
 }
 
+async fn session_children(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    let conn = app.pool.get()?;
+    require_session(&conn, &id)?;
+    let items = session::children(&conn, &id)?;
+    Ok(Json(serde_json::to_value(items).expect("serializable")))
+}
+
+async fn session_todo(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    let conn = app.pool.get()?;
+    require_session(&conn, &id)?;
+    Ok(Json(Value::Array(message::todos(&conn, &id)?)))
+}
+
+fn require_session(conn: &rusqlite::Connection, id: &str) -> Result<(), Failure> {
+    match session::get(conn, id)? {
+        Some(_) => Ok(()),
+        None => Err(Failure(
+            StatusCode::NOT_FOUND,
+            format!("Session not found: {id}"),
+        )),
+    }
+}
+
+fn encode_cursor(cursor: &(String, i64)) -> String {
+    use std::fmt::Write;
+    let raw = format!("{{\"id\":\"{}\",\"time\":{}}}", cursor.0, cursor.1);
+    // base64url without padding, matching Buffer#toString("base64url").
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let bytes = raw.as_bytes();
+    let mut out = String::new();
+    for chunk in bytes.chunks(3) {
+        let buffer = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
+        let value = u32::from_be_bytes([0, buffer[0], buffer[1], buffer[2]]);
+        let chars = [
+            ALPHABET[((value >> 18) & 63) as usize],
+            ALPHABET[((value >> 12) & 63) as usize],
+            ALPHABET[((value >> 6) & 63) as usize],
+            ALPHABET[(value & 63) as usize],
+        ];
+        let keep = match chunk.len() {
+            1 => 2,
+            2 => 3,
+            _ => 4,
+        };
+        for ch in &chars[..keep] {
+            write!(out, "{}", *ch as char).expect("write to string");
+        }
+    }
+    out
+}
+
+fn decode_cursor(input: &str) -> Option<(String, i64)> {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+    let index_of = |ch: u8| ALPHABET.iter().position(|item| *item == ch);
+    let chars: Vec<u8> = input.bytes().collect();
+    let mut bytes: Vec<u8> = vec![];
+    for chunk in chars.chunks(4) {
+        let mut value: u32 = 0;
+        for (position, ch) in chunk.iter().enumerate() {
+            value |= (index_of(*ch)? as u32) << (18 - 6 * position);
+        }
+        let keep = chunk.len().checked_sub(1)?;
+        let raw = value.to_be_bytes();
+        bytes.extend_from_slice(&raw[1..1 + keep]);
+    }
+    let parsed: Value = serde_json::from_slice(&bytes).ok()?;
+    Some((
+        parsed.get("id")?.as_str()?.to_string(),
+        parsed.get("time")?.as_i64()?,
+    ))
+}
+
+#[derive(Deserialize)]
+struct MessagesQuery {
+    limit: Option<i64>,
+    before: Option<String>,
+}
+
+async fn session_messages(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<MessagesQuery>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if query.before.is_some() && query.limit.is_none() {
+        return Err(Failure(
+            StatusCode::BAD_REQUEST,
+            "before requires limit".into(),
+        ));
+    }
+    let before = match query.before.as_deref() {
+        Some(raw) => {
+            Some(decode_cursor(raw).ok_or(Failure(StatusCode::BAD_REQUEST, "bad cursor".into()))?)
+        }
+        None => None,
+    };
+    require_session(&conn, &id)?;
+
+    let limit = query.limit.filter(|value| *value != 0);
+    let Some(limit) = limit else {
+        let items = message::all(&conn, &id)?
+            .ok_or_else(|| Failure(StatusCode::NOT_FOUND, format!("Session not found: {id}")))?;
+        return Ok(Json(Value::Array(items)).into_response());
+    };
+
+    let page = message::page(&conn, &id, limit, before)?
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, format!("Session not found: {id}")))?;
+    let mut response = Json(Value::Array(page.items)).into_response();
+    if let Some(cursor) = page.cursor {
+        let encoded = encode_cursor(&cursor);
+        let link = format!(
+            "<http://127.0.0.1:{}/session/{}/message?limit={}&before={}>; rel=\"next\"",
+            app.port, id, limit, encoded
+        );
+        let headers = response.headers_mut();
+        headers.insert(
+            "Access-Control-Expose-Headers",
+            "Link, X-Next-Cursor".parse().expect("header"),
+        );
+        headers.insert("Link", link.parse().expect("header"));
+        headers.insert("X-Next-Cursor", encoded.parse().expect("header"));
+    }
+    Ok(response)
+}
+
+async fn session_message(
+    State(app): State<App>,
+    Path((id, message_id)): Path<(String, String)>,
+) -> Result<Json<Value>, Failure> {
+    let conn = app.pool.get()?;
+    let found = message::get(&conn, &id, &message_id)?.ok_or_else(|| {
+        Failure(
+            StatusCode::NOT_FOUND,
+            format!("Message not found: {message_id}"),
+        )
+    })?;
+    Ok(Json(found))
+}
+
+async fn project_list(State(app): State<App>) -> Result<Json<Value>, Failure> {
+    let conn = app.pool.get()?;
+    Ok(Json(
+        serde_json::to_value(project::list(&conn)?).expect("serializable"),
+    ))
+}
+
+async fn project_current(State(app): State<App>) -> Result<Json<Value>, Failure> {
+    let conn = app.pool.get()?;
+    let found = project::get(&conn, &app.project_id)?
+        .ok_or_else(|| Failure(StatusCode::NOT_FOUND, "Project not found".into()))?;
+    Ok(Json(serde_json::to_value(found).expect("serializable")))
+}
+
 /// Millisecond-precision ISO-8601 UTC timestamp matching Date#toISOString,
 /// without pulling in a date crate for one format.
 fn chrono_iso(millis: i64) -> String {
@@ -303,11 +470,18 @@ async fn main() {
         directory: directory.clone(),
         path,
         version: std::env::var("OPENCODE_VERSION").unwrap_or_else(|_| "local".into()),
+        port,
     };
 
     let router = Router::new()
         .route("/session", get(list_sessions).post(create_session))
         .route("/session/{id}", get(get_session).patch(update_session))
+        .route("/session/{id}/children", get(session_children))
+        .route("/session/{id}/todo", get(session_todo))
+        .route("/session/{id}/message", get(session_messages))
+        .route("/session/{id}/message/{message_id}", get(session_message))
+        .route("/project", get(project_list))
+        .route("/project/current", get(project_current))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

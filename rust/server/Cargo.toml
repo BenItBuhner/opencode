@@ -12,5 +12,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# float_roundtrip is required for byte-identical JSON parity with
+# JSON.parse/JSON.stringify on 17-significant-digit doubles.
+serde_json = { version = "1", features = ["float_roundtrip"] }
 rand = "0.8"

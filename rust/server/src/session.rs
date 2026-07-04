@@ -212,3 +212,12 @@ pub fn get(conn: &Connection, id: &str) -> rusqlite::Result<Option<Info>> {
     let mut rows = statement.query_map([id], from_row)?;
     rows.next().transpose()
 }
+
+/// Port of Session.children: bare parent_id filter without ORDER BY, matching
+/// the drizzle query's SQLite natural order.
+pub fn children(conn: &Connection, parent_id: &str) -> rusqlite::Result<Vec<Info>> {
+    let sql = format!("SELECT {COLUMNS} FROM session WHERE parent_id = ?");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let rows = statement.query_map([parent_id], from_row)?;
+    rows.collect()
+}
