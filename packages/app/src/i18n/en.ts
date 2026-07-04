@@ -436,6 +436,11 @@ export const dict = {
   "dialog.project.edit.worktree.startup.description": "Runs after creating a new workspace (worktree).",
   "dialog.project.edit.worktree.startup.placeholder": "e.g. bun install",
 
+  "dialog.goal.title": "Goal state summaries",
+  "dialog.goal.latest": "Latest state",
+  "dialog.goal.previous": "Previous state",
+  "dialog.goal.empty": "No goal state summaries have been recorded yet.",
+  "dialog.goal.showMore": "Show more",
   "dialog.releaseNotes.action.getStarted": "Get started",
   "dialog.releaseNotes.action.next": "Next",
   "dialog.releaseNotes.action.hideFuture": "Don't show these in the future",

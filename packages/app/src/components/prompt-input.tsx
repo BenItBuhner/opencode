@@ -310,6 +310,14 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     }
   })
 
+  const openGoalSummaries = () => {
+    const sessionID = props.controls.session.id
+    if (!sessionID) return
+    void import("@/components/dialog-goal-summaries").then((x) => {
+      dialog.show(() => <x.DialogGoalSummaries sessionID={sessionID} />)
+    })
+  }
+
   const openComment = (item: { path: string; commentID?: string; commentOrigin?: "review" | "file" }) => {
     if (!item.commentID) return
 
@@ -1741,6 +1749,29 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                       </TooltipV2>
                     </div>
                   </Show>
+                  <Show when={sessionGoal()}>
+                    {(goal) => (
+                      <TooltipV2 placement="top" value={goal().headline ?? goal().text}>
+                        <ButtonV2
+                          type="button"
+                          data-action="prompt-goal"
+                          variant="ghost-muted"
+                          size="normal"
+                          class="min-w-0 max-w-[280px] justify-start"
+                          onClick={openGoalSummaries}
+                        >
+                          <span class="truncate">
+                            Goal {goal().status}: {goal().text}
+                          </span>
+                          <Show when={goal().progress !== undefined}>
+                            <span class="shrink-0 tabular-nums">
+                              {goal().progress}% {compactGoalProgressBar(goal().progress ?? 0)}
+                            </span>
+                          </Show>
+                        </ButtonV2>
+                      </TooltipV2>
+                    )}
+                  </Show>
                 </div>
                 <TooltipV2 placement="top" inactive={!working() && blank()} value={tip()}>
                   <IconButton
@@ -2091,16 +2122,23 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                     <Show when={sessionGoal()}>
                       {(goal) => (
                         <>
-                          <div class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted">
+                          <button
+                            type="button"
+                            class="min-w-0 max-w-[260px] cursor-pointer truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted hover:bg-surface-raised-base-hover"
+                            title={goal().text}
+                            onClick={openGoalSummaries}
+                          >
                             Goal {goal().status}: {goal().text}
-                          </div>
+                          </button>
                           <Show when={goal().progress !== undefined}>
-                            <div
-                              class="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted"
+                            <button
+                              type="button"
+                              class="shrink-0 cursor-pointer rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted hover:bg-surface-raised-base-hover"
                               title={goal().headline}
+                              onClick={openGoalSummaries}
                             >
                               {goal().progress}% {compactGoalProgressBar(goal().progress ?? 0)}
-                            </div>
+                            </button>
                           </Show>
                         </>
                       )}
