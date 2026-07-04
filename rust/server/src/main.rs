@@ -10,6 +10,7 @@
 //!
 //! Usage: opencode-server --db <path> --directory <cwd> [--port <port>]
 
+mod bus;
 mod float_check;
 mod identifier;
 mod message;
@@ -32,6 +33,7 @@ type Pool = r2d2::Pool<SqliteConnectionManager>;
 #[derive(Clone)]
 struct App {
     pool: Pool,
+    bus: bus::Bus,
     project_id: String,
     directory: String,
     path: String,
@@ -185,7 +187,9 @@ async fn create_session(
         ],
     )?;
     let created = session::get(&conn, &id)?.expect("row just inserted");
-    Ok(Json(serde_json::to_value(created).expect("serializable")))
+    let info = serde_json::to_value(&created).expect("serializable");
+    publish_session_event(&app, "session.created", &id, &info)?;
+    Ok(Json(info))
 }
 
 #[derive(Deserialize)]
@@ -227,7 +231,84 @@ async fn update_session(
         )?;
     }
     let updated = session::get(&conn, &id)?.expect("row exists");
-    Ok(Json(serde_json::to_value(updated).expect("serializable")))
+    let info = serde_json::to_value(&updated).expect("serializable");
+    publish_session_event(&app, "session.updated", &id, &info)?;
+    Ok(Json(info))
+}
+
+fn publish_session_event(
+    app: &App,
+    event_type: &str,
+    session_id: &str,
+    info: &Value,
+) -> Result<(), Failure> {
+    let mut conn = app.pool.get()?;
+    app.bus.publish_durable(
+        &mut conn,
+        event_type,
+        session_id,
+        json!({ "sessionID": session_id, "info": info }),
+    )?;
+    Ok(())
+}
+
+/// Port of Session.remove: depth-first child removal, a session.deleted event
+/// per session, then row + durable-history deletion (messages/parts/todos
+/// cascade from the session row).
+fn remove_session(app: &App, id: &str) -> Result<(), Failure> {
+    let conn = app.pool.get()?;
+    let Some(info) = session::get(&conn, id)? else {
+        return Ok(());
+    };
+    for child in session::children(&conn, id)? {
+        remove_session(app, &child.id)?;
+    }
+    let info = serde_json::to_value(&info).expect("serializable");
+    publish_session_event(app, "session.deleted", id, &info)?;
+    app.bus.remove_aggregate(&conn, id)?;
+    conn.execute("DELETE FROM session WHERE id = ?", [id])?;
+    Ok(())
+}
+
+async fn delete_session(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    {
+        let conn = app.pool.get()?;
+        require_session(&conn, &id)?;
+    }
+    remove_session(&app, &id)?;
+    Ok(Json(Value::Bool(true)))
+}
+
+async fn session_status(State(app): State<App>) -> Result<Json<Value>, Failure> {
+    // Prompt execution is not ported yet, so no session can be busy; the Bun
+    // server returns an empty object in the same idle state.
+    let _ = app;
+    Ok(Json(json!({})))
+}
+
+async fn event_stream(
+    State(app): State<App>,
+) -> axum::response::sse::Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
+> {
+    use futures::StreamExt;
+    let receiver = app.bus.subscribe();
+    let connected = futures::stream::once(async move {
+        Ok(axum::response::sse::Event::default().data(bus::connected_event().to_string()))
+    });
+    let events =
+        tokio_stream::wrappers::BroadcastStream::new(receiver).filter_map(|item| async move {
+            match item {
+                Ok(value) => Some(Ok(
+                    axum::response::sse::Event::default().data(value.to_string())
+                )),
+                Err(_) => None,
+            }
+        });
+    axum::response::sse::Sse::new(connected.chain(events))
 }
 
 async fn session_children(
@@ -466,6 +547,7 @@ async fn main() {
 
     let app = App {
         pool,
+        bus: bus::Bus::new(),
         project_id: project_id.clone(),
         directory: directory.clone(),
         path,
@@ -475,13 +557,20 @@ async fn main() {
 
     let router = Router::new()
         .route("/session", get(list_sessions).post(create_session))
-        .route("/session/{id}", get(get_session).patch(update_session))
+        .route("/session/status", get(session_status))
+        .route(
+            "/session/{id}",
+            get(get_session)
+                .patch(update_session)
+                .delete(delete_session),
+        )
         .route("/session/{id}/children", get(session_children))
         .route("/session/{id}/todo", get(session_todo))
         .route("/session/{id}/message", get(session_messages))
         .route("/session/{id}/message/{message_id}", get(session_message))
         .route("/project", get(project_list))
         .route("/project/current", get(project_current))
+        .route("/event", get(event_stream))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
