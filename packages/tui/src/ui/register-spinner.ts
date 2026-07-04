@@ -1,3 +1,3 @@
-import { registerSpinner } from "opentui-spinner/solid"
+import { registerOpencodeSpinner } from "../component/register-spinner"
 
-registerSpinner()
+registerOpencodeSpinner()
