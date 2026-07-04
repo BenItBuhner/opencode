@@ -119,6 +119,7 @@ describe("AgentV2", () => {
         "compaction",
         "explore",
         "general",
+        "goal",
         "plan",
         "summary",
         "title",
