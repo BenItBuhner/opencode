@@ -149,6 +149,36 @@ check(
     [event["durable"]["seq"] for event in data] == list(range(data[0]["durable"]["seq"], data[0]["durable"]["seq"] + 4)),
 )
 
+# ---------------------------------------------------------------------------
+# 4. Projected v2 message parity on sessions with real runner output
+# ---------------------------------------------------------------------------
+# When any session has projected v2 messages (a Bun runner executed a
+# Rust-admitted prompt), both servers must serve them byte-for-byte.
+sessions = json.loads(get(BUN, "/api/session?limit=50")[1])["data"]
+covered = 0
+for session in sessions:
+    sid = session["id"]
+    bun_msgs = get(BUN, f"/api/session/{sid}/message?order=asc")
+    if not json.loads(bun_msgs[1])["data"]:
+        continue
+    covered += 1
+    check(f"projected messages parity {sid}", bun_msgs == get(RUST, f"/api/session/{sid}/message?order=asc"))
+    first = json.loads(bun_msgs[1])["data"][0]["id"]
+    check(
+        f"projected single message parity {sid}",
+        get(BUN, f"/api/session/{sid}/message/{first}") == get(RUST, f"/api/session/{sid}/message/{first}"),
+    )
+    page = json.loads(get(BUN, f"/api/session/{sid}/message?limit=1")[1])
+    next_cursor = page["cursor"]["next"]
+    check(
+        f"message cursor parity {sid}",
+        get(BUN, f"/api/session/{sid}/message?cursor={next_cursor}&limit=2")
+        == get(RUST, f"/api/session/{sid}/message?cursor={next_cursor}&limit=2"),
+    )
+    if covered >= 3:
+        break
+check("at least one session with projected messages covered", covered > 0, f"covered={covered}")
+
 # Interrupt no-op parity (idle interruption is a no-op).
 check(
     "interrupt parity",
