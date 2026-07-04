@@ -11,6 +11,7 @@
 //! Usage: opencode-server --db <path> --directory <cwd> [--port <port>]
 
 mod bus;
+mod file;
 mod float_check;
 mod identifier;
 mod message;
@@ -36,6 +37,7 @@ struct App {
     bus: bus::Bus,
     project_id: String,
     directory: String,
+    worktree: String,
     path: String,
     version: String,
     port: u16,
@@ -474,6 +476,93 @@ async fn project_current(State(app): State<App>) -> Result<Json<Value>, Failure>
     Ok(Json(serde_json::to_value(found).expect("serializable")))
 }
 
+#[derive(Deserialize)]
+struct FindTextQuery {
+    pattern: String,
+}
+
+async fn find_text(
+    State(app): State<App>,
+    Query(query): Query<FindTextQuery>,
+) -> Result<Json<Value>, Failure> {
+    let directory = app.directory.clone();
+    let items =
+        tokio::task::spawn_blocking(move || file::find_text(&directory, &query.pattern, 10))
+            .await
+            .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+            .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(Value::Array(items)))
+}
+
+#[derive(Deserialize)]
+struct FindFileQuery {
+    query: String,
+    dirs: Option<String>,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn find_file(
+    State(app): State<App>,
+    Query(query): Query<FindFileQuery>,
+) -> Result<Json<Value>, Failure> {
+    let directory = app.directory.clone();
+    let kind = query
+        .kind
+        .clone()
+        .or_else(|| (query.dirs.as_deref() == Some("false")).then(|| "file".to_string()));
+    let items = tokio::task::spawn_blocking(move || {
+        file::find_file(
+            &directory,
+            &query.query,
+            kind.as_deref(),
+            query.limit.unwrap_or(10),
+        )
+    })
+    .await
+    .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?
+    .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(serde_json::to_value(items).expect("serializable")))
+}
+
+async fn find_symbol() -> Json<Value> {
+    Json(Value::Array(vec![]))
+}
+
+#[derive(Deserialize)]
+struct PathQuery {
+    path: String,
+}
+
+async fn file_list(
+    State(app): State<App>,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<Value>, Failure> {
+    let items = file::list(&app.directory, &app.worktree, &query.path)
+        .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(Value::Array(items)))
+}
+
+async fn file_content(
+    State(app): State<App>,
+    Query(query): Query<PathQuery>,
+) -> Result<Json<Value>, Failure> {
+    let found = file::content(&app.directory, &query.path)
+        .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(Json(match found {
+        file::Content::Missing => json!({ "type": "text", "content": "" }),
+        file::Content::Text(content) => json!({ "type": "text", "content": content }),
+        file::Content::Binary { base64, mime } => {
+            json!({ "type": "binary", "content": base64, "encoding": "base64", "mimeType": mime })
+        }
+    }))
+}
+
+async fn file_status() -> Json<Value> {
+    Json(Value::Array(vec![]))
+}
+
 /// Millisecond-precision ISO-8601 UTC timestamp matching Date#toISOString,
 /// without pulling in a date crate for one format.
 fn chrono_iso(millis: i64) -> String {
@@ -550,6 +639,7 @@ async fn main() {
         bus: bus::Bus::new(),
         project_id: project_id.clone(),
         directory: directory.clone(),
+        worktree: worktree.clone(),
         path,
         version: std::env::var("OPENCODE_VERSION").unwrap_or_else(|_| "local".into()),
         port,
@@ -571,6 +661,12 @@ async fn main() {
         .route("/project", get(project_list))
         .route("/project/current", get(project_current))
         .route("/event", get(event_stream))
+        .route("/find", get(find_text))
+        .route("/find/file", get(find_file))
+        .route("/find/symbol", get(find_symbol))
+        .route("/file", get(file_list))
+        .route("/file/content", get(file_content))
+        .route("/file/status", get(file_status))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
