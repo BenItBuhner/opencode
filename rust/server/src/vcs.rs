@@ -69,7 +69,11 @@ pub fn diff(directory: &str, mode: &str, context: Option<i64>) -> Vec<Value> {
 
 pub fn diff_raw(directory: &str) -> String {
     let tracked = if has_head(directory) {
-        run(directory, &["diff", "--no-ext-diff", "--binary", "HEAD"]).unwrap_or_default()
+        run(
+            directory,
+            &["diff", "--no-ext-diff", "--binary", "HEAD", "--", "."],
+        )
+        .unwrap_or_default()
     } else {
         String::new()
     };
@@ -128,7 +132,7 @@ fn diff_against(directory: &str, ref_name: &str, context: Option<i64>) -> Vec<Va
 }
 
 fn status_items(directory: &str) -> Vec<Item> {
-    run(directory, &["status", "--porcelain=v1"])
+    run(directory, &["status", "--porcelain=v1", "--", "."])
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
@@ -144,7 +148,7 @@ fn status_items(directory: &str) -> Vec<Item> {
 }
 
 fn diff_items(directory: &str, ref_name: &str) -> Vec<Item> {
-    run(directory, &["diff", "--name-status", ref_name])
+    run(directory, &["diff", "--name-status", ref_name, "--", "."])
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
@@ -161,7 +165,7 @@ fn diff_items(directory: &str, ref_name: &str) -> Vec<Item> {
 }
 
 fn numstat(directory: &str, ref_name: &str) -> Vec<Stat> {
-    run(directory, &["diff", "--numstat", ref_name])
+    run(directory, &["diff", "--numstat", ref_name, "--", "."])
         .unwrap_or_default()
         .lines()
         .filter_map(|line| {
@@ -179,7 +183,15 @@ fn patches(directory: &str, ref_name: &str, context: Option<i64>) -> Vec<Patch> 
     let unified = format!("--unified={}", context.unwrap_or(2_147_483_647));
     let text = run(
         directory,
-        &["diff", "--no-ext-diff", "--binary", &unified, ref_name],
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--binary",
+            &unified,
+            ref_name,
+            "--",
+            ".",
+        ],
     )
     .unwrap_or_default();
     text.split("\ndiff --git ")

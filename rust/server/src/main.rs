@@ -628,9 +628,17 @@ async fn command_list(State(app): State<App>) -> Json<Value> {
                 "template": "$ARGUMENTS",
                 "hints": ["$ARGUMENTS"],
             }),
+            json!({
+                "name": "customize-opencode",
+                "description": "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/.",
+                "source": "skill",
+                "template": "",
+                "hints": [],
+            }),
         ]
         .into_iter()
         .chain(markdown_commands(&app.worktree))
+        .chain(markdown_skill_commands(&app.worktree))
         .chain(configured)
         .collect(),
     ))
@@ -782,6 +790,21 @@ fn markdown_skills(worktree: &str) -> Vec<Value> {
                 "location": path.to_string_lossy(),
                 "content": parsed.content,
             }))
+        })
+        .collect()
+}
+
+fn markdown_skill_commands(worktree: &str) -> Vec<Value> {
+    markdown_skills(worktree)
+        .into_iter()
+        .map(|skill| {
+            json!({
+                "name": skill.get("name").cloned().unwrap_or(Value::String(String::new())),
+                "description": skill.get("description").cloned().unwrap_or(Value::Null),
+                "source": "skill",
+                "template": skill.get("content").cloned().unwrap_or(Value::String(String::new())),
+                "hints": [],
+            })
         })
         .collect()
 }
