@@ -12,6 +12,7 @@
 
 pub mod context;
 pub mod llm;
+pub mod permission;
 pub mod publish;
 pub mod tools;
 pub mod translate;
@@ -371,7 +372,17 @@ fn run_turn(
                     )
                     .map_err(|error| error.to_string())?;
                 // Durably record the call before side effects begin, then settle.
-                let settlement = tools::execute(&directory, name, &input);
+                let settlement = tools::execute(
+                    &tools::ToolEnv {
+                        directory: &directory,
+                        worktree: &worktree,
+                        agent: &agent,
+                        session_id,
+                        conn,
+                    },
+                    name,
+                    &input,
+                );
                 match settlement.error {
                     None => publisher
                         .publish(
