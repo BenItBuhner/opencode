@@ -1250,6 +1250,84 @@ async fn api_session_interrupt(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+async fn api_session_switch_agent(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Response, Failure> {
+    let mut conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(agent) = payload.get("agent").and_then(Value::as_str) else {
+        return Err(Failure(StatusCode::BAD_REQUEST, "agent is required".into()));
+    };
+    let publisher = runner::publish::Publisher {
+        session_id: id.clone(),
+    };
+    let mut data = serde_json::Map::new();
+    data.insert("timestamp".into(), json!(now()));
+    data.insert("sessionID".into(), json!(id));
+    data.insert(
+        "messageID".into(),
+        json!(format!("msg_{}", identifier::ascending())),
+    );
+    data.insert("agent".into(), json!(agent));
+    publisher
+        .publish(
+            &mut conn,
+            "session.next.agent.switched",
+            1,
+            &Value::Object(data),
+        )
+        .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn api_session_switch_model(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(payload): Json<Value>,
+) -> Result<Response, Failure> {
+    let mut conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(model) = payload.get("model").filter(|model| model.is_object()) else {
+        return Err(Failure(StatusCode::BAD_REQUEST, "model is required".into()));
+    };
+    // Model.Ref key order: id, providerID, variant?.
+    let mut reference = serde_json::Map::new();
+    reference.insert("id".into(), model.get("id").cloned().unwrap_or(Value::Null));
+    reference.insert(
+        "providerID".into(),
+        model.get("providerID").cloned().unwrap_or(Value::Null),
+    );
+    if let Some(variant) = model.get("variant").filter(|value| !value.is_null()) {
+        reference.insert("variant".into(), variant.clone());
+    }
+    let publisher = runner::publish::Publisher {
+        session_id: id.clone(),
+    };
+    let mut data = serde_json::Map::new();
+    data.insert("timestamp".into(), json!(now()));
+    data.insert("sessionID".into(), json!(id));
+    data.insert(
+        "messageID".into(),
+        json!(format!("msg_{}", identifier::ascending())),
+    );
+    data.insert("model".into(), Value::Object(reference));
+    publisher
+        .publish(
+            &mut conn,
+            "session.next.model.switched",
+            1,
+            &Value::Object(data),
+        )
+        .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
 async fn api_session_wait(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -1433,6 +1511,8 @@ async fn main() {
         )
         .route("/api/session/{id}/interrupt", post(api_session_interrupt))
         .route("/api/session/{id}/wait", post(api_session_wait))
+        .route("/api/session/{id}/agent", post(api_session_switch_agent))
+        .route("/api/session/{id}/model", post(api_session_switch_model))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

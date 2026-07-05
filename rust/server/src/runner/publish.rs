@@ -96,6 +96,48 @@ fn project(
                 &Value::Object(message),
             )
         }
+        "session.next.agent.switched" => {
+            let timestamp = data["timestamp"].as_i64().unwrap_or_default();
+            tx.execute(
+                "UPDATE session SET agent = ?, time_updated = ? WHERE id = ?",
+                rusqlite::params![
+                    data["agent"].as_str().unwrap_or_default(),
+                    timestamp,
+                    session_id
+                ],
+            )?;
+            let mut message = Map::new();
+            message.insert("time".into(), json!({ "created": timestamp }));
+            message.insert("agent".into(), data["agent"].clone());
+            insert_message(
+                tx,
+                session_id,
+                &text(data, "messageID"),
+                "agent-switched",
+                seq,
+                timestamp,
+                &Value::Object(message),
+            )
+        }
+        "session.next.model.switched" => {
+            let timestamp = data["timestamp"].as_i64().unwrap_or_default();
+            tx.execute(
+                "UPDATE session SET model = ?, time_updated = ? WHERE id = ?",
+                rusqlite::params![data["model"].to_string(), timestamp, session_id],
+            )?;
+            let mut message = Map::new();
+            message.insert("time".into(), json!({ "created": timestamp }));
+            message.insert("model".into(), data["model"].clone());
+            insert_message(
+                tx,
+                session_id,
+                &text(data, "messageID"),
+                "model-switched",
+                seq,
+                timestamp,
+                &Value::Object(message),
+            )
+        }
         "session.next.step.started" => {
             let timestamp = data["timestamp"].as_i64().unwrap_or_default();
             complete_current_assistant(tx, session_id, timestamp)?;
