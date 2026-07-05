@@ -367,6 +367,11 @@ fn url_pathname(uri: &str) -> Option<String> {
     Some(path[..end].to_string())
 }
 
+/// Extension-based lookup for the runner's read tool (FSUtil.mimeType).
+pub fn mime_for_tool(path: &str) -> String {
+    mime_type(path)
+}
+
 /// Subset of mime-db lookups (FSUtil.mimeType) covering the attachment types
 /// clients send; unknown extensions fall back to application/octet-stream.
 fn mime_type(path: &str) -> String {

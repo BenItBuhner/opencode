@@ -19,6 +19,7 @@ mod identifier;
 mod message;
 mod project;
 mod provider;
+mod runner;
 mod session;
 mod slug;
 mod v2;
@@ -741,7 +742,7 @@ fn markdown_agents(worktree: &str) -> Vec<Value> {
         .collect()
 }
 
-fn markdown_skills(worktree: &str) -> Vec<Value> {
+pub fn markdown_skills(worktree: &str) -> Vec<Value> {
     markdown_files(&std::path::Path::new(worktree).join(".opencode/skills"))
         .into_iter()
         .filter(|path| path.file_name().is_some_and(|name| name == "SKILL.md"))
@@ -959,9 +960,11 @@ async fn api_health() -> Json<Value> {
 }
 
 async fn api_session_active() -> Json<Value> {
-    // The Rust server never owns a Session drain, so the active set is empty
-    // (matching a Bun process with no foreground drains).
-    Json(json!({ "data": {} }))
+    let mut data = serde_json::Map::new();
+    for session_id in runner::active() {
+        data.insert(session_id, json!({ "type": "running" }));
+    }
+    Json(json!({ "data": data }))
 }
 
 #[derive(Deserialize)]
@@ -1096,7 +1099,20 @@ async fn api_session_prompt(
 ) -> Result<Response, Failure> {
     let mut conn = app.pool.get()?;
     Ok(match v2::admit(&mut conn, &id, &payload) {
-        Ok(admitted) => Json(json!({ "data": admitted })).into_response(),
+        Ok(admitted) => {
+            // Admission schedules advisory SessionExecution.wake unless
+            // resume: false requests admit-only behavior.
+            if payload.get("resume").and_then(Value::as_bool) != Some(false) {
+                runner::wake(
+                    runner::Env {
+                        pool: app.pool.clone(),
+                        worktree: app.worktree.clone(),
+                    },
+                    id.clone(),
+                );
+            }
+            Json(json!({ "data": admitted })).into_response()
+        }
         Err(v2::AdmitError::NotFound) => v2_session_not_found(&id),
         Err(v2::AdmitError::Conflict(message_id)) => (
             StatusCode::CONFLICT,
@@ -1228,8 +1244,26 @@ async fn api_session_interrupt(
     if v2::get(&conn, &id)?.is_none() {
         return Ok(v2_session_not_found(&id));
     }
-    // V2 interruption targets the active process-local ownership chain; the
-    // Rust server owns no drains, so interruption is always a no-op.
+    // V2 interruption targets the active process-local ownership chain. The
+    // Rust drain runs provider turns to settlement; mid-turn cancellation is a
+    // future slice, and idle or missing interruption is a no-op.
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn api_session_wait(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    {
+        let conn = app.pool.get()?;
+        if v2::get(&conn, &id)?.is_none() {
+            return Ok(v2_session_not_found(&id));
+        }
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    while runner::is_active(&id) && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -1398,6 +1432,7 @@ async fn main() {
             get(api_session_message),
         )
         .route("/api/session/{id}/interrupt", post(api_session_interrupt))
+        .route("/api/session/{id}/wait", post(api_session_wait))
         .with_state(app);
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))

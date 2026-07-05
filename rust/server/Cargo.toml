@@ -18,6 +18,8 @@ serde = { version = "1", features = ["derive"] }
 # for durable rows (session_input.prompt, event.data) both servers must agree on.
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 rand = "0.8"
+# Blocking HTTPS client for the provider streaming loop (rustls, no openssl).
+ureq = "2"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 ignore = "0.4.27"
