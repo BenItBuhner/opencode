@@ -12,6 +12,8 @@ pub enum Dialog {
     Agents,
     Models,
     Help,
+    GoalDetails,
+    GoalSummaries,
 }
 
 pub struct App {
@@ -49,6 +51,11 @@ pub struct App {
     pub tip_index: usize,
     /// session.metadata.goal, when goal mode has durable state.
     pub goal: Option<Value>,
+    /// The fork retains the last goal chip after completion until the next
+    /// non-goal prompt, so completion state stays visible.
+    pub retained_goal: Option<Value>,
+    /// Fork out-of-workspace toggle state for the current session.
+    pub external_allowed: bool,
 }
 
 impl App {
@@ -81,7 +88,15 @@ impl App {
             frame: 0,
             tip_index: std::process::id() as usize,
             goal: None,
+            retained_goal: None,
+            external_allowed: false,
         }
+    }
+
+    /// The goal the footer chip displays: live metadata, else the retained
+    /// snapshot from before completion.
+    pub fn display_goal(&self) -> Option<&Value> {
+        self.goal.as_ref().or(self.retained_goal.as_ref())
     }
 
     /// The home route shows until the session has visible messages.
@@ -115,6 +130,7 @@ impl App {
         self.scroll = 0;
         self.interrupts = 0;
         self.goal = None;
+        self.retained_goal = None;
     }
 
     /// agent_cycle (tab): rotate through the primary agent cycle order.

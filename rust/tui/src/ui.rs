@@ -27,6 +27,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
     match app.dialog {
         Dialog::None => {}
         Dialog::Help => draw_help(frame, app),
+        Dialog::GoalDetails => draw_goal_details(frame, app),
+        Dialog::GoalSummaries => draw_goal_summaries(frame, app),
         _ => draw_dialog_select(frame, app),
     }
 }
@@ -713,8 +715,9 @@ fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
             "leader · q quit  n new  l sessions  a agents  m models  ? help",
             Style::default().fg(theme::WARNING),
         ))
-    } else if let Some(goal) = &app.goal {
-        // Goal chip: `goal {N}% ━━━──────` with a 12-segment progress bar.
+    } else if let Some(goal) = app.display_goal() {
+        // Fork goal chip: `goal {N}% ━━━────── {elapsed}` — click "goal" for
+        // details, click the bar for summaries (ctrl+x g / ctrl+x s too).
         let progress = goal
             .get("progress")
             .and_then(Value::as_i64)
@@ -726,14 +729,28 @@ fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or("active");
         let filled = (progress as usize * 12) / 100;
         let bar: String = "━".repeat(filled) + &"─".repeat(12 - filled);
-        Line::from(vec![
+        let mut spans = vec![
             Span::styled(
-                format!("goal{} ", if status == "paused" { " (paused)" } else { "" }),
+                format!(
+                    "goal{} ",
+                    match status {
+                        "paused" => " (paused)",
+                        "completed" => " (completed)",
+                        _ => "",
+                    }
+                ),
                 Style::default().fg(theme::ACCENT),
             ),
-            Span::styled(format!("{progress}% "), Style::default().fg(theme::TEXT)),
+            Span::styled(format!("{progress}% "), Style::default().fg(theme::ACCENT)),
             Span::styled(bar, Style::default().fg(theme::ACCENT)),
-        ])
+        ];
+        if let Some(elapsed) = goal_elapsed(goal) {
+            spans.push(Span::styled(
+                format!(" {elapsed}"),
+                Style::default().fg(theme::TEXT_MUTED),
+            ));
+        }
+        Line::from(spans)
     } else {
         Line::from(vec![
             Span::styled("ctrl+x a", Style::default().fg(theme::TEXT)),
@@ -954,11 +971,31 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
     }
 }
 
-pub const COMMANDS: [(&str, &str, &str); 6] = [
+pub const COMMANDS: [(&str, &str, &str); 10] = [
     (
         "New session",
         "Start a fresh conversation session",
         "ctrl+x n",
+    ),
+    (
+        "Goal details",
+        "Show the durable session goal and status",
+        "ctrl+x g",
+    ),
+    (
+        "Goal summaries",
+        "Browse recorded goal state summaries",
+        "ctrl+x s",
+    ),
+    (
+        "Manage goal",
+        "goal: set, edit, pause, resume, complete, status, clear",
+        "/goal",
+    ),
+    (
+        "Toggle out-of-workspace access",
+        "Allow or ask before accessing external files",
+        "",
     ),
     ("Switch session", "List and continue sessions", "ctrl+x l"),
     ("Switch agent", "Choose the active agent", "ctrl+x a"),
@@ -1239,6 +1276,237 @@ fn draw_help(frame: &mut Frame, _app: &App) {
             area.height.saturating_sub(3),
         ),
     );
+}
+
+/// Fork "Goal Details" alert: Status / Running duration / goal text.
+fn draw_goal_details(frame: &mut Frame, app: &App) {
+    let Some(goal) = app.display_goal() else {
+        return;
+    };
+    let screen = frame.area();
+    let text = goal.get("text").and_then(Value::as_str).unwrap_or_default();
+    let status = goal
+        .get("status")
+        .and_then(Value::as_str)
+        .unwrap_or("active");
+    let elapsed = goal_elapsed(goal);
+    let width = 60u16.min(screen.width.saturating_sub(2));
+    let height = 8u16.min(screen.height.saturating_sub(4));
+    let area = Rect::new(
+        screen.x + (screen.width.saturating_sub(width)) / 2,
+        screen.y + (screen.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
+        area,
+    );
+    let panel = Style::default().bg(theme::BACKGROUND_PANEL);
+    let mut lines = vec![
+        Line::from(vec![
+            Span::styled(
+                "Goal Details",
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(theme::BACKGROUND_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{:>width$}", "esc", width = width as usize - 14),
+                Style::default()
+                    .fg(theme::TEXT_MUTED)
+                    .bg(theme::BACKGROUND_PANEL),
+            ),
+        ]),
+        Line::default(),
+        Line::from(Span::styled(
+            format!("Status: {status}"),
+            Style::default()
+                .fg(theme::TEXT_MUTED)
+                .bg(theme::BACKGROUND_PANEL),
+        )),
+    ];
+    if let Some(elapsed) = elapsed {
+        lines.push(Line::from(Span::styled(
+            format!("Running: {elapsed}"),
+            Style::default()
+                .fg(theme::TEXT_MUTED)
+                .bg(theme::BACKGROUND_PANEL),
+        )));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        text.to_string(),
+        Style::default().fg(theme::TEXT).bg(theme::BACKGROUND_PANEL),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(panel)
+            .wrap(Wrap { trim: false }),
+        Rect::new(
+            area.x + 2,
+            area.y + 1,
+            area.width.saturating_sub(4),
+            area.height.saturating_sub(2),
+        ),
+    );
+}
+
+/// Fork DialogGoalSummaries: per-summary cards with `[###－]` progress bars
+/// and parsed `##` sections rendered as bullets, newest first.
+fn draw_goal_summaries(frame: &mut Frame, app: &App) {
+    let Some(goal) = app.display_goal() else {
+        return;
+    };
+    let screen = frame.area();
+    let width = 88u16.min(screen.width.saturating_sub(2));
+    let height = (screen.height * 3 / 4)
+        .max(10)
+        .min(screen.height.saturating_sub(4));
+    let area = Rect::new(
+        screen.x + (screen.width.saturating_sub(width)) / 2,
+        screen.y + (screen.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
+        area,
+    );
+    let panel = Style::default().bg(theme::BACKGROUND_PANEL);
+    let bar = |progress: i64| {
+        let filled = (progress.clamp(0, 100) as usize).div_ceil(10).min(10);
+        format!("[{}{}]", "#".repeat(filled), "-".repeat(10 - filled))
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            "Goal Summaries",
+            Style::default()
+                .fg(theme::TEXT)
+                .bg(theme::BACKGROUND_PANEL)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("{:>width$}", "esc", width = width as usize - 16),
+            Style::default()
+                .fg(theme::TEXT_MUTED)
+                .bg(theme::BACKGROUND_PANEL),
+        ),
+    ])];
+    lines.push(Line::from(Span::styled(
+        goal.get("text")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        Style::default()
+            .fg(theme::TEXT_MUTED)
+            .bg(theme::BACKGROUND_PANEL),
+    )));
+    let summaries = goal
+        .get("summaries")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if summaries.is_empty() {
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            "No state summaries recorded yet.",
+            Style::default()
+                .fg(theme::TEXT_MUTED)
+                .bg(theme::BACKGROUND_PANEL),
+        )));
+    }
+    for (index, summary) in summaries.iter().rev().enumerate() {
+        let latest = index == 0;
+        let progress = summary.get("progress").and_then(Value::as_i64).unwrap_or(0);
+        let title = if latest {
+            "Latest State".to_string()
+        } else {
+            summary
+                .get("headline")
+                .and_then(Value::as_str)
+                .unwrap_or("Previous State")
+                .to_string()
+        };
+        lines.push(Line::default());
+        lines.push(Line::from(vec![
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(if latest { theme::ACCENT } else { theme::TEXT })
+                    .bg(theme::BACKGROUND_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {progress}% {}", bar(progress)),
+                Style::default()
+                    .fg(theme::TEXT_MUTED)
+                    .bg(theme::BACKGROUND_PANEL),
+            ),
+        ]));
+        for raw in summary
+            .get("summary")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .lines()
+        {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(section) = line.strip_prefix("## ") {
+                lines.push(Line::from(Span::styled(
+                    section.to_string(),
+                    Style::default().fg(theme::TEXT).bg(theme::BACKGROUND_PANEL),
+                )));
+                continue;
+            }
+            if let Some(bullet) = line.strip_prefix("- ") {
+                lines.push(Line::from(Span::styled(
+                    format!("  • {bullet}"),
+                    Style::default()
+                        .fg(theme::TEXT_MUTED)
+                        .bg(theme::BACKGROUND_PANEL),
+                )));
+            }
+        }
+    }
+    let offset = (lines.len() as u16)
+        .saturating_sub(area.height.saturating_sub(2))
+        .min(app.scroll);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(panel)
+            .wrap(Wrap { trim: false })
+            .scroll((offset, 0)),
+        Rect::new(
+            area.x + 2,
+            area.y + 1,
+            area.width.saturating_sub(4),
+            area.height.saturating_sub(2),
+        ),
+    );
+}
+
+/// Elapsed label for active goals (fork tracks running duration).
+pub fn goal_elapsed(goal: &Value) -> Option<String> {
+    if goal.get("status").and_then(Value::as_str) != Some("active") {
+        return None;
+    }
+    let created = goal.get("created").and_then(Value::as_i64)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_millis() as i64;
+    let seconds = ((now - created) / 1000).max(0);
+    Some(match seconds {
+        0..=59 => format!("{seconds}s"),
+        60..=3599 => format!("{}m {}s", seconds / 60, seconds % 60),
+        _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
+    })
 }
 
 fn draw_toast(frame: &mut Frame, toast: &str, screen: Rect) {

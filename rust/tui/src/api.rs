@@ -138,6 +138,24 @@ impl Api {
             .unwrap_or_default())
     }
 
+    /// Fork out-of-workspace toggle: PATCH the v1 session permission ruleset.
+    pub fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String> {
+        let request = ureq::request("PATCH", &format!("{}/session/{session_id}", self.base))
+            .timeout(Duration::from_secs(30))
+            .set("Content-Type", "application/json")
+            .send_string(
+                &json!({
+                    "permission": [{
+                        "permission": "external_directory",
+                        "pattern": "*",
+                        "action": if allow { "allow" } else { "ask" },
+                    }]
+                })
+                .to_string(),
+            );
+        request.map(|_| ()).map_err(|error| error.to_string())
+    }
+
     pub fn agents(&self) -> Result<Vec<Value>, String> {
         // The v1 /agent list carries name/description/mode for every agent.
         let agents = self.get("/agent")?;

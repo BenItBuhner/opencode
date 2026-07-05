@@ -38,6 +38,14 @@ export function Logo() {
           </text>
         )
       }
+      if (char === ".") {
+        // Transparent cell inside a glyph (fork wordmark).
+        return (
+          <text fg={fg} attributes={attrs} selectable={false}>
+            {" "}
+          </text>
+        )
+      }
       return (
         <text fg={fg} attributes={attrs} selectable={false}>
           {char}

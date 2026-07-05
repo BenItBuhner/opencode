@@ -1,7 +1,8 @@
-//! The OpenCode block wordmark, ported from packages/tui/src/logo.ts and
-//! component/logo.tsx: 4 rows, left half muted / right half bold, with the
-//! shadow-character mapping (`_` space-on-shadow, `^` upper-block-on-shadow,
-//! `~` shadow upper block, `,` shadow lower block).
+//! The OpenGoal block wordmark, ported from the fork's
+//! packages/tui/src/logo.ts and component/logo.tsx: 4 rows, muted "open" left
+//! half / bold "goal" right half, with the shadow-character mapping
+//! (`_` space-on-shadow, `^` upper-block-on-shadow, `~` shadow upper block,
+//! `,` shadow lower block, `.` transparent cell inside a glyph).
 
 use crate::theme;
 use ratatui::style::{Modifier, Style};
@@ -14,10 +15,10 @@ const LEFT: [&str; 4] = [
     "▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀",
 ];
 const RIGHT: [&str; 4] = [
-    "             ▄     ",
-    "█▀▀▀ █▀▀█ █▀▀█ █▀▀█",
-    "█___ █__█ █__█ █^^^",
-    "▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀",
+    "                   ",
+    "█▀▀▀ █▀▀█ ▄▀▀█ █...",
+    "█_^█ █__█ █__█ █___",
+    "▀▀▀▀ ▀▀▀▀ .▀▀▀ ▀▀▀▀",
 ];
 
 fn half(source: &str, color: ratatui::style::Color, bold: bool) -> Vec<Span<'static>> {
@@ -34,6 +35,7 @@ fn half(source: &str, color: ratatui::style::Color, bold: bool) -> Vec<Span<'sta
             '^' => Span::styled("▀", base.bg(shadow)),
             '~' => Span::styled("▀", Style::default().fg(shadow)),
             ',' => Span::styled("▄", Style::default().fg(shadow)),
+            '.' => Span::styled(" ", Style::default()),
             other => Span::styled(other.to_string(), base),
         })
         .collect()

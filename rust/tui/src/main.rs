@@ -46,6 +46,9 @@ enum Cmd {
     LoadLists,
     SwitchAgent(String, String),
     SwitchModel(String, String, String),
+    /// Fork out-of-workspace toggle: write the external_directory session
+    /// permission rule (allow <-> ask).
+    ToggleExternal(String, bool),
 }
 
 fn arg(name: &str) -> Option<String> {
@@ -182,6 +185,11 @@ fn apply(app: &mut App, message: Msg) {
         }
         Msg::Goal(session_id, goal) => {
             if app.session_id.as_deref() == Some(session_id.as_str()) {
+                // Retain the last snapshot so the chip survives completion
+                // until the next non-goal turn (fork prompt footer behavior).
+                if let Some(goal) = &goal {
+                    app.retained_goal = Some(goal.clone());
+                }
                 app.goal = goal;
             }
         }
@@ -228,6 +236,21 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, worker: &mp
             KeyCode::Char('a') => app.open_dialog(Dialog::Agents),
             KeyCode::Char('m') => app.open_dialog(Dialog::Models),
             KeyCode::Char('?') => app.open_dialog(Dialog::Help),
+            // Fork goal dialogs.
+            KeyCode::Char('g') => {
+                if app.display_goal().is_some() {
+                    app.open_dialog(Dialog::GoalDetails);
+                } else {
+                    app.toast = Some("No session goal is currently set.".into());
+                }
+            }
+            KeyCode::Char('s') => {
+                if app.display_goal().is_some() {
+                    app.open_dialog(Dialog::GoalSummaries);
+                } else {
+                    app.toast = Some("No session goal is currently set.".into());
+                }
+            }
             _ => app.toast = Some("Unbound leader key".into()),
         }
         return;
@@ -235,11 +258,20 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, worker: &mp
 
     match app.dialog {
         Dialog::None => handle_chat_key(app, code, modifiers, worker),
-        Dialog::Help => {
+        Dialog::Help | Dialog::GoalDetails => {
             if matches!(code, KeyCode::Esc | KeyCode::Enter) {
                 app.dialog = Dialog::None;
             }
         }
+        Dialog::GoalSummaries => match code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.dialog = Dialog::None;
+                app.scroll = 0;
+            }
+            KeyCode::Up | KeyCode::PageUp => app.scroll = app.scroll.saturating_add(3),
+            KeyCode::Down | KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(3),
+            _ => {}
+        },
         _ => handle_dialog_key(app, code, worker),
     }
 }
@@ -274,11 +306,13 @@ fn handle_chat_key(
             if text.is_empty() {
                 return;
             }
-            // Slash commands, like the TS prompt: /new /sessions /agents /models /help.
+            // Slash commands, like the TS prompt: /new /sessions /agents
+            // /models /help /goal.
             if let Some(command) = text.strip_prefix('/') {
                 app.input.clear();
                 app.cursor = 0;
-                match command {
+                let (name, args) = command.split_once(' ').unwrap_or((command, ""));
+                match name {
                     "new" => {
                         let _ = worker.send(Cmd::NewSession);
                     }
@@ -287,6 +321,37 @@ fn handle_chat_key(
                     "models" => app.open_dialog(Dialog::Models),
                     "help" => app.open_dialog(Dialog::Help),
                     "exit" | "quit" => app.should_quit = true,
+                    // Fork /goal command: template "$ARGUMENTS" steers the
+                    // goal agent; set/edit/resume auto-switch to it first.
+                    "goal" => {
+                        let action = args
+                            .split_whitespace()
+                            .next()
+                            .unwrap_or_default()
+                            .to_lowercase();
+                        let Some(session_id) = app.session_id.clone() else {
+                            app.toast = Some("Open a session before using /goal".into());
+                            return;
+                        };
+                        if matches!(action.as_str(), "set" | "edit" | "resume")
+                            && app.agent != "goal"
+                        {
+                            app.agent = "goal".into();
+                            let _ =
+                                worker.send(Cmd::SwitchAgent(session_id.clone(), "goal".into()));
+                        }
+                        if args.is_empty() {
+                            app.toast = Some(
+                                "Usage: /goal set|edit|pause|resume|complete|status|clear …".into(),
+                            );
+                            return;
+                        }
+                        app.busy = true;
+                        let _ = worker.send(Cmd::Prompt(
+                            session_id,
+                            format!("Manage the session goal: {args}"),
+                        ));
+                    }
                     other => app.toast = Some(format!("Unknown command: /{other}")),
                 }
                 return;
@@ -378,6 +443,36 @@ fn handle_dialog_key(app: &mut App, code: KeyCode, worker: &mpsc::Sender<Cmd>) {
                         "Switch agent" => app.open_dialog(Dialog::Agents),
                         "Switch model" => app.open_dialog(Dialog::Models),
                         "Help" => app.open_dialog(Dialog::Help),
+                        "Goal details" => {
+                            if app.display_goal().is_some() {
+                                app.open_dialog(Dialog::GoalDetails);
+                            } else {
+                                app.toast = Some("No session goal is currently set.".into());
+                            }
+                        }
+                        "Goal summaries" => {
+                            if app.display_goal().is_some() {
+                                app.open_dialog(Dialog::GoalSummaries);
+                            } else {
+                                app.toast = Some("No session goal is currently set.".into());
+                            }
+                        }
+                        "Manage goal" => {
+                            app.input = "/goal ".into();
+                            app.cursor = app.input.chars().count();
+                        }
+                        "Toggle out-of-workspace access" => {
+                            if let Some(session_id) = app.session_id.clone() {
+                                app.external_allowed = !app.external_allowed;
+                                let _ = worker
+                                    .send(Cmd::ToggleExternal(session_id, app.external_allowed));
+                            } else {
+                                app.toast = Some(
+                                    "Open or start a session before changing out-of-workspace permissions"
+                                        .into(),
+                                );
+                            }
+                        }
                         _ => app.should_quit = true,
                     }
                 }
@@ -547,6 +642,14 @@ fn worker(
                 if let Err(error) = api.switch_model(&id, &provider, &model) {
                     let _ = to_ui.send(Msg::Toast(format!("model switch failed: {error}")));
                 }
+            }
+            Ok(Cmd::ToggleExternal(id, allow)) => {
+                let message = match api.set_external_permission(&id, allow) {
+                    Ok(()) if allow => "Always allowing out-of-workspace access for this session",
+                    Ok(()) => "Out-of-workspace access will ask for permission",
+                    Err(_) => "Failed to update out-of-workspace permission",
+                };
+                let _ = to_ui.send(Msg::Toast(message.to_string()));
             }
             Ok(Cmd::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,

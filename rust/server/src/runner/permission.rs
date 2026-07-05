@@ -160,14 +160,64 @@ pub fn wholly_denied(agent: &str, action: &str) -> bool {
 
 /// PermissionV2.evaluate + evaluateInput: agent-rule denials win outright;
 /// otherwise the last matching rule decides, defaulting to ask.
+#[cfg(test)]
 pub fn evaluate(agent: &str, action: &str, resources: &[&str]) -> Effect {
+    evaluate_with(agent, &[], action, resources)
+}
+
+/// Session-level permission overrides stored on the session row (the fork's
+/// out-of-workspace toggle writes `[{permission, pattern, action}]` there).
+/// They apply after the agent ruleset so last-match-wins lets them override.
+pub fn session_rules(
+    conn: &rusqlite::Connection,
+    session_id: &str,
+) -> Vec<(String, String, String)> {
+    let raw: Option<Option<String>> = conn
+        .query_row(
+            "SELECT permission FROM session WHERE id = ?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .ok();
+    raw.flatten()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| value.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|rule| {
+            Some((
+                rule.get("permission")?.as_str()?.to_string(),
+                rule.get("pattern")?.as_str()?.to_string(),
+                rule.get("action")?.as_str()?.to_string(),
+            ))
+        })
+        .collect()
+}
+
+pub fn evaluate_with(
+    agent: &str,
+    session: &[(String, String, String)],
+    action: &str,
+    resources: &[&str],
+) -> Effect {
     let rules = agent_rules(agent);
     let effect_for = |resource: &str| {
-        rules
+        session
             .iter()
             .rev()
-            .find(|rule| wildcard(action, rule.action) && wildcard(resource, &rule.resource))
-            .map(|rule| rule.effect)
+            .find(|(rule_action, pattern, _)| {
+                wildcard(action, rule_action) && wildcard(resource, pattern)
+            })
+            .map(|(_, _, effect)| effect.as_str())
+            .or_else(|| {
+                rules
+                    .iter()
+                    .rev()
+                    .find(|rule| {
+                        wildcard(action, rule.action) && wildcard(resource, &rule.resource)
+                    })
+                    .map(|rule| rule.effect)
+            })
             .unwrap_or("ask")
     };
     let effects: Vec<&str> = resources

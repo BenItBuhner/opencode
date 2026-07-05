@@ -220,9 +220,10 @@ pub fn definitions() -> Vec<Value> {
 }
 
 pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
+    let session = permission::session_rules(env.conn, env.session_id);
     let resources = permission_resources(env, name, input);
     let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
-    match permission::evaluate(env.agent, permission_action(name), &resource_refs) {
+    match permission::evaluate_with(env.agent, &session, permission_action(name), &resource_refs) {
         permission::Effect::Allow => {}
         // Denied and unapproved calls surface the same generic tool messages
         // Bun's ToolFailure mapping produces.
@@ -242,10 +243,10 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
         };
     }
     match name {
-        "read" => read(env.directory, input),
+        "read" => read(env, input),
         "glob" => glob(env.directory, input),
         "grep" => grep(env.directory, input),
-        "bash" => bash(env.directory, input),
+        "bash" => bash(env, input),
         "edit" => edit(env, input),
         "write" => write(env, input),
         "todowrite" => todowrite(env, input),
@@ -333,18 +334,33 @@ fn success_text(structured: Value, text: String) -> Settlement {
     }
 }
 
-fn resolve(directory: &str, input: &str) -> Option<PathBuf> {
+fn resolve(env: &ToolEnv, input: &str) -> Option<PathBuf> {
     let joined = if Path::new(input).is_absolute() {
         PathBuf::from(input)
     } else {
-        Path::new(directory).join(input)
+        Path::new(env.directory).join(input)
     };
     let canonical = joined.canonicalize().ok()?;
-    // External absolute paths require the permission runtime; scope the Rust
-    // registry to the active worktree like a denied external_directory rule.
-    canonical
-        .starts_with(worktree_root(directory))
-        .then_some(canonical)
+    if canonical.starts_with(worktree_root(env.directory)) {
+        return Some(canonical);
+    }
+    // External absolute paths require external_directory approval. Session
+    // overrides (the out-of-workspace toggle) can grant it durably.
+    external_allowed(env, &canonical).then_some(canonical)
+}
+
+/// LocationMutation.externalDirectoryPermission: the resource is the target's
+/// parent directory joined with `*`.
+fn external_allowed(env: &ToolEnv, canonical: &Path) -> bool {
+    let session = permission::session_rules(env.conn, env.session_id);
+    let resource = canonical
+        .parent()
+        .unwrap_or(canonical)
+        .join("*")
+        .to_string_lossy()
+        .into_owned();
+    permission::evaluate_with(env.agent, &session, "external_directory", &[&resource])
+        == permission::Effect::Allow
 }
 
 fn worktree_root(directory: &str) -> PathBuf {
@@ -363,12 +379,12 @@ fn worktree_root(directory: &str) -> PathBuf {
 // read
 // ---------------------------------------------------------------------------
 
-fn read(directory: &str, input: &Value) -> Settlement {
+fn read(env: &ToolEnv, input: &Value) -> Settlement {
     let path = match input.get("path").and_then(Value::as_str) {
         Some(path) => path,
         None => return failure("Invalid tool input: path is required".into()),
     };
-    let Some(target) = resolve(directory, path) else {
+    let Some(target) = resolve(env, path) else {
         return failure(format!("Unable to read {path}"));
     };
     if target.is_dir() {
@@ -692,7 +708,8 @@ fn grep(directory: &str, input: &Value) -> Settlement {
 // bash
 // ---------------------------------------------------------------------------
 
-fn bash(directory: &str, input: &Value) -> Settlement {
+fn bash(env: &ToolEnv, input: &Value) -> Settlement {
+    let directory = env.directory;
     let Some(command) = input.get("command").and_then(Value::as_str) else {
         return failure("Invalid tool input: command is required".into());
     };
@@ -705,7 +722,7 @@ fn bash(directory: &str, input: &Value) -> Settlement {
     let Ok(canonical) = target.canonicalize() else {
         return failure(format!("Unable to execute command: {command}"));
     };
-    if !canonical.starts_with(worktree_root(directory)) {
+    if !canonical.starts_with(worktree_root(directory)) && !external_allowed(env, &canonical) {
         // External workdir requires external_directory approval (ask).
         return failure(format!("Unable to execute command: {command}"));
     }
@@ -826,7 +843,7 @@ fn mutation_target(env: &ToolEnv, path: &str) -> Option<(PathBuf, String)> {
     // Canonicalize the parent (the file may not exist yet).
     let parent = joined.parent()?.canonicalize().ok()?;
     let canonical = parent.join(joined.file_name()?);
-    if !canonical.starts_with(worktree_root(env.directory)) {
+    if !canonical.starts_with(worktree_root(env.directory)) && !external_allowed(env, &canonical) {
         return None;
     }
     let resource = canonical
