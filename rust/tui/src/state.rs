@@ -47,6 +47,8 @@ pub struct App {
     pub toast: Option<String>,
     pub frame: usize,
     pub tip_index: usize,
+    /// session.metadata.goal, when goal mode has durable state.
+    pub goal: Option<Value>,
 }
 
 impl App {
@@ -78,6 +80,7 @@ impl App {
             toast: None,
             frame: 0,
             tip_index: std::process::id() as usize,
+            goal: None,
         }
     }
 
@@ -111,6 +114,23 @@ impl App {
         self.todos.clear();
         self.scroll = 0;
         self.interrupts = 0;
+        self.goal = None;
+    }
+
+    /// agent_cycle (tab): rotate through the primary agent cycle order.
+    pub fn cycle_agent(&mut self, reverse: bool) -> String {
+        const ORDER: [&str; 3] = ["build", "plan", "goal"];
+        let current = ORDER
+            .iter()
+            .position(|name| *name == self.agent)
+            .unwrap_or(0);
+        let next = if reverse {
+            (current + ORDER.len() - 1) % ORDER.len()
+        } else {
+            (current + 1) % ORDER.len()
+        };
+        self.agent = ORDER[next].to_string();
+        self.agent.clone()
     }
 
     pub fn open_dialog(&mut self, dialog: Dialog) {

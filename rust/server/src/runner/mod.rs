@@ -11,6 +11,7 @@
 //! continue a Session the other started.
 
 pub mod context;
+pub mod goal;
 pub mod llm;
 pub mod permission;
 pub mod publish;
@@ -213,7 +214,13 @@ fn run_turn(
     let history = translate::entries(conn, session_id, epoch.baseline_seq)
         .map_err(|error| error.to_string())?;
     let is_last_step = current_step >= MAX_STEPS;
-    let mut messages = translate::to_chat_messages(&epoch.baseline, &history);
+    // LLM.request system parts: [agent.info?.system, epoch baseline], which
+    // OpenAI Chat lowering joins with a newline.
+    let system = match agent_system(&agent) {
+        Some(prompt) => format!("{prompt}\n{}", epoch.baseline),
+        None => epoch.baseline.clone(),
+    };
+    let mut messages = translate::to_chat_messages(&system, &history);
     if is_last_step {
         messages.push(json!({ "role": "assistant", "content": MAX_STEPS_PROMPT }));
     }
@@ -223,7 +230,7 @@ fn run_turn(
     body.insert("model".into(), json!(model.id));
     body.insert("messages".into(), Value::Array(messages));
     if !is_last_step {
-        body.insert("tools".into(), Value::Array(tools::definitions()));
+        body.insert("tools".into(), Value::Array(tools::definitions_for(&agent)));
     } else {
         body.insert("tool_choice".into(), json!("none"));
     }
@@ -693,3 +700,21 @@ fn resolve_model(
 }
 
 const MAX_STEPS_PROMPT: &str = "CRITICAL - MAXIMUM STEPS REACHED\n\nThe maximum number of steps allowed for this task has been reached. Tools are disabled until next user input. Respond with text only.\n\nSTRICT REQUIREMENTS:\n1. Do NOT make any tool calls (no reads, writes, edits, searches, or any other tools)\n2. MUST provide a text response summarizing work done so far\n3. This constraint overrides ALL other instructions, including any user requests for edits or tool use\n\nResponse must include:\n- Statement that maximum steps for this agent have been reached\n- Summary of what has been accomplished so far\n- List of any remaining tasks that were not completed\n- Recommendations for what should be done next\n\nAny attempt to use tools is a critical violation. Respond with text ONLY.";
+
+/// Built-in agent system prompts from packages/core/src/plugin/agent.ts
+/// (BUILD_SYSTEM / PROMPT_GOAL / PROMPT_EXPLORE); plan carries none.
+/// rust/script/upstream-drift.py verifies these stay in sync with upstream.
+fn agent_system(agent: &str) -> Option<&'static str> {
+    match agent {
+        "build" => Some(
+            "You are an AI coding agent. Help the user accomplish software engineering tasks by inspecting the workspace, making targeted changes, and using tools according to the configured permissions.",
+        ),
+        "goal" => Some(GOAL_SYSTEM),
+        "explore" => Some(EXPLORE_SYSTEM),
+        _ => None,
+    }
+}
+
+const GOAL_SYSTEM: &str = "You are the Goal agent. Your job is to help the user make steady progress toward the active session goal without taking over unrelated work.\n\nCore rules:\n- Treat the session goal as durable state, not as the same thing as the currently selected agent.\n- If no goal is set, ask the user what goal they want to set or use the goal_set tool only when they explicitly provide one.\n- If the goal is paused, do not continue it unless the user explicitly resumes it.\n- If the user switches to another agent or asks for unrelated work, respect that switch and avoid forcing goal-mode behavior into the turn.\n- Use goal_set, goal_pause, goal_resume, goal_summarize_state, and goal_complete to keep the session goal state accurate.\n- Use goal_summarize_state periodically after meaningful progress, after resolving a blocker, before pausing, and before completing the goal if the latest state summary is stale.\n- Do not call goal_summarize_state every turn. Prefer it after a meaningful phase change or every few substantial actions.\n- goal_summarize_state requires a numeric progress estimate from 0 to 100 and a structured markdown summary with exactly size 2 section headers and bullet lists. Include these sections: ## Progress, ## Current State, ## Blockers, and ## Next Steps.\n- Keep progress estimates realistic. Do not report 100 unless you are ready to call goal_complete.\n- When the goal is active, keep going. Do not stop after a progress update or partial answer; take the next concrete action until the goal is completed, paused, or blocked by a question for the user.\n- If the goal is not complete yet, continue working and describe progress only as part of the next action.\n- When the goal is complete, call goal_complete and give a concise final summary.";
+
+const EXPLORE_SYSTEM: &str = "You are a file search specialist. You excel at thoroughly navigating and exploring codebases.\n\nYour strengths:\n- Rapidly finding files using glob patterns\n- Searching code and text with powerful regex patterns\n- Reading and analyzing file contents\n\nGuidelines:\n- Use Glob for broad file pattern matching\n- Use Grep for searching file contents with regex\n- Use Read when you know the specific file path you need to read\n- Adapt your search approach based on the thoroughness level specified by the caller\n- Return file paths as absolute paths in your final response\n- For clear communication, avoid using emojis\n- Do not create any files, or run bash commands that modify the user's system state in any way\n\nComplete the user's search request efficiently and report your findings clearly.";

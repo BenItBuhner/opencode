@@ -148,6 +148,16 @@ pub fn agent_rules(agent: &str) -> Vec<Rule> {
     rules
 }
 
+/// ToolRegistry `whollyDisabled`: the last rule matching the action denies
+/// every resource, so the tool is removed from the advertised definitions.
+pub fn wholly_denied(agent: &str, action: &str) -> bool {
+    agent_rules(agent)
+        .iter()
+        .rev()
+        .find(|rule| wildcard(action, rule.action))
+        .is_some_and(|rule| rule.resource == "*" && rule.effect == "deny")
+}
+
 /// PermissionV2.evaluate + evaluateInput: agent-rule denials win outright;
 /// otherwise the last matching rule decides, defaulting to ask.
 pub fn evaluate(agent: &str, action: &str, resources: &[&str]) -> Effect {

@@ -40,9 +40,9 @@ fn draw_home(frame: &mut Frame, app: &App) {
     let prompt_width = (area.width * 7 / 10)
         .clamp(40, 75)
         .min(area.width.saturating_sub(2));
-    let editor = editor_height(app);
+    let prompt = prompt_height(app);
     // Logo(4) + gap(1) + prompt block + tip row.
-    let content_height = 4 + 1 + editor + 3 + 2;
+    let content_height = 4 + 1 + prompt + 2;
     let top = area.height.saturating_sub(content_height + 2) / 2;
 
     let logo_x = area.x + area.width.saturating_sub(crate::logo::WIDTH) / 2;
@@ -57,7 +57,7 @@ fn draw_home(frame: &mut Frame, app: &App) {
     }
 
     let prompt_x = area.x + area.width.saturating_sub(prompt_width) / 2;
-    let prompt_area = Rect::new(prompt_x, area.y + top + 5, prompt_width, editor + 3);
+    let prompt_area = Rect::new(prompt_x, area.y + top + 5, prompt_width, prompt);
     draw_prompt(frame, app, prompt_area);
 
     // Tip row (feature-plugins/home/tips-view.tsx): "● Tip  <text>".
@@ -150,12 +150,11 @@ fn draw_session(frame: &mut Frame, app: &App) {
     } else {
         (area, None)
     };
-    let editor = editor_height(app);
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(3),
-            Constraint::Length(editor + 3),
+            Constraint::Length(prompt_height(app)),
             Constraint::Length(1),
         ])
         .split(Rect::new(
@@ -560,6 +559,12 @@ fn editor_height(app: &App) -> u16 {
     app.input.split('\n').count().clamp(1, 6) as u16
 }
 
+/// Total prompt block height: paddingTop row, textarea rows, agent-row
+/// paddingTop row, agent row, connector, status.
+pub fn prompt_height(app: &App) -> u16 {
+    editor_height(app) + 5
+}
+
 fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
     let editor = editor_height(app);
     let accent = app.agent_color();
@@ -572,10 +577,19 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         theme::tint(theme::BORDER, accent, 0.7)
     };
     let element = Style::default().bg(theme::BACKGROUND_ELEMENT);
+    let blank_row = |frame: &mut Frame, rect: Rect| {
+        frame.render_widget(
+            Paragraph::new(Span::styled("┃", Style::default().fg(border_color))).style(element),
+            rect,
+        );
+    };
 
-    // Row 0..editor: textarea with left `┃` border and element background.
+    // Prompt box paddingTop=1: an element-background row above the textarea.
+    blank_row(frame, Rect::new(area.x, area.y, area.width, 1));
+
+    // Textarea rows with left `┃` border and element background.
     for row in 0..editor {
-        let rect = Rect::new(area.x, area.y + row, area.width, 1);
+        let rect = Rect::new(area.x, area.y + 1 + row, area.width, 1);
         let content: String = app
             .input
             .split('\n')
@@ -601,8 +615,11 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(Line::from(spans)).style(element), rect);
     }
 
+    // Agent row paddingTop=1: blank element row between textarea and label.
+    blank_row(frame, Rect::new(area.x, area.y + 1 + editor, area.width, 1));
+
     // Agent row: {Agent} · {model} {provider}
-    let agent_row = Rect::new(area.x, area.y + editor, area.width, 1);
+    let agent_row = Rect::new(area.x, area.y + 2 + editor, area.width, 1);
     let label = if shell_mode {
         "Shell".to_string()
     } else {
@@ -633,7 +650,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
     );
 
     // Connector row: `╹` + `▀` bottom edge of the element background.
-    let connector = Rect::new(area.x, area.y + editor + 1, area.width, 1);
+    let connector = Rect::new(area.x, area.y + editor + 3, area.width, 1);
     let mut edge = String::from("╹");
     edge.push_str(&"▀".repeat(area.width.saturating_sub(1) as usize));
     frame.render_widget(
@@ -643,17 +660,17 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         )),
         connector,
     );
-    let status = Rect::new(area.x, area.y + editor + 2, area.width, 1);
+    let status = Rect::new(area.x, area.y + editor + 4, area.width, 1);
     draw_prompt_status(frame, app, status);
 
-    // Terminal cursor inside the textarea.
+    // Terminal cursor inside the textarea (below the padding row).
     if app.dialog == Dialog::None {
         let before: String = app.input.chars().take(app.cursor).collect();
         let row = before.matches('\n').count() as u16;
         let column = before.split('\n').next_back().unwrap_or("").chars().count() as u16;
         frame.set_cursor_position((
             area.x + 3 + column.min(area.width.saturating_sub(4)),
-            area.y + row.min(editor.saturating_sub(1)),
+            area.y + 1 + row.min(editor.saturating_sub(1)),
         ));
     }
 }
@@ -696,6 +713,27 @@ fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
             "leader · q quit  n new  l sessions  a agents  m models  ? help",
             Style::default().fg(theme::WARNING),
         ))
+    } else if let Some(goal) = &app.goal {
+        // Goal chip: `goal {N}% ━━━──────` with a 12-segment progress bar.
+        let progress = goal
+            .get("progress")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .clamp(0, 100);
+        let status = goal
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("active");
+        let filled = (progress as usize * 12) / 100;
+        let bar: String = "━".repeat(filled) + &"─".repeat(12 - filled);
+        Line::from(vec![
+            Span::styled(
+                format!("goal{} ", if status == "paused" { " (paused)" } else { "" }),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::styled(format!("{progress}% "), Style::default().fg(theme::TEXT)),
+            Span::styled(bar, Style::default().fg(theme::ACCENT)),
+        ])
     } else {
         Line::from(vec![
             Span::styled("ctrl+x a", Style::default().fg(theme::TEXT)),
@@ -814,6 +852,8 @@ pub struct DialogOption {
     pub title: String,
     pub description: String,
     pub footer: String,
+    /// The active value (current session/agent/model) gets the `●` gutter.
+    pub current: bool,
 }
 
 pub fn dialog_options(app: &App) -> Vec<DialogOption> {
@@ -828,6 +868,7 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
                 title: (*title).to_string(),
                 description: (*description).to_string(),
                 footer: (*footer).to_string(),
+                current: false,
             })
             .collect(),
         Dialog::Sessions => app
@@ -853,6 +894,7 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
                     .unwrap_or("")
                     .to_string(),
                 footer: String::new(),
+                current: session.get("id").and_then(Value::as_str) == app.session_id.as_deref(),
             })
             .collect(),
         Dialog::Agents => app
@@ -871,23 +913,25 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
                         .unwrap_or(""),
                 )
             })
-            .map(|agent| DialogOption {
-                category: None,
-                title: titlecase(
-                    agent
-                        .get("id")
-                        .or_else(|| agent.get("name"))
-                        .and_then(Value::as_str)
-                        .unwrap_or("agent"),
-                ),
-                description: agent
-                    .get("description")
+            .map(|agent| {
+                let name = agent
+                    .get("id")
+                    .or_else(|| agent.get("name"))
                     .and_then(Value::as_str)
-                    .unwrap_or("")
-                    .chars()
-                    .take(60)
-                    .collect(),
-                footer: String::new(),
+                    .unwrap_or("agent");
+                DialogOption {
+                    category: None,
+                    title: titlecase(name),
+                    description: agent
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .chars()
+                        .take(60)
+                        .collect(),
+                    footer: String::new(),
+                    current: name == app.agent,
+                }
             })
             .collect(),
         Dialog::Models => app
@@ -903,6 +947,7 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
                 } else {
                     String::new()
                 },
+                current: *provider == app.provider && *model == app.model,
             })
             .collect(),
         _ => vec![],
@@ -926,6 +971,49 @@ pub const COMMANDS: [(&str, &str, &str); 6] = [
     ("Exit the application", "", "ctrl+c"),
 ];
 
+/// Dialog panel geometry, shared by the renderer and the mouse handler.
+pub fn dialog_rect(screen: Rect, dialog: Dialog) -> Rect {
+    let width = match dialog {
+        Dialog::Sessions | Dialog::Models => 88u16,
+        _ => 60u16,
+    }
+    .min(screen.width.saturating_sub(2));
+    let list_height = (screen.height / 2).saturating_sub(6).max(4);
+    let height = (list_height + 4).min(screen.height.saturating_sub(4));
+    Rect::new(
+        screen.x + (screen.width.saturating_sub(width)) / 2,
+        screen.y + (screen.height.saturating_sub(height)) / 2,
+        width,
+        height,
+    )
+}
+
+/// Maps a clicked terminal row inside the dialog to an option index,
+/// accounting for category header lines.
+pub fn dialog_row_at(app: &App, area: Rect, row: u16) -> Option<usize> {
+    let list_top = area.y + 4;
+    if row < list_top {
+        return None;
+    }
+    let clicked = (row - list_top) as usize;
+    let options = dialog_options(app);
+    let mut line = 0usize;
+    let mut last_category: Option<String> = None;
+    for (index, option) in options.iter().enumerate() {
+        if option.category != last_category {
+            if option.category.is_some() {
+                line += 1;
+            }
+            last_category = option.category.clone();
+        }
+        if line == clicked {
+            return Some(index);
+        }
+        line += 1;
+    }
+    None
+}
+
 fn dialog_title(dialog: Dialog) -> &'static str {
     match dialog {
         Dialog::Commands => "Commands",
@@ -938,20 +1026,8 @@ fn dialog_title(dialog: Dialog) -> &'static str {
 
 fn draw_dialog_select(frame: &mut Frame, app: &App) {
     let screen = frame.area();
-    let width = match app.dialog {
-        Dialog::Sessions | Dialog::Models => 88u16,
-        _ => 60u16,
-    }
-    .min(screen.width.saturating_sub(2));
     let options = dialog_options(app);
-    let list_height = (screen.height / 2).saturating_sub(6).max(4);
-    let height = (list_height + 4).min(screen.height.saturating_sub(4));
-    let area = Rect::new(
-        screen.x + (screen.width.saturating_sub(width)) / 2,
-        screen.y + (screen.height.saturating_sub(height)) / 2,
-        width,
-        height,
-    );
+    let area = dialog_rect(screen, app.dialog);
     frame.render_widget(Clear, area);
     frame.render_widget(
         Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
@@ -1037,7 +1113,9 @@ fn draw_dialog_select(frame: &mut Frame, app: &App) {
         } else {
             (theme::TEXT, theme::TEXT_MUTED, theme::BACKGROUND_PANEL)
         };
-        let marker = if active { " ● " } else { "   " };
+        // `●` marks the current value (active session/agent/model), like the
+        // DialogSelect gutter; the highlight bar tracks the cursor.
+        let marker = if option.current { " ● " } else { "   " };
         let mut spans = vec![
             Span::styled(marker, Style::default().fg(fg).bg(bg)),
             Span::styled(

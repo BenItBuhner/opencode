@@ -37,6 +37,19 @@ const BASH_MAX_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const BASH_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const WEBFETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
 
+/// Tool definitions the agent can actually use: the registry filtered by
+/// wholly-denied permission rules, like ToolRegistry.materialize.
+pub fn definitions_for(agent: &str) -> Vec<Value> {
+    definitions()
+        .into_iter()
+        .chain(crate::runner::goal::definitions())
+        .filter(|definition| {
+            let name = definition["function"]["name"].as_str().unwrap_or_default();
+            !permission::wholly_denied(agent, permission_action(name))
+        })
+        .collect()
+}
+
 /// OpenAI-facing tool definitions mirroring the Bun registry.
 pub fn definitions() -> Vec<Value> {
     vec![
@@ -217,6 +230,17 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
             return failure(denied_message(name, input));
         }
     }
+    if name.starts_with("goal_") {
+        let outcome = crate::runner::goal::execute(env.conn, env.session_id, name, input);
+        if let Some(message) = outcome.error {
+            return failure(message);
+        }
+        return Settlement {
+            structured: outcome.structured,
+            content: vec![json!({ "type": "text", "text": outcome.text })],
+            error: None,
+        };
+    }
     match name {
         "read" => read(env.directory, input),
         "glob" => glob(env.directory, input),
@@ -268,6 +292,9 @@ fn permission_resources(env: &ToolEnv, name: &str, input: &Value) -> Vec<String>
 
 fn denied_message(name: &str, input: &Value) -> String {
     let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    if name.starts_with("goal_") {
+        return format!("The {name} tool is not available for this agent.");
+    }
     match name {
         "bash" => format!("Unable to execute command: {}", text("command")),
         "edit" => format!("Unable to edit {}", text("path")),

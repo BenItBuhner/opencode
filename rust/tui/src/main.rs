@@ -18,7 +18,9 @@ mod state;
 mod theme;
 mod ui;
 
-use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use serde_json::Value;
 use state::{App, Dialog};
 use std::sync::mpsc;
@@ -29,6 +31,7 @@ enum Msg {
     Session(Value),
     Messages(String, Vec<Value>),
     Todos(String, Vec<Value>),
+    Goal(String, Option<Value>),
     Active(Vec<String>),
     Agents(Vec<Value>),
     Models(Vec<(String, String)>),
@@ -74,6 +77,8 @@ fn main() -> std::io::Result<()> {
     // strip the palette out from under the renderer.
     crossterm::style::force_color_output(true);
     let mut terminal = ratatui::init();
+    // Mouse: wheel scrolling, dialog row clicks, backdrop dismissal.
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture);
     let mut app = App::new(directory);
     let _ = to_worker.send(Cmd::LoadLists);
     let _ = to_worker.send(Cmd::Refresh);
@@ -84,16 +89,81 @@ fn main() -> std::io::Result<()> {
             apply(&mut app, message);
         }
         if crossterm::event::poll(Duration::from_millis(40))? {
-            if let Event::Key(key) = crossterm::event::read()? {
-                if key.kind == KeyEventKind::Press {
+            match crossterm::event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
                     handle_key(&mut app, key.code, key.modifiers, &to_worker);
                 }
+                Event::Mouse(mouse) => {
+                    let size = terminal.size()?;
+                    handle_mouse(
+                        &mut app,
+                        mouse,
+                        ratatui::layout::Rect::new(0, 0, size.width, size.height),
+                        &to_worker,
+                    );
+                }
+                _ => {}
             }
         }
         app.frame = app.frame.wrapping_add(1);
     }
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     Ok(())
+}
+
+fn handle_mouse(
+    app: &mut App,
+    mouse: MouseEvent,
+    screen: ratatui::layout::Rect,
+    worker: &mpsc::Sender<Cmd>,
+) {
+    match mouse.kind {
+        MouseEventKind::ScrollUp => {
+            if app.dialog == Dialog::None {
+                app.scroll = app.scroll.saturating_add(3);
+            } else {
+                app.list_index = app.list_index.saturating_sub(1);
+            }
+        }
+        MouseEventKind::ScrollDown => {
+            if app.dialog == Dialog::None {
+                app.scroll = app.scroll.saturating_sub(3);
+            } else {
+                let count = ui::dialog_options(app).len();
+                if app.list_index + 1 < count {
+                    app.list_index += 1;
+                }
+            }
+        }
+        MouseEventKind::Down(MouseButton::Left) => {
+            if matches!(app.dialog, Dialog::None) {
+                return;
+            }
+            if app.dialog == Dialog::Help {
+                app.dialog = Dialog::None;
+                return;
+            }
+            let options = ui::dialog_options(app);
+            let area = ui::dialog_rect(screen, app.dialog);
+            let inside = mouse.column >= area.x
+                && mouse.column < area.x + area.width
+                && mouse.row >= area.y
+                && mouse.row < area.y + area.height;
+            if !inside {
+                // Clicking the backdrop closes the dialog, like ui/dialog.tsx.
+                app.dialog = Dialog::None;
+                return;
+            }
+            if let Some(index) = ui::dialog_row_at(app, area, mouse.row) {
+                if index < options.len() {
+                    app.list_index = index;
+                    handle_dialog_key(app, KeyCode::Enter, worker);
+                }
+            }
+        }
+        _ => {}
+    }
 }
 
 fn apply(app: &mut App, message: Msg) {
@@ -108,6 +178,11 @@ fn apply(app: &mut App, message: Msg) {
         Msg::Todos(session_id, todos) => {
             if app.session_id.as_deref() == Some(session_id.as_str()) {
                 app.todos = todos;
+            }
+        }
+        Msg::Goal(session_id, goal) => {
+            if app.session_id.as_deref() == Some(session_id.as_str()) {
+                app.goal = goal;
             }
         }
         Msg::Active(active) => {
@@ -175,8 +250,25 @@ fn handle_chat_key(
     modifiers: KeyModifiers,
     worker: &mpsc::Sender<Cmd>,
 ) {
+    // agent_cycle: tab / shift+tab rotate build -> plan -> goal.
+    if code == KeyCode::Tab || code == KeyCode::BackTab {
+        let agent = app.cycle_agent(code == KeyCode::BackTab);
+        if let Some(session_id) = app.session_id.clone() {
+            let _ = worker.send(Cmd::SwitchAgent(session_id, agent));
+        }
+        return;
+    }
+    // input_newline: shift+enter / ctrl+j / alt+enter.
+    if code == KeyCode::Char('j') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.insert('\n');
+        return;
+    }
     match code {
-        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => app.insert('\n'),
+        KeyCode::Enter
+            if modifiers.contains(KeyModifiers::ALT) || modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            app.insert('\n')
+        }
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
             if text.is_empty() {
@@ -225,8 +317,22 @@ fn handle_chat_key(
         KeyCode::Backspace => app.backspace(),
         KeyCode::Left => app.move_cursor(-1),
         KeyCode::Right => app.move_cursor(1),
-        KeyCode::Home => app.cursor = 0,
-        KeyCode::End => app.cursor = app.input.chars().count(),
+        // messages_first / messages_last when the editor is empty; otherwise
+        // the usual editor cursor motion.
+        KeyCode::Home => {
+            if app.input.is_empty() {
+                app.scroll = u16::MAX;
+            } else {
+                app.cursor = 0;
+            }
+        }
+        KeyCode::End => {
+            if app.input.is_empty() {
+                app.scroll = 0;
+            } else {
+                app.cursor = app.input.chars().count();
+            }
+        }
         KeyCode::PageUp => app.scroll = app.scroll.saturating_add(10),
         KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(10),
         KeyCode::Char(ch) => {
@@ -461,6 +567,9 @@ fn worker(
             }
             if let Ok(todos) = api.todos(id) {
                 let _ = to_ui.send(Msg::Todos(id.clone(), todos));
+            }
+            if let Ok(goal) = api.goal(id) {
+                let _ = to_ui.send(Msg::Goal(id.clone(), goal));
             }
         }
     }

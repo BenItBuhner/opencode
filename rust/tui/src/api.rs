@@ -120,6 +120,15 @@ impl Api {
         .map(|_| ())
     }
 
+    /// Goal state lives in v1 session metadata (`session.metadata.goal`).
+    pub fn goal(&self, session_id: &str) -> Result<Option<Value>, String> {
+        Ok(self
+            .get(&format!("/session/{session_id}"))?
+            .get("metadata")
+            .and_then(|metadata| metadata.get("goal"))
+            .cloned())
+    }
+
     pub fn todos(&self, session_id: &str) -> Result<Vec<Value>, String> {
         // Todos live on the v1 surface (`/session/:id/todo`).
         Ok(self
