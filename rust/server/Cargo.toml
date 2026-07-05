@@ -20,6 +20,8 @@ serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 rand = "0.8"
 # Blocking HTTPS client for the provider streaming loop (rustls, no openssl).
 ureq = "2"
+# Project IDs hash the normalized git remote (Hash.fast = sha1 hex).
+sha1 = "0.10"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 ignore = "0.4.27"

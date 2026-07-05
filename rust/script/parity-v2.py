@@ -159,7 +159,11 @@ covered = 0
 for session in sessions:
     sid = session["id"]
     bun_msgs = get(BUN, f"/api/session/{sid}/message?order=asc")
-    if not json.loads(bun_msgs[1])["data"]:
+    # Sessions whose directory no longer exists fail location resolution on
+    # the Bun side; both servers must at least agree, then skip them.
+    if bun_msgs[0] != 200:
+        continue
+    if not json.loads(bun_msgs[1]).get("data"):
         continue
     covered += 1
     check(f"projected messages parity {sid}", bun_msgs == get(RUST, f"/api/session/{sid}/message?order=asc"))

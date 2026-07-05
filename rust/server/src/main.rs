@@ -1010,6 +1010,106 @@ struct ApiCreatePayload {
     location: Option<Value>,
 }
 
+/// Port of ProjectV2.resolve + SessionV2.create's project upsert: the project
+/// ID is sha1("git-remote:{host}/{path}") for repos with an origin remote, a
+/// cached `.git/opencode` ID, the root commit, or "global" outside git.
+fn resolve_or_create_project(
+    conn: &rusqlite::Connection,
+    directory: &str,
+) -> rusqlite::Result<(String, String)> {
+    use sha1::{Digest, Sha1};
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let worktree = git(&["rev-parse", "--show-toplevel"]);
+    let (id, worktree, vcs) = match worktree {
+        None => ("global".to_string(), "/".to_string(), None),
+        Some(worktree) => {
+            let remote_id = git(&["remote", "get-url", "origin"])
+                .and_then(|origin| normalize_remote(&origin))
+                .map(|normalized| {
+                    let mut hasher = Sha1::new();
+                    hasher.update(format!("git-remote:{normalized}").as_bytes());
+                    hasher
+                        .finalize()
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                });
+            let cached = git(&["rev-parse", "--git-common-dir"]).and_then(|common| {
+                let path = std::path::Path::new(directory)
+                    .join(common)
+                    .join("opencode");
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            });
+            let root = git(&["rev-list", "--max-parents=0", "HEAD"])
+                .map(|list| list.lines().next().unwrap_or_default().to_string());
+            (
+                remote_id
+                    .or(cached)
+                    .or(root)
+                    .unwrap_or_else(|| "global".to_string()),
+                worktree,
+                Some("git"),
+            )
+        }
+    };
+    let timestamp = now();
+    conn.execute(
+        "INSERT INTO project (id, worktree, vcs, sandboxes, time_created, time_updated) \
+         VALUES (?, ?, ?, '[]', ?, ?) ON CONFLICT(id) DO NOTHING",
+        rusqlite::params![id, worktree, vcs, timestamp, timestamp],
+    )?;
+    Ok((id, worktree))
+}
+
+/// ProjectV2 URL normalization: lowercase host + path without leading
+/// slashes, trailing `.git`, or trailing slashes; scp-like remotes supported.
+fn normalize_remote(origin: &str) -> Option<String> {
+    let value = origin.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let parts = |host: &str, name: &str| {
+        let pathname = name
+            .trim_start_matches('/')
+            .trim_end_matches('/')
+            .trim_end_matches(".git")
+            .trim_end_matches('/');
+        if host.is_empty() || pathname.is_empty() {
+            return None;
+        }
+        Some(format!("{}/{pathname}", host.to_lowercase()))
+    };
+    if let Some(rest) = value.split_once("://").map(|(_, rest)| rest) {
+        if value.starts_with("file:") {
+            return None;
+        }
+        let rest = rest.split_once('@').map(|(_, host)| host).unwrap_or(rest);
+        let (host, path) = rest.split_once('/')?;
+        return parts(host.split(':').next().unwrap_or(host), path);
+    }
+    // scp-like: [user@]host:path
+    let captures = value.split_once(':')?;
+    let host = captures
+        .0
+        .split_once('@')
+        .map(|(_, host)| host)
+        .unwrap_or(captures.0);
+    parts(host, captures.1)
+}
+
 async fn api_session_create(
     State(app): State<App>,
     Json(payload): Json<ApiCreatePayload>,
@@ -1034,7 +1134,7 @@ async fn api_session_create(
         .and_then(|location| location.get("workspaceID"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let (project_id, worktree) = resolve_project(&conn, &directory)?;
+    let (project_id, worktree) = resolve_or_create_project(&conn, &directory)?;
     let path = directory
         .strip_prefix(worktree.trim_end_matches('/'))
         .map(|rest| rest.trim_start_matches('/').to_string())

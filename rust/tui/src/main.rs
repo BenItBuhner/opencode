@@ -1,23 +1,26 @@
-//! opencode-tui: Rust TUI client for the OpenCode server, built on the
-//! specialized Rust terminal stack (ratatui rendering + crossterm backend) —
-//! the counterpart of the TS TUI's OpenTUI renderer and keymap.
+//! opencode-tui: Rust port of the OpenCode TUI (packages/tui), rendered with
+//! the specialized Rust terminal stack — ratatui + crossterm — reproducing
+//! the OpenTUI-based design: the block-letter wordmark home route, `┃`
+//! gutters and per-tool icon rows in the transcript, the accent-bordered
+//! prompt editor with agent row and connector, the block busy spinner, and
+//! centered DialogSelect panels with fuzzy search.
 //!
-//! Interaction model mirrors packages/tui: a chat route with a prompt editor,
-//! modal list dialogs, and the default keybinds from
-//! packages/tui/src/config/keybind.ts (leader ctrl+x; app_exit ctrl+c /
-//! <leader>q; session_new <leader>n; session_list <leader>l; agent_list
-//! <leader>a; model_list <leader>m; messages_page_up/down pageup/pagedown;
-//! prompt submit enter; newline alt+enter; interrupt esc).
+//! Default keybinds follow packages/tui/src/config/keybind.ts: leader ctrl+x;
+//! exit ctrl+c / <leader>q; <leader>n new session; <leader>l sessions;
+//! <leader>a agents; <leader>m models; ctrl+p command palette;
+//! pageup/pagedown scroll; enter send; alt+enter newline; esc interrupt.
 //!
 //! Usage: opencode-tui [--url http://127.0.0.1:4097] [--directory <cwd>] [--session <id>]
 
 mod api;
+mod logo;
 mod state;
+mod theme;
 mod ui;
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
 use serde_json::Value;
-use state::{App, Screen};
+use state::{App, Dialog};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -25,6 +28,7 @@ enum Msg {
     Sessions(Vec<Value>),
     Session(Value),
     Messages(String, Vec<Value>),
+    Todos(String, Vec<Value>),
     Active(Vec<String>),
     Agents(Vec<Value>),
     Models(Vec<(String, String)>),
@@ -66,6 +70,9 @@ fn main() -> std::io::Result<()> {
     let session_flag = arg("--session");
     std::thread::spawn(move || worker(worker_base, worker_directory, session_flag, to_ui, from_ui));
 
+    // The TUI paints its own theme like OpenTUI does; never let NO_COLOR
+    // strip the palette out from under the renderer.
+    crossterm::style::force_color_output(true);
     let mut terminal = ratatui::init();
     let mut app = App::new(directory);
     let _ = to_worker.send(Cmd::LoadLists);
@@ -76,14 +83,14 @@ fn main() -> std::io::Result<()> {
         while let Ok(message) = from_worker.try_recv() {
             apply(&mut app, message);
         }
-        if crossterm::event::poll(Duration::from_millis(80))? {
+        if crossterm::event::poll(Duration::from_millis(40))? {
             if let Event::Key(key) = crossterm::event::read()? {
                 if key.kind == KeyEventKind::Press {
                     handle_key(&mut app, key.code, key.modifiers, &to_worker);
                 }
             }
         }
-        app.spinner_frame = app.spinner_frame.wrapping_add(1);
+        app.frame = app.frame.wrapping_add(1);
     }
     ratatui::restore();
     Ok(())
@@ -98,11 +105,20 @@ fn apply(app: &mut App, message: Msg) {
                 app.messages = messages;
             }
         }
+        Msg::Todos(session_id, todos) => {
+            if app.session_id.as_deref() == Some(session_id.as_str()) {
+                app.todos = todos;
+            }
+        }
         Msg::Active(active) => {
-            app.busy = app
+            let busy = app
                 .session_id
                 .as_deref()
                 .is_some_and(|id| active.iter().any(|item| item == id));
+            if !busy {
+                app.interrupts = 0;
+            }
+            app.busy = busy;
         }
         Msg::Agents(agents) => app.agents = agents,
         Msg::Models(models) => app.models = models,
@@ -116,7 +132,12 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, worker: &mp
         app.should_quit = true;
         return;
     }
-    // Leader sequence (ctrl+x, then one key), like the TS keymap.
+    // command_list: ctrl+p opens the command palette.
+    if code == KeyCode::Char('p') && modifiers.contains(KeyModifiers::CONTROL) {
+        app.open_dialog(Dialog::Commands);
+        return;
+    }
+    // Leader sequence (ctrl+x, then one key).
     if code == KeyCode::Char('x') && modifiers.contains(KeyModifiers::CONTROL) {
         app.leader = true;
         return;
@@ -128,29 +149,20 @@ fn handle_key(app: &mut App, code: KeyCode, modifiers: KeyModifiers, worker: &mp
             KeyCode::Char('n') => {
                 let _ = worker.send(Cmd::NewSession);
             }
-            KeyCode::Char('l') => {
-                app.screen = Screen::SessionList;
-                app.list_index = 0;
-            }
-            KeyCode::Char('a') => {
-                app.screen = Screen::AgentList;
-                app.list_index = 0;
-            }
-            KeyCode::Char('m') => {
-                app.screen = Screen::ModelList;
-                app.list_index = 0;
-            }
-            KeyCode::Char('?') => app.screen = Screen::Help,
+            KeyCode::Char('l') => app.open_dialog(Dialog::Sessions),
+            KeyCode::Char('a') => app.open_dialog(Dialog::Agents),
+            KeyCode::Char('m') => app.open_dialog(Dialog::Models),
+            KeyCode::Char('?') => app.open_dialog(Dialog::Help),
             _ => app.toast = Some("Unbound leader key".into()),
         }
         return;
     }
 
-    match app.screen {
-        Screen::Chat => handle_chat_key(app, code, modifiers, worker),
-        Screen::Help => {
-            if matches!(code, KeyCode::Esc | KeyCode::Char('q')) {
-                app.screen = Screen::Chat;
+    match app.dialog {
+        Dialog::None => handle_chat_key(app, code, modifiers, worker),
+        Dialog::Help => {
+            if matches!(code, KeyCode::Esc | KeyCode::Enter) {
+                app.dialog = Dialog::None;
             }
         }
         _ => handle_dialog_key(app, code, worker),
@@ -164,12 +176,27 @@ fn handle_chat_key(
     worker: &mpsc::Sender<Cmd>,
 ) {
     match code {
-        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => {
-            app.insert('\n');
-        }
+        KeyCode::Enter if modifiers.contains(KeyModifiers::ALT) => app.insert('\n'),
         KeyCode::Enter => {
             let text = app.input.trim().to_string();
             if text.is_empty() {
+                return;
+            }
+            // Slash commands, like the TS prompt: /new /sessions /agents /models /help.
+            if let Some(command) = text.strip_prefix('/') {
+                app.input.clear();
+                app.cursor = 0;
+                match command {
+                    "new" => {
+                        let _ = worker.send(Cmd::NewSession);
+                    }
+                    "sessions" => app.open_dialog(Dialog::Sessions),
+                    "agents" => app.open_dialog(Dialog::Agents),
+                    "models" => app.open_dialog(Dialog::Models),
+                    "help" => app.open_dialog(Dialog::Help),
+                    "exit" | "quit" => app.should_quit = true,
+                    other => app.toast = Some(format!("Unknown command: /{other}")),
+                }
                 return;
             }
             let Some(session_id) = app.session_id.clone() else {
@@ -181,13 +208,14 @@ fn handle_chat_key(
             app.cursor = 0;
             app.scroll = 0;
             app.busy = true;
+            app.toast = None;
             let _ = worker.send(Cmd::Prompt(session_id, text));
         }
         KeyCode::Esc => {
             if app.busy {
                 if let Some(session_id) = app.session_id.clone() {
+                    app.interrupts += 1;
                     let _ = worker.send(Cmd::Interrupt(session_id));
-                    app.toast = Some("Interrupt requested".into());
                 }
             } else {
                 app.input.clear();
@@ -210,62 +238,126 @@ fn handle_chat_key(
 }
 
 fn handle_dialog_key(app: &mut App, code: KeyCode, worker: &mpsc::Sender<Cmd>) {
-    let length = match app.screen {
-        Screen::SessionList => app.sessions.len(),
-        Screen::AgentList => app.agents.len(),
-        Screen::ModelList => app.models.len(),
-        _ => 0,
-    };
+    let options = ui::dialog_options(app);
     match code {
-        KeyCode::Esc | KeyCode::Char('q') => app.screen = Screen::Chat,
-        KeyCode::Up | KeyCode::Char('k') => {
-            app.list_index = app.list_index.saturating_sub(1);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if app.list_index + 1 < length {
+        KeyCode::Esc => app.dialog = Dialog::None,
+        KeyCode::Up => app.list_index = app.list_index.saturating_sub(1),
+        KeyCode::Down => {
+            if app.list_index + 1 < options.len() {
                 app.list_index += 1;
             }
         }
+        KeyCode::Backspace => {
+            app.search.pop();
+            app.list_index = 0;
+        }
+        KeyCode::Char(ch) => {
+            app.search.push(ch);
+            app.list_index = 0;
+        }
         KeyCode::Enter => {
-            match app.screen {
-                Screen::SessionList => {
-                    if let Some(session) = app.sessions.get(app.list_index).cloned() {
+            let selected = app.list_index.min(options.len().saturating_sub(1));
+            let dialog = app.dialog;
+            app.dialog = Dialog::None;
+            match dialog {
+                Dialog::Commands => {
+                    let Some(option) = options.get(selected) else {
+                        return;
+                    };
+                    match option.title.as_str() {
+                        "New session" => {
+                            let _ = worker.send(Cmd::NewSession);
+                        }
+                        "Switch session" => app.open_dialog(Dialog::Sessions),
+                        "Switch agent" => app.open_dialog(Dialog::Agents),
+                        "Switch model" => app.open_dialog(Dialog::Models),
+                        "Help" => app.open_dialog(Dialog::Help),
+                        _ => app.should_quit = true,
+                    }
+                }
+                Dialog::Sessions => {
+                    // Map the filtered index back to the session list.
+                    let filtered: Vec<&Value> = app
+                        .sessions
+                        .iter()
+                        .filter(|session| {
+                            state::fuzzy(
+                                session.get("title").and_then(Value::as_str).unwrap_or(""),
+                                &app.search,
+                            )
+                        })
+                        .collect();
+                    if let Some(session) = filtered.get(selected).cloned().cloned() {
                         app.adopt_session(&session);
                         let _ = worker.send(Cmd::Refresh);
                     }
                 }
-                Screen::AgentList => {
-                    let agent = app.agents.get(app.list_index).and_then(|agent| {
-                        agent
+                Dialog::Agents => {
+                    let filtered: Vec<(usize, &Value)> = app
+                        .agents
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, agent)| {
+                            state::fuzzy(
+                                &format!(
+                                    "{} {}",
+                                    agent
+                                        .get("id")
+                                        .or_else(|| agent.get("name"))
+                                        .and_then(Value::as_str)
+                                        .unwrap_or(""),
+                                    agent
+                                        .get("description")
+                                        .and_then(Value::as_str)
+                                        .unwrap_or("")
+                                ),
+                                &app.search,
+                            )
+                        })
+                        .collect();
+                    if let Some((index, agent)) = filtered.get(selected) {
+                        let name = agent
                             .get("id")
                             .or_else(|| agent.get("name"))
                             .and_then(Value::as_str)
-                            .map(str::to_string)
-                    });
-                    if let (Some(agent), Some(session_id)) = (agent, app.session_id.clone()) {
-                        app.agent = agent.clone();
-                        let _ = worker.send(Cmd::SwitchAgent(session_id, agent));
+                            .unwrap_or("build")
+                            .to_string();
+                        app.agent = name.clone();
+                        app.agent_index = *index;
+                        if let Some(session_id) = app.session_id.clone() {
+                            let _ = worker.send(Cmd::SwitchAgent(session_id, name));
+                        }
                     }
                 }
-                Screen::ModelList => {
-                    if let (Some((provider, model)), Some(session_id)) = (
-                        app.models.get(app.list_index).cloned(),
-                        app.session_id.clone(),
-                    ) {
-                        app.model = format!("{provider}/{model}");
-                        let _ = worker.send(Cmd::SwitchModel(session_id, provider, model));
+                Dialog::Models => {
+                    let filtered: Vec<&(String, String)> = app
+                        .models
+                        .iter()
+                        .filter(|(provider, model)| {
+                            state::fuzzy(&format!("{provider}/{model}"), &app.search)
+                        })
+                        .collect();
+                    if let Some((provider, model)) = filtered.get(selected) {
+                        app.provider = provider.clone();
+                        app.model = model.clone();
+                        if let Some(session_id) = app.session_id.clone() {
+                            let _ = worker.send(Cmd::SwitchModel(
+                                session_id,
+                                provider.clone(),
+                                model.clone(),
+                            ));
+                        }
                     }
                 }
                 _ => {}
             }
-            app.screen = Screen::Chat;
         }
         _ => {}
     }
 }
 
-/// Worker thread: owns every blocking HTTP call. Polls messages + active
-/// state on an interval (fast while a drain is running) and executes commands.
+/// Worker thread: owns every blocking HTTP call. Polls messages, todos, and
+/// active state (fast while a drain runs) and executes commands.
 fn worker(
     base: String,
     directory: String,
@@ -277,7 +369,6 @@ fn worker(
     let mut session_id: Option<String> = None;
     let mut busy = false;
 
-    // Adopt --session, else the newest session for the directory, else create.
     let adopt = match session_flag {
         Some(id) => api.session(&id).ok().filter(|value| !value.is_null()),
         None => api.sessions().ok().and_then(|sessions| {
@@ -304,9 +395,9 @@ fn worker(
 
     loop {
         let timeout = if busy {
-            Duration::from_millis(250)
+            Duration::from_millis(200)
         } else {
-            Duration::from_millis(1_000)
+            Duration::from_millis(900)
         };
         match from_ui.recv_timeout(timeout) {
             Ok(Cmd::Prompt(id, text)) => {
@@ -367,6 +458,9 @@ fn worker(
         if let Some(id) = &session_id {
             if let Ok(messages) = api.messages(id) {
                 let _ = to_ui.send(Msg::Messages(id.clone(), messages));
+            }
+            if let Ok(todos) = api.todos(id) {
+                let _ = to_ui.send(Msg::Todos(id.clone(), todos));
             }
         }
     }

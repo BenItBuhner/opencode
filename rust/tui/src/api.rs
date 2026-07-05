@@ -120,6 +120,15 @@ impl Api {
         .map(|_| ())
     }
 
+    pub fn todos(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        // Todos live on the v1 surface (`/session/:id/todo`).
+        Ok(self
+            .get(&format!("/session/{session_id}/todo"))?
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
     pub fn agents(&self) -> Result<Vec<Value>, String> {
         // The v1 /agent list carries name/description/mode for every agent.
         let agents = self.get("/agent")?;
