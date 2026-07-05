@@ -1,9 +1,11 @@
 name: compliance-close
 
 on:
-  schedule:
-    # Run every 30 minutes to check for expired compliance windows
-    - cron: "*/30 * * * *"
+  # Disabled on this fork: upstream auto-closes external PRs after a 2-hour
+  # compliance window, which breaks long-running cloud-agent PRs. Re-enable
+  # the schedule below if you want upstream-style contributor enforcement.
+  # schedule:
+  #   - cron: "*/30 * * * *"
   workflow_dispatch:
 
 permissions:
