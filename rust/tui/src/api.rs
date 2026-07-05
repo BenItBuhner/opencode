@@ -6,11 +6,21 @@ use std::time::Duration;
 
 pub struct Api {
     pub base: String,
+    pub authorization: Option<String>,
 }
 
 impl Api {
+    fn apply_auth(&self, request: ureq::Request) -> ureq::Request {
+        if let Some(authorization) = &self.authorization {
+            request.set("Authorization", authorization)
+        } else {
+            request
+        }
+    }
+
     fn get(&self, path: &str) -> Result<Value, String> {
-        let response = ureq::get(&format!("{}{path}", self.base))
+        let response = self
+            .apply_auth(ureq::get(&format!("{}{path}", self.base)))
             .timeout(Duration::from_secs(30))
             .call()
             .map_err(|error| error.to_string())?;
@@ -19,7 +29,8 @@ impl Api {
     }
 
     fn post(&self, path: &str, body: &Value) -> Result<Value, String> {
-        let response = ureq::post(&format!("{}{path}", self.base))
+        let response = self
+            .apply_auth(ureq::post(&format!("{}{path}", self.base)))
             .timeout(Duration::from_secs(30))
             .set("Content-Type", "application/json")
             .send_string(&body.to_string())
@@ -140,10 +151,13 @@ impl Api {
 
     /// Fork out-of-workspace toggle: PATCH the v1 session permission ruleset.
     pub fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String> {
-        let request = ureq::request("PATCH", &format!("{}/session/{session_id}", self.base))
-            .timeout(Duration::from_secs(30))
-            .set("Content-Type", "application/json")
-            .send_string(
+        let request = self.apply_auth(ureq::request(
+            "PATCH",
+            &format!("{}/session/{session_id}", self.base),
+        ))
+        .timeout(Duration::from_secs(30))
+        .set("Content-Type", "application/json")
+        .send_string(
                 &json!({
                     "permission": [{
                         "permission": "external_directory",

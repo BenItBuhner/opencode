@@ -948,8 +948,10 @@ name = "opencode-server"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "base64",
  "futures",
  "ignore",
+ "opengoal-daemon",
  "r2d2",
  "r2d2_sqlite",
  "rand 0.8.6",
@@ -960,16 +962,41 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "ureq",
+ "uuid",
 ]
 
 [[package]]
 name = "opencode-tui"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "crossterm",
  "ratatui",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "opengoal-cli"
+version = "0.1.0"
+dependencies = [
+ "opencode-server",
+ "opencode-tui",
+ "opengoal-daemon",
+ "tokio",
+]
+
+[[package]]
+name = "opengoal-daemon"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "libc",
+ "rand 0.8.6",
+ "serde",
+ "serde_json",
+ "ureq",
+ "uuid",
 ]
 
 [[package]]

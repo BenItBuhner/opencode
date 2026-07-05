@@ -5,6 +5,14 @@ edition.workspace = true
 license.workspace = true
 description = "Rust port of the OpenCode session HTTP surface, sharing the SQLite store with the Bun server"
 
+[lib]
+name = "opencode_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opencode-server"
+path = "src/main.rs"
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
@@ -12,16 +20,13 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 r2d2 = "0.8"
 r2d2_sqlite = "0.25"
 serde = { version = "1", features = ["derive"] }
-# float_roundtrip is required for byte-identical JSON parity with
-# JSON.parse/JSON.stringify on 17-significant-digit doubles; preserve_order
-# keeps object keys in insertion order like JavaScript objects, which matters
-# for durable rows (session_input.prompt, event.data) both servers must agree on.
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 rand = "0.8"
-# Blocking HTTPS client for the provider streaming loop (rustls, no openssl).
 ureq = "2"
-# Project IDs hash the normalized git remote (Hash.fast = sha1 hex).
 sha1 = "0.10"
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 ignore = "0.4.27"
+base64 = "0.22"
+opengoal-daemon = { path = "../daemon" }
+uuid = { version = "1", features = ["v4"] }
