@@ -1,0 +1,4173 @@
+//! The Rust runner's tool registry: read, glob, grep, bash, edit, write,
+//! apply_patch, todowrite, skill, webfetch, and websearch, ported from
+//! packages/core/src/tool/*.
+//! Definitions mirror the Bun registry's names, descriptions, and output
+//! shapes so durable tool events look the same regardless of which server
+//! executed the turn.
+//!
+//! Permission-gated: every call is evaluated against the built-in agent
+//! rulesets (runner/permission.rs). `ask` outcomes have no interactive
+//! permission-reply flow in Rust, so they behave like a declined permission:
+//! settle the pending call as interrupted and stop the runner instead of
+//! feeding a synthetic permission failure back to the model.
+
+use crate::runner::background;
+use crate::runner::permission;
+use crate::runner::Env as RunnerEnv;
+use crate::runner::InterruptToken;
+use serde_json::{json, Map, Value};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Child;
+use std::time::Duration;
+
+pub struct Settlement {
+    pub structured: Value,
+    pub content: Vec<Value>,
+    pub error: Option<String>,
+    pub interrupt: bool,
+}
+
+pub struct ToolEnv<'a> {
+    pub directory: &'a str,
+    pub worktree: &'a str,
+    pub agent: &'a str,
+    pub session_id: &'a str,
+    pub project_id: &'a str,
+    pub conn: &'a rusqlite::Connection,
+    pub pool: Option<&'a crate::runner::Pool>,
+    pub interrupt: Option<&'a InterruptToken>,
+    pub bus: Option<&'a crate::bus::Bus>,
+    pub permissions: Option<&'a crate::permission_v2::Registry>,
+    pub questions: Option<&'a crate::question_v2::Registry>,
+    pub message_id: Option<&'a str>,
+    pub call_id: Option<&'a str>,
+}
+
+const MAX_READ_LINES: usize = 2_000;
+const MAX_READ_BYTES: usize = 50 * 1024;
+const MAX_LINE_LENGTH: usize = 2_000;
+
+const BASH_DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1_000;
+const BASH_MAX_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
+const BASH_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+const WEBFETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
+const WEBSEARCH_NO_RESULTS: &str = "No search results found. Please try a different query.";
+const WEBSEARCH_EXA_URL: &str = "https://mcp.exa.ai/mcp";
+const WEBSEARCH_PARALLEL_URL: &str = "https://search.parallel.ai/mcp";
+const WEBSEARCH_MAX_NUM_RESULTS: u64 = 20;
+const WEBSEARCH_MAX_CONTEXT_CHARACTERS: u64 = 50_000;
+const WEBSEARCH_MAX_RESPONSE_BYTES: usize = 256 * 1024;
+
+/// Tool definitions the agent can actually use: the registry filtered by
+/// wholly-denied permission rules, like ToolRegistry.materialize.
+pub fn definitions_for(agent: &str) -> Vec<Value> {
+    definitions()
+        .into_iter()
+        .chain(crate::runner::goal::definitions())
+        .filter(|definition| {
+            let name = definition["function"]["name"].as_str().unwrap_or_default();
+            !permission::wholly_denied(agent, permission_action(name))
+        })
+        .collect()
+}
+
+/// OpenAI-facing tool definitions mirroring the Bun registry.
+pub fn definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "type": "function",
+            "function": {
+                "name": "read",
+                "description": "Read a text file or supported image, page through a large UTF-8 text file by line offset, or list a directory page. Relative paths resolve from the current location; absolute paths inside it are accepted, while external absolute paths require external_directory approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "offset": { "type": "integer", "description": "The 1-based directory entry or text line offset to start reading from" },
+                        "limit": { "type": "integer", "description": "The maximum number of directory entries or text lines to read" }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "glob",
+                "description": "Find files by glob pattern within the active Location. Returns concise relative file resources. Use a relative path to narrow the search and limit to bound the result count.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Glob pattern to match files against" },
+                        "path": { "type": "string", "description": "Relative directory to search. Defaults to the active Location." },
+                        "limit": { "type": "integer", "description": "Maximum results to return" }
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "grep",
+                "description": "Search file contents by regular expression within the active Location or an absolute managed tool-output file. Use a path to narrow the search, include to filter files by glob, and limit to bound the match count. Returns concise file resources, line numbers, and bounded line previews.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Regex pattern to search for in file contents" },
+                        "path": { "type": "string", "description": "Relative directory to search. Defaults to the active Location." },
+                        "include": { "type": "string", "description": "File glob to include in the search (for example, \"*.js\" or \"*.{ts,tsx}\")" },
+                        "limit": { "type": "integer", "description": "Maximum matches to return" }
+                    },
+                    "required": ["pattern"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "bash",
+                "description": format!("Execute one shell command string with the host user's filesystem, process, and network authority. The active Location is the default working directory. Relative workdir values resolve from that Location. External workdir values require external_directory approval; best-effort command-argument path warnings are advisory only. Timeout values are milliseconds (default: {BASH_DEFAULT_TIMEOUT_MS}; maximum: {BASH_MAX_TIMEOUT_MS}). Uses the configured shell when set; otherwise uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows."),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "command": { "type": "string", "description": "Shell command string to execute" },
+                        "workdir": { "type": "string", "description": "Working directory. Defaults to the active Location; relative paths resolve from that Location." },
+                        "timeout": { "type": "integer", "minimum": 1, "maximum": BASH_MAX_TIMEOUT_MS, "description": format!("Timeout in milliseconds. Defaults to {BASH_DEFAULT_TIMEOUT_MS} and may not exceed {BASH_MAX_TIMEOUT_MS}.") }
+                    },
+                    "required": ["command"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "edit",
+                "description": "Replace exact text in one file. Relative paths resolve within the active Location. Absolute paths inside the Location are accepted. Explicit external absolute paths require external_directory approval before edit approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path to edit. Relative paths resolve within the active Location. Absolute paths inside that Location are accepted; external absolute paths require external_directory approval." },
+                        "oldString": { "type": "string", "description": "Exact text to replace" },
+                        "newString": { "type": "string", "description": "Replacement text, which must differ from oldString" },
+                        "replaceAll": { "type": "boolean", "description": "Replace all exact occurrences of oldString (default false)" }
+                    },
+                    "required": ["path", "oldString", "newString"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "write",
+                "description": "Write content to one file. Relative paths resolve within the active Location. Absolute paths inside the Location are accepted. Explicit external absolute paths require external_directory approval before edit approval.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "File path to write. Relative paths resolve within the active Location. Absolute paths inside that Location are accepted; external absolute paths require external_directory approval." },
+                        "content": { "type": "string", "description": "Content to write to the file" }
+                    },
+                    "required": ["path", "content"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "apply_patch",
+                "description": "Apply one patch containing add, update, and delete file operations. All targets are resolved and approved before target contents are read. Operations apply sequentially; if a later operation fails, earlier operations remain applied and the failure reports them explicitly. Moves and atomic rollback are not supported yet.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patchText": { "type": "string", "description": "The full patch text describing add, update, and delete operations" }
+                    },
+                    "required": ["patchText"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "task",
+                "description": "Launch a specialized subagent in a child session. Use foreground mode when the result is needed before continuing, or background=true for independent work that can finish later and notify this session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "description": { "type": "string", "description": "A short (3-5 words) description of the task" },
+                        "prompt": { "type": "string", "description": "The task for the agent to perform" },
+                        "subagent_type": { "type": "string", "description": "The type of specialized agent to use for this task" },
+                        "background": { "type": "boolean", "description": "Run the agent in the background. You will be notified when it completes. Do not poll for progress." },
+                        "task_id": { "type": "string", "description": "A prior child session id to resume instead of creating a fresh task" },
+                        "command": { "type": "string", "description": "The command that triggered this task" },
+                        "goal_mode": { "type": "boolean", "description": "Enable goal-mode harness behavior for this child session" },
+                        "goal": { "type": "string", "description": "Optional child-specific goal text for goal_mode" }
+                    },
+                    "required": ["description", "prompt", "subagent_type"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "todowrite",
+                "description": "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "todos": {
+                            "type": "array",
+                            "description": "The updated todo list",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "id": { "type": "string", "description": "Stable caller-provided todo identifier" },
+                                    "content": { "type": "string" },
+                                    "status": { "type": "string", "description": "Current status of the task: pending, in_progress, completed, cancelled" },
+                                    "priority": { "type": "string", "description": "Priority of the task: high, medium, low" }
+                                },
+                                "required": ["content", "status", "priority"],
+                                "additionalProperties": false
+                            }
+                        }
+                    },
+                    "required": ["todos"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "skill",
+                "description": "Load a specialized skill when the task at hand matches one of the available skills in the system context.\n\nUse this tool to inject the skill's instructions and resources into the current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc. in the same directory as the skill.\n\nThe skill name must match one of the available skills in the system context.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "description": "The name of the skill from the available skills list" }
+                    },
+                    "required": ["name"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "question",
+                "description": "Ask the user one or more multiple-choice questions and wait for their reply. Use ONLY when a decision materially changes the plan and cannot be made confidently from context; keep the wording concise and provide clear labelled options.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "description": "One or more questions to ask the user",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": { "type": "string", "description": "Complete question" },
+                                    "header": { "type": "string", "description": "Very short label (max 30 chars)" },
+                                    "options": {
+                                        "type": "array",
+                                        "description": "Available choices",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string", "description": "Display text (1-5 words, concise)" },
+                                                "description": { "type": "string", "description": "Explanation of choice" }
+                                            },
+                                            "required": ["label", "description"],
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "multiple": { "type": "boolean", "description": "Allow selecting multiple choices" },
+                                    "custom": { "type": "boolean", "description": "Allow typing a custom answer (default: true)" }
+                                },
+                                "required": ["question", "header", "options"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "timeout": { "type": "number", "description": "Timeout in seconds (default 300, max 600)" }
+                    },
+                    "required": ["questions"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "webfetch",
+                "description": "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.\n\nUse a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "url": { "type": "string", "description": "The HTTP or HTTPS URL to fetch content from" },
+                        "format": { "type": "string", "enum": ["text", "markdown", "html"], "description": "The format to return the content in. Defaults to markdown." },
+                        "timeout": { "type": "number", "minimum": 1, "maximum": 120, "description": "Optional timeout in seconds (maximum: 120)" }
+                    },
+                    "required": ["url"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "websearch",
+                "description": format!("Search the web using the session's local web search provider. Use this for current information beyond knowledge cutoff.\n\nThis is a provider-independent local tool backed by Exa or Parallel. Provider-hosted web search tools are separate and execute at the model provider.\n\nOptional controls support result count, live crawling ('fallback' or 'preferred'), search type ('auto', 'fast', or 'deep'), and maximum context characters.\n\nThe current year is {}. Use this year when searching for recent information or current events.", current_year()),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Websearch query" },
+                        "numResults": { "type": "integer", "minimum": 1, "maximum": WEBSEARCH_MAX_NUM_RESULTS, "description": format!("Number of search results to return (default: 8, maximum: {WEBSEARCH_MAX_NUM_RESULTS})") },
+                        "livecrawl": { "type": "string", "enum": ["fallback", "preferred"], "description": "Live crawl mode - 'fallback': use live crawling as backup if cached unavailable, 'preferred': prioritize live crawling (default: 'fallback')" },
+                        "type": { "type": "string", "enum": ["auto", "fast", "deep"], "description": "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search" },
+                        "contextMaxCharacters": { "type": "integer", "minimum": 1, "maximum": WEBSEARCH_MAX_CONTEXT_CHARACTERS, "description": format!("Maximum characters for context string optimized for models (default: 10000, maximum: {WEBSEARCH_MAX_CONTEXT_CHARACTERS})") }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+    ]
+}
+
+pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
+    let provider = (name == "websearch").then(|| select_websearch_provider(env.session_id));
+    let resources = permission_resources(env, name, input);
+    let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
+    let action = permission_action(name);
+    if let Some((bus, registry)) = env.bus.zip(env.permissions) {
+        // Full ask/reply flow when the tool is running under the live runner:
+        // agent + session + saved rules with an interactive Ask.
+        match crate::permission_v2::evaluate_input(
+            env.conn,
+            env.project_id,
+            env.session_id,
+            env.agent,
+            action,
+            &resource_refs,
+        ) {
+            permission::Effect::Allow => {}
+            permission::Effect::Deny => return failure(denied_message(name, input)),
+            permission::Effect::Ask => {
+                let source = env
+                    .message_id
+                    .zip(env.call_id)
+                    .map(|(message_id, call_id)| {
+                        json!({
+                            "type": "tool",
+                            "messageID": message_id,
+                            "callID": call_id,
+                        })
+                    });
+                let ask_env = crate::permission_v2::Env {
+                    bus,
+                    conn: env.conn,
+                    project_id: env.project_id,
+                    registry,
+                };
+                let outcome = match crate::permission_v2::ask(
+                    &ask_env,
+                    &crate::permission_v2::AssertInput {
+                        id: None,
+                        session_id: env.session_id.to_string(),
+                        action: action.to_string(),
+                        resources: resources.clone(),
+                        save: Some(permission_save(name, &resources)),
+                        metadata: permission_metadata(name, input, provider),
+                        source,
+                        agent: Some(env.agent.to_string()),
+                    },
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(_) => return failure(denied_message(name, input)),
+                };
+                match outcome.wait {
+                    None if outcome.effect == "allow" => {}
+                    None => return failure(denied_message(name, input)),
+                    Some(rx) => {
+                        let interrupt_token = env.interrupt.cloned();
+                        match crate::permission_v2::wait_for(rx, move || {
+                            interrupt_token
+                                .as_ref()
+                                .is_some_and(|token| token.is_interrupted())
+                        }) {
+                            crate::permission_v2::Resolution::Allowed => {}
+                            crate::permission_v2::Resolution::Declined => {
+                                if env.interrupt.is_some_and(|token| token.is_interrupted()) {
+                                    return interrupted();
+                                }
+                                return failure(denied_message(name, input));
+                            }
+                            crate::permission_v2::Resolution::Corrected(feedback) => {
+                                return failure(feedback);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // Legacy path (tool-registry unit tests without a live runner):
+        // preserve historical `ask -> interrupt` behavior.
+        let session_rules = permission::session_rules(env.conn, env.session_id);
+        match permission::evaluate_with(env.agent, &session_rules, action, &resource_refs) {
+            permission::Effect::Allow => {}
+            permission::Effect::Deny => return failure(denied_message(name, input)),
+            permission::Effect::Ask => return interrupted(),
+        }
+    }
+    if name.starts_with("goal_") {
+        let outcome = crate::runner::goal::execute(env.conn, env.session_id, name, input);
+        if let Some(message) = outcome.error {
+            return failure(message);
+        }
+        return Settlement {
+            structured: outcome.structured,
+            content: vec![json!({ "type": "text", "text": outcome.text })],
+            error: None,
+            interrupt: false,
+        };
+    }
+    match name {
+        "read" => read(env, input),
+        "glob" => glob(env.directory, input),
+        "grep" => grep(env.directory, input),
+        "bash" => bash(env, input),
+        "edit" => edit(env, input),
+        "write" => write(env, input),
+        "apply_patch" => apply_patch(env, input),
+        "task" => task(env, input),
+        "todowrite" => todowrite(env, input),
+        "skill" => skill(env.worktree, input),
+        "webfetch" => webfetch(input),
+        "websearch" => websearch(env, input, provider.unwrap_or(WebSearchProvider::Exa)),
+        "question" => question(env, input),
+        other => failure(format!("Unknown tool: {other}")),
+    }
+}
+
+/// The write and apply_patch tools assert the `edit` action (Tool.withPermission).
+fn permission_action(name: &str) -> &str {
+    if name == "write" || name == "apply_patch" {
+        return "edit";
+    }
+    name
+}
+
+fn permission_resources(env: &ToolEnv, name: &str, input: &Value) -> Vec<String> {
+    let text = |key: &str| {
+        input
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string()
+    };
+    match name {
+        "bash" => vec![text("command")],
+        "edit" | "write" => {
+            // LocationMutation resource: the location-relative path.
+            let path = text("path");
+            let relative = Path::new(&path)
+                .strip_prefix(env.directory)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or(path);
+            vec![relative]
+        }
+        "apply_patch" => parse_patch_text(&text("patchText"))
+            .map(|hunks| {
+                unique_resources(hunks.iter().map(|hunk| {
+                    let path = patch_path(hunk);
+                    Path::new(path)
+                        .strip_prefix(env.directory)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| path.to_string())
+                }))
+            })
+            .unwrap_or_else(|_| vec!["*".to_string()]),
+        "grep" | "glob" => vec![text("pattern")],
+        "read" => vec![text("path")],
+        "task" => vec![text("subagent_type")],
+        "skill" => vec![text("name")],
+        "webfetch" => vec![text("url")],
+        "websearch" => vec![text("query")],
+        "question" => vec!["*".to_string()],
+        _ => vec!["*".to_string()],
+    }
+}
+
+fn permission_save(name: &str, resources: &[String]) -> Vec<String> {
+    if name == "websearch" {
+        return vec!["*".to_string()];
+    }
+    resources.to_vec()
+}
+
+fn permission_metadata(
+    name: &str,
+    input: &Value,
+    provider: Option<WebSearchProvider>,
+) -> Option<Value> {
+    if name != "websearch" {
+        return None;
+    }
+    let mut metadata = input.as_object().cloned().unwrap_or_default();
+    metadata.insert(
+        "provider".into(),
+        Value::String(provider.unwrap_or(WebSearchProvider::Exa).as_str().into()),
+    );
+    Some(Value::Object(metadata))
+}
+
+fn denied_message(name: &str, input: &Value) -> String {
+    let text = |key: &str| input.get(key).and_then(Value::as_str).unwrap_or_default();
+    if name.starts_with("goal_") {
+        return format!("The {name} tool is not available for this agent.");
+    }
+    match name {
+        "bash" => format!("Unable to execute command: {}", text("command")),
+        "edit" => format!("Unable to edit {}", text("path")),
+        "write" => format!("Unable to write {}", text("path")),
+        "apply_patch" => "Unable to apply patch".to_string(),
+        "read" => format!("Unable to read {}", text("path")),
+        "glob" => format!("Unable to find files matching {}", text("pattern")),
+        "grep" => format!("Unable to search for {}", text("pattern")),
+        "task" => format!("Unable to run task with {}", text("subagent_type")),
+        "todowrite" => "Unable to update todos".to_string(),
+        "skill" => format!("Unable to load skill {}", text("name")),
+        "webfetch" => format!("Unable to fetch {}", text("url")),
+        "websearch" => format!("Unable to search the web for {}", text("query")),
+        "question" => "Unable to ask question".to_string(),
+        other => format!("Unable to run {other}"),
+    }
+}
+
+fn failure(message: String) -> Settlement {
+    Settlement {
+        structured: Value::Object(Map::new()),
+        content: vec![],
+        error: Some(message),
+        interrupt: false,
+    }
+}
+
+fn interrupted() -> Settlement {
+    Settlement {
+        structured: Value::Object(Map::new()),
+        content: vec![],
+        error: Some("Tool execution interrupted".into()),
+        interrupt: true,
+    }
+}
+
+fn success_json(structured: Value) -> Settlement {
+    Settlement {
+        structured,
+        content: vec![],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn success_text(structured: Value, text: String) -> Settlement {
+    Settlement {
+        structured,
+        content: vec![json!({ "type": "text", "text": text })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn resolve(env: &ToolEnv, input: &str) -> Option<PathBuf> {
+    let joined = if Path::new(input).is_absolute() {
+        PathBuf::from(input)
+    } else {
+        Path::new(env.directory).join(input)
+    };
+    let canonical = joined.canonicalize().ok()?;
+    if canonical.starts_with(worktree_root(env.directory)) {
+        return Some(canonical);
+    }
+    // External absolute paths require external_directory approval. Session
+    // overrides (the out-of-workspace toggle) can grant it durably.
+    external_allowed(env, &canonical).then_some(canonical)
+}
+
+/// LocationMutation.externalDirectoryPermission: the resource is the target's
+/// parent directory joined with `*`.
+fn external_allowed(env: &ToolEnv, canonical: &Path) -> bool {
+    let session = permission::session_rules(env.conn, env.session_id);
+    let resource = canonical
+        .parent()
+        .unwrap_or(canonical)
+        .join("*")
+        .to_string_lossy()
+        .into_owned();
+    permission::evaluate_with(env.agent, &session, "external_directory", &[&resource])
+        == permission::Effect::Allow
+}
+
+fn worktree_root(directory: &str) -> PathBuf {
+    let mut current = PathBuf::from(directory);
+    loop {
+        if current.join(".git").exists() {
+            return current;
+        }
+        if !current.pop() {
+            return PathBuf::from(directory);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// read
+// ---------------------------------------------------------------------------
+
+fn read(env: &ToolEnv, input: &Value) -> Settlement {
+    let path = match input.get("path").and_then(Value::as_str) {
+        Some(path) => path,
+        None => return failure("Invalid tool input: path is required".into()),
+    };
+    let Some(target) = resolve(env, path) else {
+        return failure(format!("Unable to read {path}"));
+    };
+    if target.is_dir() {
+        return list_directory(&target, input);
+    }
+    let Ok(bytes) = std::fs::read(&target) else {
+        return failure(format!("Unable to read {path}"));
+    };
+    if is_binary(&target, &bytes) {
+        return failure(format!("Cannot read binary file: {path}"));
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return failure(format!("File is not valid UTF-8: {path}"));
+    };
+    let offset = input
+        .get("offset")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize);
+    let paged = text.len() > MAX_READ_BYTES || offset.is_some() || limit.is_some();
+    if !paged {
+        return success_json(json!({
+            "uri": format!("file://{}", target.display()),
+            "name": target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            "content": text,
+            "encoding": "utf8",
+            "mime": crate::v2::mime_for_tool(&target.to_string_lossy()),
+        }));
+    }
+    let offset = offset.unwrap_or(1).max(1);
+    let limit = limit.unwrap_or(MAX_READ_LINES).min(MAX_READ_LINES);
+    let mut lines: Vec<String> = vec![];
+    let mut bytes_used = 0usize;
+    let mut next: Option<usize> = None;
+    for (index, raw) in text.split('\n').enumerate() {
+        let line_number = index + 1;
+        if line_number < offset {
+            continue;
+        }
+        if lines.len() >= limit || bytes_used >= MAX_READ_BYTES {
+            next = Some(line_number);
+            break;
+        }
+        let raw = raw.strip_suffix('\r').unwrap_or(raw);
+        let truncated_line = if raw.chars().count() > MAX_LINE_LENGTH {
+            let prefix: String = raw.chars().take(MAX_LINE_LENGTH).collect();
+            format!("{prefix}... (line truncated to {MAX_LINE_LENGTH} chars)")
+        } else {
+            raw.to_string()
+        };
+        let size = truncated_line.len() + usize::from(!lines.is_empty());
+        if bytes_used + size > MAX_READ_BYTES {
+            next = Some(line_number);
+            break;
+        }
+        bytes_used += size;
+        lines.push(truncated_line);
+    }
+    if lines.is_empty() && offset != 1 {
+        return failure(format!("Offset {offset} is out of range"));
+    }
+    let mut page = Map::new();
+    page.insert("type".into(), json!("text-page"));
+    page.insert("content".into(), json!(lines.join("\n")));
+    page.insert(
+        "mime".into(),
+        json!(crate::v2::mime_for_tool(&target.to_string_lossy())),
+    );
+    page.insert("offset".into(), json!(offset));
+    page.insert("truncated".into(), json!(next.is_some()));
+    if let Some(next) = next {
+        page.insert("next".into(), json!(next));
+    }
+    success_json(Value::Object(page))
+}
+
+fn list_directory(target: &Path, input: &Value) -> Settlement {
+    let Ok(entries) = std::fs::read_dir(target) else {
+        return failure(format!("Unable to read {}", target.display()));
+    };
+    let mut visible: Vec<(String, &'static str)> = entries
+        .filter_map(Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = entry.file_type().ok()?;
+            if kind.is_dir() {
+                return Some((format!("{name}/"), "directory"));
+            }
+            if kind.is_file() {
+                return Some((name, "file"));
+            }
+            None
+        })
+        .collect();
+    visible.sort_by(|a, b| {
+        if a.1 == b.1 {
+            return a.0.cmp(&b.0);
+        }
+        if a.1 == "directory" {
+            return std::cmp::Ordering::Less;
+        }
+        std::cmp::Ordering::Greater
+    });
+    let offset = input
+        .get("offset")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(1)
+        .max(1);
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(MAX_READ_LINES)
+        .min(MAX_READ_LINES);
+    let selected: Vec<Value> = visible
+        .iter()
+        .skip(offset - 1)
+        .take(limit)
+        .map(|(path, kind)| json!({ "path": path, "type": kind }))
+        .collect();
+    let truncated = offset - 1 + selected.len() < visible.len();
+    let mut page = Map::new();
+    page.insert("entries".into(), Value::Array(selected.clone()));
+    page.insert("truncated".into(), json!(truncated));
+    if truncated {
+        page.insert("next".into(), json!(offset + selected.len()));
+    }
+    success_json(Value::Object(page))
+}
+
+fn is_binary(path: &Path, bytes: &[u8]) -> bool {
+    const BINARY_EXTENSIONS: &[&str] = &[
+        "zip", "tar", "gz", "exe", "dll", "so", "class", "jar", "war", "7z", "doc", "docx", "xls",
+        "xlsx", "ppt", "pptx", "odt", "ods", "odp", "bin", "dat", "obj", "o", "a", "lib", "wasm",
+        "pyc", "pyo", "pdf",
+    ];
+    if path.extension().is_some_and(|ext| {
+        BINARY_EXTENSIONS.contains(&ext.to_string_lossy().to_lowercase().as_str())
+    }) {
+        return true;
+    }
+    let sample = &bytes[..bytes.len().min(64 * 1024)];
+    if sample.is_empty() {
+        return false;
+    }
+    let mut non_printable = 0usize;
+    for byte in sample {
+        if *byte == 0 {
+            return true;
+        }
+        if *byte < 9 || (*byte > 13 && *byte < 32) {
+            non_printable += 1;
+        }
+    }
+    non_printable as f64 / sample.len() as f64 > 0.3
+}
+
+// ---------------------------------------------------------------------------
+// glob
+// ---------------------------------------------------------------------------
+
+fn glob(directory: &str, input: &Value) -> Settlement {
+    let pattern = match input.get("pattern").and_then(Value::as_str) {
+        Some(pattern) => pattern,
+        None => return failure("Invalid tool input: pattern is required".into()),
+    };
+    let root = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(|p| Path::new(directory).join(p))
+        .unwrap_or_else(|| PathBuf::from(directory));
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(usize::MAX);
+    let Ok(matcher) = build_glob(pattern) else {
+        return failure(format!("Unable to find files matching {pattern}"));
+    };
+    let mut entries: Vec<Value> = vec![];
+    let walker = ignore::WalkBuilder::new(&root).hidden(false).build();
+    for item in walker {
+        if entries.len() >= limit {
+            break;
+        }
+        let Ok(item) = item else { continue };
+        if !item.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Ok(relative_to_root) = item.path().strip_prefix(&root) else {
+            continue;
+        };
+        if !matcher.matched(relative_to_root, false).is_ignore() {
+            continue;
+        }
+        let relative = item
+            .path()
+            .strip_prefix(directory)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| item.path().to_string_lossy().into_owned());
+        entries.push(json!({ "path": relative, "type": "file" }));
+    }
+    let lines: Vec<String> = if entries.is_empty() {
+        vec!["No files found".into()]
+    } else {
+        entries
+            .iter()
+            .filter_map(|entry| entry.get("path").and_then(Value::as_str))
+            .map(|path| {
+                Path::new(directory)
+                    .join(path)
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect()
+    };
+    success_text(Value::Array(entries), lines.join("\n"))
+}
+
+fn build_glob(pattern: &str) -> Result<ignore::gitignore::Gitignore, ignore::Error> {
+    let mut builder = ignore::gitignore::GitignoreBuilder::new("");
+    // Anchor like ripgrep --glob: bare names match anywhere; leading "/" pins
+    // to the root; the gitignore matcher gives us brace/star semantics.
+    builder.add_line(None, pattern)?;
+    builder.build()
+}
+
+// ---------------------------------------------------------------------------
+// grep
+// ---------------------------------------------------------------------------
+
+fn grep(directory: &str, input: &Value) -> Settlement {
+    let pattern = match input.get("pattern").and_then(Value::as_str) {
+        Some(pattern) => pattern,
+        None => return failure("Invalid tool input: pattern is required".into()),
+    };
+    let root = input
+        .get("path")
+        .and_then(Value::as_str)
+        .map(|p| Path::new(directory).join(p))
+        .unwrap_or_else(|| PathBuf::from(directory));
+    let limit = input
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map(|v| v as usize)
+        .unwrap_or(usize::MAX);
+    let include = input.get("include").and_then(Value::as_str);
+    let include_matcher = match include.map(build_glob) {
+        None => None,
+        Some(Ok(matcher)) => Some(matcher),
+        Some(Err(_)) => return failure(format!("Unable to search for {pattern}")),
+    };
+    let mut command = std::process::Command::new("rg");
+    command
+        .arg("--line-number")
+        .arg("--no-heading")
+        .arg("--max-count=100")
+        .arg("--regexp")
+        .arg(pattern)
+        .current_dir(&root);
+    if let Some(include) = include {
+        command.arg("--glob").arg(include);
+    }
+    let _ = include_matcher;
+    let output = match command.output() {
+        Ok(output) => output,
+        Err(_) => return failure(format!("Unable to search for {pattern}")),
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let matches: Vec<Value> = stdout
+        .lines()
+        .take(limit)
+        .filter_map(|line| {
+            let (file, rest) = line.split_once(':')?;
+            let (line_number, text) = rest.split_once(':')?;
+            let relative = Path::new(&root)
+                .join(file)
+                .strip_prefix(directory)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| file.to_string());
+            Some(json!({
+                "entry": { "path": relative, "type": "file" },
+                "line": line_number.parse::<i64>().ok()?,
+                "text": text,
+            }))
+        })
+        .collect();
+    let mut lines: Vec<String> = if matches.is_empty() {
+        vec!["No files found".into()]
+    } else {
+        vec![format!("Found {} matches", matches.len())]
+    };
+    let mut current = String::new();
+    for item in &matches {
+        let path = item["entry"]["path"].as_str().unwrap_or_default();
+        let absolute = Path::new(directory)
+            .join(path)
+            .to_string_lossy()
+            .into_owned();
+        if current != absolute {
+            if !current.is_empty() {
+                lines.push(String::new());
+            }
+            current = absolute.clone();
+            lines.push(format!("{absolute}:"));
+        }
+        lines.push(format!(
+            "  Line {}: {}",
+            item["line"],
+            item["text"].as_str().unwrap_or_default()
+        ));
+    }
+    success_text(Value::Array(matches), lines.join("\n"))
+}
+
+// ---------------------------------------------------------------------------
+// bash
+// ---------------------------------------------------------------------------
+
+fn bash(env: &ToolEnv, input: &Value) -> Settlement {
+    let directory = env.directory;
+    let Some(command) = input.get("command").and_then(Value::as_str) else {
+        return failure("Invalid tool input: command is required".into());
+    };
+    let workdir = input.get("workdir").and_then(Value::as_str).unwrap_or(".");
+    let target = if Path::new(workdir).is_absolute() {
+        PathBuf::from(workdir)
+    } else {
+        Path::new(directory).join(workdir)
+    };
+    let Ok(canonical) = target.canonicalize() else {
+        return failure(format!("Unable to execute command: {command}"));
+    };
+    if !canonical.starts_with(worktree_root(directory)) && !external_allowed(env, &canonical) {
+        // External workdir requires external_directory approval (ask).
+        return failure(format!("Unable to execute command: {command}"));
+    }
+    if !canonical.is_dir() {
+        return failure(format!("Unable to execute command: {command}"));
+    }
+    let timeout_ms = input
+        .get("timeout")
+        .and_then(Value::as_u64)
+        .unwrap_or(BASH_DEFAULT_TIMEOUT_MS)
+        .min(BASH_MAX_TIMEOUT_MS);
+
+    let mut process = std::process::Command::new("/bin/sh");
+    process
+        .arg("-c")
+        .arg(command)
+        .current_dir(&canonical)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        // combineOutput: interleave stderr into the same capture stream.
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
+    {
+        // SAFETY: pre_exec runs after fork and before exec. setpgid is
+        // async-signal-safe and uses only constants, so this isolates the exact
+        // command process group for later interruption without naming processes.
+        unsafe {
+            process.pre_exec(|| {
+                if setpgid(0, 0) == 0 {
+                    return Ok(());
+                }
+                Err(std::io::Error::last_os_error())
+            });
+        }
+    }
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(_) => return failure(format!("Unable to execute command: {command}")),
+    };
+
+    fn collect<R: std::io::Read + Send + 'static>(
+        stream: Option<R>,
+    ) -> std::thread::JoinHandle<Vec<u8>> {
+        std::thread::spawn(move || {
+            let mut buffer = Vec::new();
+            if let Some(mut stream) = stream {
+                let mut chunk = [0u8; 8192];
+                while let Ok(read) = std::io::Read::read(&mut stream, &mut chunk) {
+                    if read == 0 {
+                        break;
+                    }
+                    if buffer.len() < BASH_MAX_CAPTURE_BYTES + 1 {
+                        buffer.extend_from_slice(&chunk[..read]);
+                    }
+                }
+            }
+            buffer
+        })
+    }
+    let stdout_thread = collect(child.stdout.take());
+    let stderr_thread = collect(child.stderr.take());
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
+    let exit = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break Some(status),
+            Ok(None) => {
+                if env.interrupt.is_some_and(InterruptToken::is_interrupted) {
+                    terminate_child(&mut child);
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return interrupted();
+                }
+                if std::time::Instant::now() >= deadline {
+                    terminate_child(&mut child);
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+            Err(_) => break None,
+        }
+    };
+    let mut output_bytes = stdout_thread.join().unwrap_or_default();
+    output_bytes.extend(stderr_thread.join().unwrap_or_default());
+
+    if exit.is_none() {
+        let output = format!(
+            "Command exceeded timeout of {timeout_ms} ms. Retry with a larger timeout if the command is expected to take longer."
+        );
+        // StructuredOutput schema order: exit?, truncated, timeout?.
+        return Settlement {
+            structured: json!({ "truncated": false, "timeout": true }),
+            content: vec![
+                json!({ "type": "text", "text": output }),
+                json!({ "type": "text", "text": "Command timed out before completion." }),
+            ],
+            error: None,
+            interrupt: false,
+        };
+    }
+
+    let truncated = output_bytes.len() > BASH_MAX_CAPTURE_BYTES;
+    if truncated {
+        output_bytes.truncate(BASH_MAX_CAPTURE_BYTES);
+    }
+    let raw = String::from_utf8_lossy(&output_bytes).into_owned();
+    let output = if raw.is_empty() {
+        "(no output)".to_string()
+    } else {
+        raw
+    };
+    let output = if truncated {
+        format!("{output}\n\n[output capture truncated at the in-memory safety limit]")
+    } else {
+        output
+    };
+    let code = exit.and_then(|status| status.code()).unwrap_or(-1);
+    Settlement {
+        structured: json!({ "exit": code, "truncated": truncated }),
+        content: vec![
+            json!({ "type": "text", "text": output }),
+            json!({ "type": "text", "text": format!("Command exited with code {code}.") }),
+        ],
+        error: None,
+        interrupt: false,
+    }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn setpgid(pid: i32, pgid: i32) -> i32;
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+fn terminate_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = -(child.id() as i32);
+        // SIGTERM then SIGKILL the exact process group created for this shell.
+        unsafe {
+            let _ = kill(group, 15);
+        }
+        for _ in 0..30 {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        unsafe {
+            let _ = kill(group, 9);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
+}
+
+// ---------------------------------------------------------------------------
+// write
+// ---------------------------------------------------------------------------
+
+fn mutation_target(env: &ToolEnv, path: &str) -> Option<(PathBuf, String)> {
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        Path::new(env.directory).join(path)
+    };
+    // Canonicalize the parent (the file may not exist yet).
+    let parent = joined.parent()?.canonicalize().ok()?;
+    let canonical = parent.join(joined.file_name()?);
+    if !canonical.starts_with(worktree_root(env.directory)) && !external_allowed(env, &canonical) {
+        return None;
+    }
+    let resource = canonical
+        .strip_prefix(env.directory)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
+    Some((canonical, resource))
+}
+
+fn write(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return failure("Invalid tool input: path is required".into());
+    };
+    let Some(content) = input.get("content").and_then(Value::as_str) else {
+        return failure(format!("Unable to write {path}"));
+    };
+    // Create parent directories first so canonicalization succeeds for new
+    // nested targets (FSUtil.writeWithDirs).
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        Path::new(env.directory).join(path)
+    };
+    if let Some(parent) = joined.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let Some((canonical, resource)) = mutation_target(env, path) else {
+        return failure(format!("Unable to write {path}"));
+    };
+    let existed = canonical.exists();
+    // Preserve an existing UTF-8 BOM (FileMutation.writeTextPreservingBom).
+    let had_bom = existed
+        && std::fs::read(&canonical)
+            .map(|bytes| bytes.starts_with(&[0xEF, 0xBB, 0xBF]))
+            .unwrap_or(false);
+    let body = if had_bom && !content.starts_with('\u{FEFF}') {
+        format!("\u{FEFF}{content}")
+    } else {
+        content.to_string()
+    };
+    if std::fs::write(&canonical, body).is_err() {
+        return failure(format!("Unable to write {path}"));
+    }
+    // WriteResult schema order: operation, target, resource, existed.
+    Settlement {
+        structured: json!({
+            "operation": "write",
+            "target": canonical.to_string_lossy(),
+            "resource": resource,
+            "existed": existed,
+        }),
+        content: vec![json!({
+            "type": "text",
+            "text": format!("{} file successfully: {resource}", if existed { "Wrote" } else { "Created" }),
+        })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// edit
+// ---------------------------------------------------------------------------
+
+fn edit(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(path) = input.get("path").and_then(Value::as_str) else {
+        return failure("Invalid tool input: path is required".into());
+    };
+    let old_string = input
+        .get("oldString")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let new_string = input
+        .get("newString")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let replace_all = input
+        .get("replaceAll")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if old_string == new_string {
+        return failure("No changes to apply: oldString and newString are identical.".into());
+    }
+    if old_string.is_empty() {
+        return failure(
+            "oldString must not be empty. Use write to create or overwrite a file.".into(),
+        );
+    }
+    let Some((canonical, resource)) = mutation_target(env, path) else {
+        return failure(format!("Unable to edit {path}"));
+    };
+    let Ok(source) = std::fs::read_to_string(&canonical) else {
+        return failure(format!("Unable to edit {path}"));
+    };
+    // Normalize the replacement strings to the file's line ending.
+    let ending = if source.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+    let normalize = |text: &str| text.replace("\r\n", "\n").replace('\n', ending);
+    let old_string = normalize(old_string);
+    let new_string = normalize(new_string);
+    let replacements = source.matches(&old_string).count();
+    if replacements == 0 {
+        return failure(
+            "Could not find oldString in the file. It must match exactly, including whitespace and indentation."
+                .into(),
+        );
+    }
+    if replacements > 1 && !replace_all {
+        return failure(
+            "Found multiple exact matches for oldString. Provide more surrounding context or set replaceAll to true."
+                .into(),
+        );
+    }
+    let replaced = if replace_all {
+        source.replace(&old_string, &new_string)
+    } else {
+        source.replacen(&old_string, &new_string, 1)
+    };
+    if std::fs::write(&canonical, &replaced).is_err() {
+        return failure(format!("Unable to edit {path}"));
+    }
+    let (additions, deletions, patch) = diff_lines(&resource, &source, &replaced);
+    let replacements_applied = if replace_all { replacements } else { 1 };
+    let preview = |value: &str, prefix: char| -> Vec<String> {
+        let normalized = value.replace("\r\n", "\n");
+        let lines: Vec<&str> = normalized.split('\n').collect();
+        let mut shown: Vec<String> = lines
+            .iter()
+            .take(6)
+            .map(|line| {
+                let bounded: String = if line.chars().count() > 240 {
+                    format!("{}...", line.chars().take(240).collect::<String>())
+                } else {
+                    (*line).to_string()
+                };
+                format!("{prefix}{bounded}")
+            })
+            .collect();
+        if lines.len() > shown.len() {
+            shown.push(format!("{prefix}..."));
+        }
+        shown
+    };
+    let mut model_output = vec![
+        format!("Edited file successfully: {resource}"),
+        format!("Replacements: {replacements_applied}"),
+        "```diff".to_string(),
+    ];
+    model_output.extend(preview(&old_string, '-'));
+    model_output.extend(preview(&new_string, '+'));
+    model_output.push("```".to_string());
+    Settlement {
+        structured: json!({
+            "files": [{
+                "file": resource,
+                "patch": patch,
+                "status": "modified",
+                "additions": additions,
+                "deletions": deletions,
+            }],
+            "replacements": replacements_applied,
+        }),
+        content: vec![json!({ "type": "text", "text": model_output.join("\n") })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+/// Line diff via LCS: returns (additions, deletions, unified patch in
+/// jsdiff createTwoFilesPatch format).
+fn diff_lines(file: &str, old: &str, new: &str) -> (usize, usize, String) {
+    let old_lines: Vec<&str> = old.split_inclusive('\n').collect();
+    let new_lines: Vec<&str> = new.split_inclusive('\n').collect();
+    // Cap the DP table to keep memory bounded for very large files.
+    if old_lines.len() * new_lines.len() > 25_000_000 {
+        let patch = format!("Index: {file}\n===================================================================\n--- {file}\n+++ {file}\n");
+        return (new_lines.len(), old_lines.len(), patch);
+    }
+    let mut table = vec![0u32; (old_lines.len() + 1) * (new_lines.len() + 1)];
+    let width = new_lines.len() + 1;
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            table[i * width + j] = if old_lines[i] == new_lines[j] {
+                table[(i + 1) * width + j + 1] + 1
+            } else {
+                table[(i + 1) * width + j].max(table[i * width + j + 1])
+            };
+        }
+    }
+    #[derive(PartialEq, Clone, Copy)]
+    enum Op {
+        Keep,
+        Delete,
+        Add,
+    }
+    let mut ops: Vec<(Op, usize)> = vec![];
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < old_lines.len() && j < new_lines.len() {
+        if old_lines[i] == new_lines[j] {
+            ops.push((Op::Keep, i));
+            i += 1;
+            j += 1;
+            continue;
+        }
+        if table[(i + 1) * width + j] >= table[i * width + j + 1] {
+            ops.push((Op::Delete, i));
+            i += 1;
+            continue;
+        }
+        ops.push((Op::Add, j));
+        j += 1;
+    }
+    while i < old_lines.len() {
+        ops.push((Op::Delete, i));
+        i += 1;
+    }
+    while j < new_lines.len() {
+        ops.push((Op::Add, j));
+        j += 1;
+    }
+    let additions = ops.iter().filter(|(op, _)| *op == Op::Add).count();
+    let deletions = ops.iter().filter(|(op, _)| *op == Op::Delete).count();
+
+    // Build hunks with 4 context lines (jsdiff default).
+    const CONTEXT: usize = 4;
+    let mut patch = format!(
+        "Index: {file}\n===================================================================\n--- {file}\n+++ {file}\n"
+    );
+    let changed: Vec<usize> = ops
+        .iter()
+        .enumerate()
+        .filter(|(_, (op, _))| *op != Op::Keep)
+        .map(|(index, _)| index)
+        .collect();
+    let mut cursor = 0usize;
+    while cursor < changed.len() {
+        let start = changed[cursor].saturating_sub(CONTEXT);
+        let mut end_index = cursor;
+        while end_index + 1 < changed.len()
+            && changed[end_index + 1] <= changed[end_index] + CONTEXT * 2
+        {
+            end_index += 1;
+        }
+        let end = (changed[end_index] + CONTEXT + 1).min(ops.len());
+        // Hunk line numbers (1-based).
+        let old_start = ops[start..end]
+            .iter()
+            .find_map(|(op, index)| (*op != Op::Add).then_some(*index))
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        let new_start = ops[start..end]
+            .iter()
+            .find_map(|(op, index)| (*op != Op::Delete).then_some(*index))
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        let old_count = ops[start..end]
+            .iter()
+            .filter(|(op, _)| *op != Op::Add)
+            .count();
+        let new_count = ops[start..end]
+            .iter()
+            .filter(|(op, _)| *op != Op::Delete)
+            .count();
+        patch.push_str(&format!(
+            "@@ -{old_start},{old_count} +{new_start},{new_count} @@\n"
+        ));
+        for (op, index) in &ops[start..end] {
+            let (prefix, line) = match op {
+                Op::Keep | Op::Delete => {
+                    (if *op == Op::Keep { ' ' } else { '-' }, old_lines[*index])
+                }
+                Op::Add => ('+', new_lines[*index]),
+            };
+            patch.push(prefix);
+            patch.push_str(line.strip_suffix('\n').unwrap_or(line));
+            patch.push('\n');
+        }
+        cursor = end_index + 1;
+    }
+    (additions, deletions, patch)
+}
+
+// ---------------------------------------------------------------------------
+// apply_patch
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+enum PatchHunk {
+    Add {
+        path: String,
+        contents: String,
+    },
+    Delete {
+        path: String,
+    },
+    Update {
+        path: String,
+        move_path: Option<String>,
+        chunks: Vec<UpdateChunk>,
+    },
+}
+
+#[derive(Clone)]
+struct UpdateChunk {
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+    change_context: Option<String>,
+    end_of_file: bool,
+}
+
+struct PreparedPatch {
+    hunk: PatchHunk,
+    target: PathBuf,
+    resource: String,
+    source: Vec<u8>,
+    content: String,
+    before: String,
+    after: String,
+}
+
+fn apply_patch(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(patch_text) = input.get("patchText").and_then(Value::as_str) else {
+        return failure("patchText is required".into());
+    };
+    if patch_text.trim().is_empty() {
+        return failure("patchText is required".into());
+    }
+    let hunks = match parse_patch_text(patch_text) {
+        Ok(hunks) => hunks,
+        Err(message) => return failure(format!("apply_patch verification failed: {message}")),
+    };
+    if hunks.is_empty() {
+        return failure("patch rejected: empty patch".into());
+    }
+    if hunks.iter().any(|hunk| {
+        matches!(
+            hunk,
+            PatchHunk::Update {
+                move_path: Some(_),
+                ..
+            }
+        )
+    }) {
+        return failure("apply_patch moves are not supported yet".into());
+    }
+
+    let mut prepared = vec![];
+    for hunk in hunks {
+        let path = patch_path(&hunk).to_string();
+        let Some((target, resource)) = patch_target(env, &path) else {
+            return failure(format!("Unable to apply patch at {path}"));
+        };
+        match &hunk {
+            PatchHunk::Add { contents, .. } => {
+                let after = ensure_trailing_newline(contents);
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source: vec![],
+                    content: String::new(),
+                    before: String::new(),
+                    after,
+                });
+            }
+            PatchHunk::Delete { .. } => {
+                let Ok(source) = std::fs::read(&target) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let before = decode_utf8_without_bom(&source);
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source,
+                    content: String::new(),
+                    before,
+                    after: String::new(),
+                });
+            }
+            PatchHunk::Update { chunks, .. } => {
+                let Ok(source) = std::fs::read(&target) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let Ok(original) = String::from_utf8(source.clone()) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let Ok(update) = derive_patch_update(&path, chunks, &original) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let before = strip_bom(&original).0.to_string();
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source,
+                    content: join_bom(&update.content, update.bom),
+                    before,
+                    after: update.content,
+                });
+            }
+        }
+    }
+
+    let files: Vec<Value> = prepared
+        .iter()
+        .map(|change| {
+            let (additions, deletions, patch) =
+                diff_lines(&change.resource, &change.before, &change.after);
+            json!({
+                "file": change.resource,
+                "patch": patch,
+                "status": match &change.hunk {
+                    PatchHunk::Add { .. } => "added",
+                    PatchHunk::Delete { .. } => "deleted",
+                    PatchHunk::Update { .. } => "modified",
+                },
+                "additions": additions,
+                "deletions": deletions,
+            })
+        })
+        .collect();
+
+    let mut applied = vec![];
+    for change in prepared {
+        let path = patch_path(&change.hunk).to_string();
+        let failed = match &change.hunk {
+            PatchHunk::Add { .. } => {
+                if let Some(parent) = change.target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&change.target)
+                    .and_then(|mut file| {
+                        std::io::Write::write_all(&mut file, change.after.as_bytes())
+                    })
+                    .is_err()
+            }
+            PatchHunk::Delete { .. } => std::fs::remove_file(&change.target).is_err(),
+            PatchHunk::Update { .. } => {
+                std::fs::read(&change.target)
+                    .map(|current| current != change.source)
+                    .unwrap_or(true)
+                    || std::fs::write(&change.target, change.content.as_bytes()).is_err()
+            }
+        };
+        if failed {
+            return failure(patch_failure(&path, &applied));
+        }
+        applied.push(json!({
+            "type": match &change.hunk {
+                PatchHunk::Add { .. } => "add",
+                PatchHunk::Delete { .. } => "delete",
+                PatchHunk::Update { .. } => "update",
+            },
+            "resource": change.resource,
+            "target": change.target.to_string_lossy(),
+        }));
+    }
+
+    let lines: Vec<String> = std::iter::once("Applied patch sequentially:".to_string())
+        .chain(applied.iter().map(|item| {
+            let prefix = match item["type"].as_str().unwrap_or_default() {
+                "add" => "A",
+                "delete" => "D",
+                _ => "M",
+            };
+            format!("{prefix} {}", item["resource"].as_str().unwrap_or_default())
+        }))
+        .collect();
+    Settlement {
+        structured: json!({ "applied": applied, "files": files }),
+        content: vec![json!({ "type": "text", "text": lines.join("\n") })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn patch_failure(path: &str, applied: &[Value]) -> String {
+    if applied.is_empty() {
+        return format!("Unable to apply patch at {path}");
+    }
+    let resources: Vec<&str> = applied
+        .iter()
+        .filter_map(|item| item["resource"].as_str())
+        .collect();
+    format!(
+        "Patch partially applied before failing at {path}. Applied: {}",
+        resources.join(", ")
+    )
+}
+
+fn patch_path(hunk: &PatchHunk) -> &str {
+    match hunk {
+        PatchHunk::Add { path, .. }
+        | PatchHunk::Delete { path }
+        | PatchHunk::Update { path, .. } => path,
+    }
+}
+
+fn unique_resources(resources: impl Iterator<Item = String>) -> Vec<String> {
+    resources.fold(Vec::new(), |mut out, resource| {
+        if !out.contains(&resource) {
+            out.push(resource);
+        }
+        out
+    })
+}
+
+fn patch_target(env: &ToolEnv, path: &str) -> Option<(PathBuf, String)> {
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        Path::new(env.directory).join(path)
+    };
+    let mut existing = joined.parent()?;
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+    let canonical_base = existing.canonicalize().ok()?;
+    let suffix = joined.strip_prefix(existing).ok()?;
+    let canonical = canonical_base.join(suffix);
+    if !canonical.starts_with(worktree_root(env.directory)) && !external_allowed(env, &canonical) {
+        return None;
+    }
+    let resource = canonical
+        .strip_prefix(env.directory)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
+    Some((canonical, resource))
+}
+
+fn parse_patch_text(patch_text: &str) -> Result<Vec<PatchHunk>, String> {
+    let stripped = strip_heredoc(patch_text.trim());
+    let lines: Vec<&str> = stripped.split('\n').collect();
+    let begin = lines
+        .iter()
+        .position(|line| line.trim() == "*** Begin Patch")
+        .ok_or_else(|| "Invalid patch format: missing Begin/End markers".to_string())?;
+    let end = lines
+        .iter()
+        .position(|line| line.trim() == "*** End Patch")
+        .ok_or_else(|| "Invalid patch format: missing Begin/End markers".to_string())?;
+    if begin >= end {
+        return Err("Invalid patch format: missing Begin/End markers".into());
+    }
+    let mut hunks = vec![];
+    let mut index = begin + 1;
+    while index < end {
+        let line = lines[index];
+        if let Some(path) = line.strip_prefix("*** Add File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid add file path".into());
+            }
+            let (contents, next) = parse_add(&lines, index + 1)?;
+            hunks.push(PatchHunk::Add {
+                path: path.to_string(),
+                contents,
+            });
+            index = next;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Delete File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid delete file path".into());
+            }
+            hunks.push(PatchHunk::Delete {
+                path: path.to_string(),
+            });
+            index += 1;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Update File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid update file path".into());
+            }
+            let mut next = index + 1;
+            let move_path = lines
+                .get(next)
+                .and_then(|line| line.strip_prefix("*** Move to:"))
+                .map(str::trim)
+                .map(str::to_string);
+            if move_path.is_some() {
+                next += 1;
+            }
+            let (chunks, next) = parse_update(&lines, next)?;
+            if chunks.is_empty() {
+                return Err(format!(
+                    "Invalid update hunk for {path}: expected at least one @@ chunk"
+                ));
+            }
+            hunks.push(PatchHunk::Update {
+                path: path.to_string(),
+                move_path,
+                chunks,
+            });
+            index = next;
+            continue;
+        }
+        return Err(format!("Invalid patch line: {line}"));
+    }
+    Ok(hunks)
+}
+
+fn parse_add(lines: &[&str], start: usize) -> Result<(String, usize), String> {
+    let mut content = vec![];
+    let mut index = start;
+    while index < lines.len() && !lines[index].starts_with("***") {
+        let Some(line) = lines[index].strip_prefix('+') else {
+            return Err(format!("Invalid add file line: {}", lines[index]));
+        };
+        content.push(line);
+        index += 1;
+    }
+    Ok((content.join("\n"), index))
+}
+
+fn parse_update(lines: &[&str], start: usize) -> Result<(Vec<UpdateChunk>, usize), String> {
+    let mut chunks = vec![];
+    let mut index = start;
+    while index < lines.len() && !lines[index].starts_with("***") {
+        if !lines[index].starts_with("@@") {
+            return Err(format!("Invalid update file line: {}", lines[index]));
+        }
+        let context = lines[index][2..].trim();
+        let mut old_lines = vec![];
+        let mut new_lines = vec![];
+        let mut end_of_file = false;
+        index += 1;
+        while index < lines.len() && !lines[index].starts_with("@@") {
+            let line = lines[index];
+            if line == "*** End of File" {
+                end_of_file = true;
+                index += 1;
+                break;
+            }
+            if line.starts_with("***") {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix(' ') {
+                old_lines.push(rest.to_string());
+                new_lines.push(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix('-') {
+                old_lines.push(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix('+') {
+                new_lines.push(rest.to_string());
+            } else {
+                return Err(format!("Invalid update chunk line: {line}"));
+            }
+            index += 1;
+        }
+        chunks.push(UpdateChunk {
+            old_lines,
+            new_lines,
+            change_context: (!context.is_empty()).then(|| context.to_string()),
+            end_of_file,
+        });
+    }
+    Ok((chunks, index))
+}
+
+struct PatchUpdate {
+    content: String,
+    bom: bool,
+}
+
+fn derive_patch_update(
+    path: &str,
+    chunks: &[UpdateChunk],
+    original: &str,
+) -> Result<PatchUpdate, String> {
+    let (source_text, source_bom) = strip_bom(original);
+    let mut lines: Vec<String> = source_text.split('\n').map(str::to_string).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let replacements = compute_replacements(&lines, path, chunks)?;
+    let mut updated = lines;
+    for (start, remove, insert) in replacements.iter().rev() {
+        updated.splice(*start..(*start + *remove), insert.clone());
+    }
+    if updated.last().is_none_or(|line| !line.is_empty()) {
+        updated.push(String::new());
+    }
+    let joined = updated.join("\n");
+    let (content, content_bom) = strip_bom(&joined);
+    Ok(PatchUpdate {
+        content: content.to_string(),
+        bom: source_bom || content_bom,
+    })
+}
+
+fn compute_replacements(
+    lines: &[String],
+    path: &str,
+    chunks: &[UpdateChunk],
+) -> Result<Vec<(usize, usize, Vec<String>)>, String> {
+    let mut replacements = vec![];
+    let mut line_index = 0;
+    for chunk in chunks {
+        if let Some(context) = &chunk.change_context {
+            let context = seek(lines, std::slice::from_ref(context), line_index, false)
+                .ok_or_else(|| format!("Failed to find context '{context}' in {path}"))?;
+            line_index = context + 1;
+        }
+        if chunk.old_lines.is_empty() {
+            replacements.push((lines.len(), 0, chunk.new_lines.clone()));
+            continue;
+        }
+        let mut old_lines = chunk.old_lines.clone();
+        let mut new_lines = chunk.new_lines.clone();
+        let mut found = seek(lines, &old_lines, line_index, chunk.end_of_file);
+        if found.is_none() && old_lines.last().is_some_and(String::is_empty) {
+            old_lines.pop();
+            if new_lines.last().is_some_and(String::is_empty) {
+                new_lines.pop();
+            }
+            found = seek(lines, &old_lines, line_index, chunk.end_of_file);
+        }
+        let Some(found) = found else {
+            return Err(format!(
+                "Failed to find expected lines in {path}:\n{}",
+                chunk.old_lines.join("\n")
+            ));
+        };
+        replacements.push((found, old_lines.len(), new_lines));
+        line_index = found + old_lines.len();
+    }
+    replacements.sort_by_key(|item| item.0);
+    Ok(replacements)
+}
+
+fn seek(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
+    if pattern.is_empty() {
+        return None;
+    }
+    for compare in [
+        compare_exact as fn(&str, &str) -> bool,
+        compare_rstrip,
+        compare_trim,
+    ] {
+        if eof {
+            let offset = lines.len().checked_sub(pattern.len())?;
+            if offset >= start && matches_at(lines, pattern, offset, compare) {
+                return Some(offset);
+            }
+        }
+        for offset in start..=lines.len().saturating_sub(pattern.len()) {
+            if matches_at(lines, pattern, offset, compare) {
+                return Some(offset);
+            }
+        }
+    }
+    None
+}
+
+fn matches_at(
+    lines: &[String],
+    pattern: &[String],
+    offset: usize,
+    compare: fn(&str, &str) -> bool,
+) -> bool {
+    pattern
+        .iter()
+        .enumerate()
+        .all(|(index, line)| compare(&lines[offset + index], line))
+}
+
+fn compare_exact(left: &str, right: &str) -> bool {
+    left == right
+}
+
+fn compare_rstrip(left: &str, right: &str) -> bool {
+    left.trim_end() == right.trim_end()
+}
+
+fn compare_trim(left: &str, right: &str) -> bool {
+    left.trim() == right.trim()
+}
+
+fn strip_bom(text: &str) -> (&str, bool) {
+    text.strip_prefix('\u{FEFF}')
+        .map(|text| (text, true))
+        .unwrap_or((text, false))
+}
+
+fn join_bom(text: &str, bom: bool) -> String {
+    let stripped = strip_bom(text).0;
+    if bom {
+        return format!("\u{FEFF}{stripped}");
+    }
+    stripped.to_string()
+}
+
+fn decode_utf8_without_bom(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_start_matches('\u{FEFF}')
+        .to_string()
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.ends_with('\n') || text.is_empty() {
+        return text.to_string();
+    }
+    format!("{text}\n")
+}
+
+fn strip_heredoc(input: &str) -> &str {
+    let Some((first, rest)) = input.split_once('\n') else {
+        return input;
+    };
+    let marker = first
+        .trim()
+        .strip_prefix("cat ")
+        .unwrap_or(first.trim())
+        .trim()
+        .strip_prefix("<<")
+        .map(|marker| marker.trim_matches('\'').trim_matches('"'));
+    let Some(marker) = marker.filter(|marker| !marker.is_empty()) else {
+        return input;
+    };
+    rest.strip_suffix(&format!("\n{marker}"))
+        .map(str::trim_end)
+        .unwrap_or(input)
+}
+
+// ---------------------------------------------------------------------------
+// task
+// ---------------------------------------------------------------------------
+
+const BACKGROUND_STARTED: &str = "The task is working in the background. You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you launched and end your response.";
+const BACKGROUND_UPDATED: &str = "Additional context sent to the running background task.\nThe task is still working in the background. You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you sent and end your response.";
+
+fn task(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(pool) = env.pool.cloned() else {
+        return failure("Task tool requires the session runner".into());
+    };
+    let Some(description) = input.get("description").and_then(Value::as_str) else {
+        return failure("Invalid tool input: description is required".into());
+    };
+    let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
+        return failure("Invalid tool input: prompt is required".into());
+    };
+    let Some(agent) = input.get("subagent_type").and_then(Value::as_str) else {
+        return failure("Invalid tool input: subagent_type is required".into());
+    };
+    if !is_subagent(env.worktree, env.directory, agent) {
+        return failure(format!(
+            "Unknown agent type: {agent} is not a valid agent type"
+        ));
+    }
+
+    let child_id = match input.get("task_id").and_then(Value::as_str) {
+        Some(task_id) => task_id.to_string(),
+        None => match create_child_session(&pool, env.session_id, description, agent) {
+            Ok(id) => id,
+            Err(message) => return failure(message),
+        },
+    };
+    if let Err(message) = ensure_child_session(&pool, env.session_id, &child_id, description, agent)
+    {
+        return failure(message);
+    }
+    if let Err(message) = admit_child_prompt(&pool, &child_id, prompt) {
+        return failure(message);
+    }
+
+    let (Some(bus), Some(permissions), Some(questions)) = (
+        env.bus.cloned(),
+        env.permissions.cloned(),
+        env.questions.cloned(),
+    ) else {
+        return failure("Task tool requires the session runner".into());
+    };
+    let runner_env = RunnerEnv {
+        pool: pool.clone(),
+        worktree: env.worktree.to_string(),
+        project_id: env.project_id.to_string(),
+        bus,
+        permissions,
+        questions,
+    };
+    crate::runner::wake(runner_env.clone(), child_id.clone());
+
+    let metadata = background::metadata(&[
+        ("parentSessionId", json!(env.session_id)),
+        ("sessionId", json!(child_id)),
+        ("model", parent_model(env.conn, env.session_id)),
+    ]);
+
+    if background::extend(&child_id) {
+        let _ = background::promote(&child_id);
+        return task_running(
+            description,
+            &child_id,
+            "Background task updated",
+            BACKGROUND_UPDATED,
+        );
+    }
+
+    let parent_id = env.session_id.to_string();
+    let parent_runner_env = runner_env.clone();
+    let task_description = description.to_string();
+    let job_id = child_id.clone();
+    let run_pool = pool.clone();
+    let complete_pool = pool.clone();
+    let start_info = background::start(background::StartInput {
+        id: child_id.clone(),
+        kind: "task".into(),
+        title: Some(description.to_string()),
+        metadata,
+        run: Box::new(move |control| run_child_task(&run_pool, runner_env, &job_id, control)),
+        on_complete: Some(Box::new(move |info| {
+            if !background::is_promoted(&info) {
+                return;
+            }
+            let state = match info.status {
+                background::Status::Completed => "completed",
+                background::Status::Error => "error",
+                background::Status::Cancelled => "error",
+                background::Status::Running => return,
+            };
+            let text = info
+                .output
+                .clone()
+                .or(info.error.clone())
+                .unwrap_or_else(|| "Task cancelled".into());
+            inject_task_result(
+                &complete_pool,
+                parent_runner_env.clone(),
+                &parent_id,
+                &info.id,
+                state,
+                &task_description,
+                &text,
+            );
+        })),
+        on_cancel: Some(Box::new({
+            let child_id = child_id.clone();
+            move || crate::runner::interrupt(&child_id)
+        })),
+    });
+
+    if input
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let _ = background::promote(&child_id);
+        return task_running(
+            description,
+            &child_id,
+            "Background task started",
+            BACKGROUND_STARTED,
+        );
+    }
+
+    if start_info.status != background::Status::Running {
+        return task_finished(description, &start_info);
+    }
+    match background::wait_done_or_promoted(&child_id) {
+        Some(info)
+            if background::is_promoted(&info) && info.status == background::Status::Running =>
+        {
+            task_running(
+                description,
+                &child_id,
+                "Background task started",
+                BACKGROUND_STARTED,
+            )
+        }
+        Some(info) => task_finished(description, &info),
+        None => failure("Task disappeared before completion".into()),
+    }
+}
+
+fn is_subagent(worktree: &str, directory: &str, agent: &str) -> bool {
+    crate::official_agents(
+        worktree,
+        directory,
+        &crate::config::instance(directory, worktree),
+    )
+    .iter()
+    .any(|item| {
+        item.get("id").and_then(Value::as_str) == Some(agent)
+            && item.get("mode").and_then(Value::as_str) == Some("subagent")
+    })
+}
+
+fn create_child_session(
+    pool: &crate::runner::Pool,
+    parent_id: &str,
+    description: &str,
+    agent: &str,
+) -> Result<String, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let parent = parent_session_row(&conn, parent_id)?;
+    let child_id = format!("ses_{}", crate::identifier::descending());
+    let timestamp = now_millis();
+    conn.execute(
+        "INSERT INTO session (id, project_id, workspace_id, parent_id, slug, directory, path, title, \
+         version, metadata, permission, agent, model, cost, tokens_input, tokens_output, tokens_reasoning, \
+         tokens_cache_read, tokens_cache_write, time_created, time_updated) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?)",
+        rusqlite::params![
+            child_id,
+            parent.project_id,
+            parent.workspace_id,
+            parent_id,
+            crate::slug::create(),
+            parent.directory,
+            parent.path,
+            format!("{description} (@{agent} subagent)"),
+            parent.version,
+            parent.permission,
+            agent,
+            parent.model,
+            timestamp,
+            timestamp,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(child_id)
+}
+
+fn ensure_child_session(
+    pool: &crate::runner::Pool,
+    parent_id: &str,
+    child_id: &str,
+    description: &str,
+    agent: &str,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    if crate::v2::get(&conn, child_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if child_id.starts_with("ses_") {
+        return Err(format!("Session not found: {child_id}"));
+    }
+    let _ = description;
+    let _ = agent;
+    let _ = parent_id;
+    Err(format!("Session not found: {child_id}"))
+}
+
+struct ParentSessionRow {
+    project_id: String,
+    workspace_id: Option<String>,
+    directory: String,
+    path: Option<String>,
+    version: String,
+    permission: Option<String>,
+    model: Option<String>,
+}
+
+fn parent_session_row(
+    conn: &rusqlite::Connection,
+    parent_id: &str,
+) -> Result<ParentSessionRow, String> {
+    conn.query_row(
+        "SELECT project_id, workspace_id, directory, path, version, permission, model FROM session WHERE id = ?",
+        [parent_id],
+        |row| {
+            Ok(ParentSessionRow {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                directory: row.get(2)?,
+                path: row.get(3)?,
+                version: row.get(4)?,
+                permission: row.get(5)?,
+                model: row.get(6)?,
+            })
+        },
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => format!("Session not found: {parent_id}"),
+        other => other.to_string(),
+    })
+}
+
+fn admit_child_prompt(
+    pool: &crate::runner::Pool,
+    child_id: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    crate::v2::admit(
+        &mut conn,
+        child_id,
+        &json!({
+            "id": format!("msg_{}", crate::identifier::ascending()),
+            "prompt": { "text": prompt },
+            "delivery": "steer",
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        crate::v2::AdmitError::NotFound => format!("Session not found: {child_id}"),
+        crate::v2::AdmitError::Conflict(id) => {
+            format!("Prompt message ID conflicts with an existing durable record: {id}")
+        }
+        crate::v2::AdmitError::BadRequest(message) | crate::v2::AdmitError::Storage(message) => {
+            message
+        }
+    })
+}
+
+fn run_child_task(
+    pool: &crate::runner::Pool,
+    env: RunnerEnv,
+    child_id: &str,
+    control: background::Control,
+) -> Result<String, String> {
+    crate::runner::wake(env, child_id.to_string());
+    while crate::runner::is_active(child_id) {
+        if control.is_cancelled() {
+            crate::runner::interrupt(child_id);
+            return Err("Task cancelled".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child_task_output(pool, child_id)
+}
+
+fn child_task_output(pool: &crate::runner::Pool, child_id: &str) -> Result<String, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1",
+            [child_id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(|error| error.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(String::new());
+    };
+    let message: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if let Some(error) = message
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return Err(error.to_string());
+    }
+    Ok(message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| {
+            content.iter().rev().find_map(|part| {
+                (part.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| part.get("text").and_then(Value::as_str).map(str::to_string))
+                    .flatten()
+            })
+        })
+        .unwrap_or_default())
+}
+
+fn parent_model(conn: &rusqlite::Connection, parent_id: &str) -> Value {
+    conn.query_row(
+        "SELECT model FROM session WHERE id = ?",
+        [parent_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    .unwrap_or(Value::Null)
+}
+
+fn inject_task_result(
+    pool: &crate::runner::Pool,
+    runner_env: RunnerEnv,
+    parent_id: &str,
+    child_id: &str,
+    state: &str,
+    description: &str,
+    text: &str,
+) {
+    let Ok(mut conn) = pool.get() else {
+        return;
+    };
+    if crate::v2::admit(
+        &mut conn,
+        parent_id,
+        &json!({
+            "id": format!("msg_{}", crate::identifier::ascending()),
+            "prompt": {
+                "text": render_task_output(
+                    child_id,
+                    state,
+                    Some(if state == "completed" {
+                        format!("Background task completed: {description}")
+                    } else {
+                        format!("Background task failed: {description}")
+                    }),
+                    text,
+                )
+            },
+            "delivery": "steer",
+        }),
+    )
+    .is_ok()
+    {
+        crate::runner::wake(runner_env, parent_id.to_string());
+    }
+}
+
+fn task_running(description: &str, child_id: &str, summary: &str, text: &str) -> Settlement {
+    let output = render_task_output(child_id, "running", Some(summary.to_string()), text);
+    success_text(
+        json!({
+            "title": description,
+            "metadata": {
+                "sessionId": child_id,
+                "background": true,
+                "jobId": child_id,
+            },
+            "output": output,
+        }),
+        output,
+    )
+}
+
+fn task_finished(description: &str, info: &background::Info) -> Settlement {
+    match info.status {
+        background::Status::Completed => {
+            let output = render_task_output(
+                &info.id,
+                "completed",
+                None,
+                info.output.as_deref().unwrap_or_default(),
+            );
+            success_text(
+                json!({
+                    "title": description,
+                    "metadata": { "sessionId": info.id },
+                    "output": output,
+                }),
+                output,
+            )
+        }
+        background::Status::Error => {
+            failure(info.error.clone().unwrap_or_else(|| "Task failed".into()))
+        }
+        background::Status::Cancelled => failure("Task cancelled".into()),
+        background::Status::Running => task_running(
+            description,
+            &info.id,
+            "Background task started",
+            BACKGROUND_STARTED,
+        ),
+    }
+}
+
+fn render_task_output(
+    session_id: &str,
+    state: &str,
+    summary: Option<String>,
+    text: &str,
+) -> String {
+    let tag = if state == "error" {
+        "task_error"
+    } else {
+        "task_result"
+    };
+    let mut lines = vec![format!(r#"<task id="{session_id}" state="{state}">"#)];
+    if let Some(summary) = summary {
+        lines.push(format!("<summary>{summary}</summary>"));
+    }
+    lines.push(format!("<{tag}>"));
+    lines.push(text.to_string());
+    lines.push(format!("</{tag}>"));
+    lines.push("</task>".into());
+    lines.join("\n")
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_millis() as i64
+}
+
+// ---------------------------------------------------------------------------
+// todowrite
+// ---------------------------------------------------------------------------
+
+fn todowrite(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(todos) = input.get("todos").and_then(Value::as_array) else {
+        return failure("Unable to update todos".into());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_millis() as i64;
+    let update = || -> rusqlite::Result<()> {
+        env.conn
+            .execute("DELETE FROM todo WHERE session_id = ?", [env.session_id])?;
+        for (position, todo) in todos.iter().enumerate() {
+            env.conn.execute(
+                "INSERT INTO todo (session_id, content, status, priority, position, time_created, time_updated) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+                rusqlite::params![
+                    env.session_id,
+                    todo.get("content").and_then(Value::as_str).unwrap_or_default(),
+                    todo.get("status").and_then(Value::as_str).unwrap_or("pending"),
+                    todo.get("priority").and_then(Value::as_str).unwrap_or("medium"),
+                    position as i64,
+                    now,
+                    now,
+                ],
+            )?;
+        }
+        Ok(())
+    };
+    if update().is_err() {
+        return failure("Unable to update todos".into());
+    }
+    Settlement {
+        structured: json!({ "todos": todos }),
+        content: vec![json!({
+            "type": "text",
+            "text": serde_json::to_string_pretty(&Value::Array(todos.clone())).expect("serializable"),
+        })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// skill
+// ---------------------------------------------------------------------------
+
+fn skill(worktree: &str, input: &Value) -> Settlement {
+    let Some(name) = input.get("name").and_then(Value::as_str) else {
+        return failure("Invalid tool input: name is required".into());
+    };
+    let skills = crate::markdown_skills(worktree);
+    let Some(found) = skills.iter().find(|skill| skill["name"] == name) else {
+        return failure(format!("Unable to load skill {name}"));
+    };
+    let location = found["location"].as_str().unwrap_or_default();
+    let directory = Path::new(location)
+        .parent()
+        .map(|parent| parent.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let mut files: Vec<String> = std::fs::read_dir(&directory)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_file()))
+                .map(|entry| entry.path().to_string_lossy().into_owned())
+                .filter(|path| !path.ends_with("SKILL.md"))
+                .collect()
+        })
+        .unwrap_or_default();
+    files.sort();
+    files.truncate(10);
+    let content = found["content"].as_str().unwrap_or_default().trim();
+    let mut output = vec![
+        format!("<skill_content name=\"{name}\">"),
+        format!("# Skill: {name}"),
+        String::new(),
+        content.to_string(),
+        String::new(),
+        format!("Base directory for this skill: {directory}"),
+        "Relative paths in this skill (e.g., scripts/, reference/) are relative to this base directory.".to_string(),
+        "Note: file list is sampled.".to_string(),
+        String::new(),
+        "<skill_files>".to_string(),
+    ];
+    output.extend(files.iter().map(|file| format!("<file>{file}</file>")));
+    output.push("</skill_files>".to_string());
+    output.push("</skill_content>".to_string());
+    let rendered = output.join("\n");
+    Settlement {
+        structured: json!({ "name": name, "directory": directory, "output": rendered }),
+        content: vec![json!({ "type": "text", "text": rendered })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// webfetch
+// ---------------------------------------------------------------------------
+
+fn webfetch(input: &Value) -> Settlement {
+    let Some(url) = input.get("url").and_then(Value::as_str) else {
+        return failure("Invalid tool input: url is required".into());
+    };
+    if !url.starts_with("http://") && !url.starts_with("https://") {
+        return failure(format!("Unable to fetch {url}"));
+    }
+    let format = input
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("markdown");
+    let timeout = input
+        .get("timeout")
+        .and_then(Value::as_f64)
+        .unwrap_or(30.0)
+        .min(120.0);
+    let response = ureq::get(url)
+        .timeout(std::time::Duration::from_secs_f64(timeout))
+        .set(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36",
+        )
+        .set("Accept-Language", "en-US,en;q=0.9")
+        .call();
+    let response = match response {
+        Ok(response) => response,
+        Err(_) => return failure(format!("Unable to fetch {url}")),
+    };
+    let content_type = response
+        .header("Content-Type")
+        .unwrap_or("text/plain")
+        .to_string();
+    let mut body = String::new();
+    let mut reader = std::io::Read::take(response.into_reader(), WEBFETCH_MAX_BYTES as u64 + 1);
+    if std::io::Read::read_to_string(&mut reader, &mut body).is_err() {
+        return failure(format!("Unable to fetch {url}"));
+    }
+    if body.len() > WEBFETCH_MAX_BYTES {
+        return failure(format!("Unable to fetch {url}"));
+    }
+    let mime = content_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let output = if mime == "text/html" && format != "html" {
+        html_to_text(&body)
+    } else {
+        body
+    };
+    Settlement {
+        structured: json!({
+            "url": url,
+            "contentType": content_type,
+            "format": format,
+            "output": output,
+        }),
+        content: vec![json!({ "type": "text", "text": output })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// websearch
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebSearchProvider {
+    Exa,
+    Parallel,
+}
+
+impl WebSearchProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            WebSearchProvider::Exa => "exa",
+            WebSearchProvider::Parallel => "parallel",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WebSearchFlags {
+    enable_exa: bool,
+    enable_parallel: bool,
+}
+
+fn websearch(env: &ToolEnv, input: &Value, provider: WebSearchProvider) -> Settlement {
+    let Some(query) = input.get("query").and_then(Value::as_str) else {
+        return failure("Invalid tool input: query is required".into());
+    };
+    let result = match provider {
+        WebSearchProvider::Exa => websearch_exa(input, query),
+        WebSearchProvider::Parallel => websearch_parallel(query, env.session_id),
+    };
+    let text = match result {
+        Ok(Some(text)) => text,
+        Ok(None) => WEBSEARCH_NO_RESULTS.to_string(),
+        Err(_) => return failure(format!("Unable to search the web for {query}")),
+    };
+    Settlement {
+        structured: json!({
+            "provider": provider.as_str(),
+            "text": text,
+        }),
+        content: vec![json!({ "type": "text", "text": text })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn websearch_exa(input: &Value, query: &str) -> Result<Option<String>, String> {
+    let num_results =
+        optional_positive_integer(input, "numResults", WEBSEARCH_MAX_NUM_RESULTS)?.unwrap_or(8);
+    let livecrawl =
+        optional_enum(input, "livecrawl", &["fallback", "preferred"])?.unwrap_or("fallback");
+    let search_type = optional_enum(input, "type", &["auto", "fast", "deep"])?.unwrap_or("auto");
+    let context_max_characters = optional_positive_integer(
+        input,
+        "contextMaxCharacters",
+        WEBSEARCH_MAX_CONTEXT_CHARACTERS,
+    )?;
+    let mut arguments = Map::new();
+    arguments.insert("query".into(), Value::String(query.to_string()));
+    arguments.insert("type".into(), Value::String(search_type.to_string()));
+    arguments.insert("numResults".into(), Value::Number(num_results.into()));
+    arguments.insert("livecrawl".into(), Value::String(livecrawl.to_string()));
+    if let Some(value) = context_max_characters {
+        arguments.insert("contextMaxCharacters".into(), Value::Number(value.into()));
+    }
+    call_websearch_mcp(
+        &websearch_exa_url(std::env::var("EXA_API_KEY").ok()),
+        "web_search_exa",
+        Value::Object(arguments),
+        &[],
+    )
+}
+
+fn websearch_parallel(query: &str, session_id: &str) -> Result<Option<String>, String> {
+    let mut headers = vec![(
+        "User-Agent".to_string(),
+        format!("opencode/{}", installation_version()),
+    )];
+    if let Ok(api_key) = std::env::var("PARALLEL_API_KEY") {
+        headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+    }
+    call_websearch_mcp(
+        WEBSEARCH_PARALLEL_URL,
+        "web_search",
+        json!({
+            "objective": query,
+            "search_queries": [query],
+            "session_id": session_id,
+        }),
+        &headers,
+    )
+}
+
+fn call_websearch_mcp(
+    url: &str,
+    tool: &str,
+    arguments: Value,
+    headers: &[(String, String)],
+) -> Result<Option<String>, String> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+        },
+    })
+    .to_string();
+    let mut request = ureq::post(url)
+        .timeout(Duration::from_secs(25))
+        .set("Accept", "application/json, text/event-stream")
+        .set("Content-Type", "application/json");
+    for (key, value) in headers {
+        request = request.set(key, value);
+    }
+    let response = request
+        .send_string(&body)
+        .map_err(|_| format!("{tool} request failed"))?;
+    let mut body = Vec::new();
+    let mut reader = std::io::Read::take(
+        response.into_reader(),
+        WEBSEARCH_MAX_RESPONSE_BYTES as u64 + 1,
+    );
+    std::io::Read::read_to_end(&mut reader, &mut body)
+        .map_err(|_| format!("{tool} response read failed"))?;
+    if body.len() > WEBSEARCH_MAX_RESPONSE_BYTES {
+        return Err(format!(
+            "{tool} response exceeded {WEBSEARCH_MAX_RESPONSE_BYTES} bytes"
+        ));
+    }
+    parse_websearch_response(&String::from_utf8_lossy(&body)).map_err(|error| error.to_string())
+}
+
+fn parse_websearch_response(body: &str) -> Result<Option<String>, serde_json::Error> {
+    let trimmed = body.trim();
+    if !trimmed.is_empty() {
+        if let Some(text) = parse_websearch_payload(trimmed)? {
+            return Ok(Some(text));
+        }
+    }
+    for line in body.lines() {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if let Some(text) = parse_websearch_payload(payload)? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_websearch_payload(payload: &str) -> Result<Option<String>, serde_json::Error> {
+    let trimmed = payload.trim();
+    if !trimmed.starts_with('{') {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(trimmed)?;
+    Ok(value
+        .get("result")
+        .and_then(|result| result.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| {
+            content.iter().find_map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+            })
+        })
+        .map(str::to_string))
+}
+
+fn optional_positive_integer(input: &Value, key: &str, max: u64) -> Result<Option<u64>, String> {
+    let Some(value) = input.get(key) else {
+        return Ok(None);
+    };
+    let Some(number) = value.as_u64() else {
+        return Err(format!("{key} must be a positive integer"));
+    };
+    if number == 0 || number > max {
+        return Err(format!("{key} must be between 1 and {max}"));
+    }
+    Ok(Some(number))
+}
+
+fn optional_enum<'a>(
+    input: &'a Value,
+    key: &str,
+    allowed: &[&str],
+) -> Result<Option<&'a str>, String> {
+    let Some(value) = input.get(key) else {
+        return Ok(None);
+    };
+    let Some(text) = value.as_str() else {
+        return Err(format!("{key} must be a string"));
+    };
+    if allowed.contains(&text) {
+        return Ok(Some(text));
+    }
+    Err(format!("{key} is invalid"))
+}
+
+fn select_websearch_provider(session_id: &str) -> WebSearchProvider {
+    let override_provider = match std::env::var("OPENCODE_WEBSEARCH_PROVIDER").as_deref() {
+        Ok("exa") => Some(WebSearchProvider::Exa),
+        Ok("parallel") => Some(WebSearchProvider::Parallel),
+        _ => None,
+    };
+    select_websearch_provider_with(
+        session_id,
+        WebSearchFlags {
+            enable_exa: truthy_env("OPENCODE_EXPERIMENTAL")
+                || truthy_env("OPENCODE_ENABLE_EXA")
+                || truthy_env("OPENCODE_EXPERIMENTAL_EXA"),
+            enable_parallel: truthy_env("OPENCODE_ENABLE_PARALLEL")
+                || truthy_env("OPENCODE_EXPERIMENTAL_PARALLEL"),
+        },
+        override_provider,
+    )
+}
+
+fn select_websearch_provider_with(
+    session_id: &str,
+    flags: WebSearchFlags,
+    override_provider: Option<WebSearchProvider>,
+) -> WebSearchProvider {
+    if let Some(provider) = override_provider {
+        return provider;
+    }
+    if flags.enable_parallel {
+        return WebSearchProvider::Parallel;
+    }
+    if flags.enable_exa {
+        return WebSearchProvider::Exa;
+    }
+    if checksum_u32(session_id).is_multiple_of(2) {
+        return WebSearchProvider::Exa;
+    }
+    WebSearchProvider::Parallel
+}
+
+fn truthy_env(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "1"))
+        .unwrap_or(false)
+}
+
+fn checksum_u32(content: &str) -> u32 {
+    let mut hash = 0x811c9dc5u32;
+    for unit in content.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
+fn websearch_exa_url(api_key: Option<String>) -> String {
+    let Some(api_key) = api_key.filter(|value| !value.is_empty()) else {
+        return WEBSEARCH_EXA_URL.to_string();
+    };
+    format!("{WEBSEARCH_EXA_URL}?exaApiKey={}", query_encode(&api_key))
+}
+
+fn query_encode(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![*byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn installation_version() -> String {
+    std::env::var("OPENCODE_VERSION").unwrap_or_else(|_| opengoal_daemon::VERSION.into())
+}
+
+fn current_year() -> i32 {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| (duration.as_secs() / 86_400) as i64)
+        .unwrap_or_default();
+    civil_year_from_days(days)
+}
+
+fn civil_year_from_days(days: i64) -> i32 {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    (year_of_era + era * 400 + (month_prime + 2) / 12) as i32
+}
+
+// ---------------------------------------------------------------------------
+// question
+// ---------------------------------------------------------------------------
+
+/// Ask the user one or more multiple-choice questions and wait for the reply.
+/// The tool records a Question request in the process-local registry and
+/// suspends the Rust runner turn (via a bounded blocking wait) until the
+/// client replies, rejects, or the deadline elapses. Cancellation via the
+/// runner InterruptToken settles the tool as interrupted without blocking
+/// other Sessions.
+fn question(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(bus_registry) = env.bus.zip(env.questions) else {
+        return failure("question tool requires the live runner".into());
+    };
+    let (bus, registry) = bus_registry;
+    let Some(questions) = input.get("questions").and_then(Value::as_array) else {
+        return failure("Invalid tool input: questions is required".into());
+    };
+    let mut infos: Vec<crate::question_v2::Info> = Vec::with_capacity(questions.len());
+    for question in questions {
+        let text = question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let header = question
+            .get("header")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options
+                    .iter()
+                    .map(|option| crate::question_v2::QOption {
+                        label: option
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        description: option
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        infos.push(crate::question_v2::Info {
+            question: text,
+            header,
+            options,
+            multiple: question.get("multiple").and_then(Value::as_bool),
+            custom: question.get("custom").and_then(Value::as_bool),
+        });
+    }
+    let timeout = input
+        .get("timeout")
+        .and_then(Value::as_f64)
+        .map(|value| value.round() as u64);
+    let tool = env
+        .message_id
+        .zip(env.call_id)
+        .map(|(message_id, call_id)| crate::question_v2::Tool {
+            message_id: message_id.to_string(),
+            call_id: call_id.to_string(),
+        });
+    let ask_env = crate::question_v2::Env { bus, registry };
+    let outcome = crate::question_v2::ask(
+        &ask_env,
+        &crate::question_v2::AskInput {
+            session_id: env.session_id.to_string(),
+            questions: infos,
+            tool,
+            timeout,
+        },
+    );
+    let interrupt_token = env.interrupt.cloned();
+    match crate::question_v2::wait_for(&ask_env, outcome, move || {
+        interrupt_token
+            .as_ref()
+            .is_some_and(|token| token.is_interrupted())
+    }) {
+        crate::question_v2::Resolution::Rejected => interrupted(),
+        crate::question_v2::Resolution::Answered(answers) => {
+            let structured = json!({ "answers": answers });
+            let text = answers
+                .iter()
+                .map(|answer| answer.join(", "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Settlement {
+                structured,
+                content: vec![json!({ "type": "text", "text": text })],
+                error: None,
+                interrupt: false,
+            }
+        }
+    }
+}
+
+/// Minimal HTML -> readable text: drops script/style, converts common block
+/// elements to line breaks, and decodes basic entities.
+fn html_to_text(html: &str) -> String {
+    let mut out = String::with_capacity(html.len() / 2);
+    let mut chars = html.char_indices().peekable();
+    let lower = html.to_ascii_lowercase();
+    let mut skip_until: Option<usize> = None;
+    while let Some((index, ch)) = chars.next() {
+        if let Some(end) = skip_until {
+            if index < end {
+                continue;
+            }
+            skip_until = None;
+        }
+        if ch != '<' {
+            out.push(ch);
+            continue;
+        }
+        let rest = &lower[index..];
+        for (open, close) in [("<script", "</script>"), ("<style", "</style>")] {
+            if rest.starts_with(open) {
+                if let Some(offset) = rest.find(close) {
+                    skip_until = Some(index + offset + close.len());
+                }
+            }
+        }
+        if skip_until.is_some() {
+            continue;
+        }
+        // Consume the tag; block-level tags become newlines.
+        let mut tag = String::new();
+        for (_, tag_char) in chars.by_ref() {
+            if tag_char == '>' {
+                break;
+            }
+            tag.push(tag_char);
+        }
+        let name = tag
+            .trim_start_matches('/')
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if matches!(
+            name.as_str(),
+            "p" | "div"
+                | "br"
+                | "li"
+                | "tr"
+                | "h1"
+                | "h2"
+                | "h3"
+                | "h4"
+                | "h5"
+                | "h6"
+                | "section"
+                | "article"
+        ) {
+            out.push('\n');
+        }
+    }
+    out.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&nbsp;", " ")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .split("\n\n\n")
+        .collect::<Vec<_>>()
+        .join("\n\n")
+        .trim()
+        .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn env<'a>(conn: &'a rusqlite::Connection, directory: &'a str) -> ToolEnv<'a> {
+        ToolEnv {
+            directory,
+            worktree: "/workspace",
+            agent: "build",
+            session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_tooltest",
+            conn,
+            pool: None,
+            interrupt: None,
+            bus: None,
+            permissions: None,
+            questions: None,
+            message_id: None,
+            call_id: None,
+        }
+    }
+
+    fn memory_conn() -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(
+            "CREATE TABLE session (id text PRIMARY KEY);
+             INSERT INTO session VALUES ('ses_tooltest000000000000000000');
+             CREATE TABLE todo (
+               session_id text NOT NULL, content text NOT NULL, status text NOT NULL,
+               priority text NOT NULL, position integer NOT NULL,
+               time_created integer NOT NULL, time_updated integer NOT NULL,
+               CONSTRAINT todo_pk PRIMARY KEY(session_id, position));",
+        )
+        .expect("schema");
+        conn
+    }
+
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mkdir_with_git() -> (PathBuf, TempDirGuard) {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rust-permquestion-test-{}-{}",
+            std::process::id(),
+            counter,
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).expect("worktree");
+        (dir.clone(), TempDirGuard(dir))
+    }
+
+    fn task_pool() -> (crate::runner::Pool, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("rust-task-tool-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).expect("worktree");
+        let db = root.join("opencode.db");
+        let manager = r2d2_sqlite::SqliteConnectionManager::file(&db);
+        let pool = r2d2::Pool::new(manager).expect("pool");
+        let conn = pool.get().expect("conn");
+        conn.execute_batch(
+            "CREATE TABLE session (
+               id text PRIMARY KEY, project_id text NOT NULL, workspace_id text, parent_id text,
+               slug text NOT NULL, directory text NOT NULL, path text, title text NOT NULL,
+               version text NOT NULL, share_url text, summary_additions integer,
+               summary_deletions integer, summary_files integer, summary_diffs text,
+               metadata text, cost real NOT NULL DEFAULT 0, tokens_input integer NOT NULL DEFAULT 0,
+               tokens_output integer NOT NULL DEFAULT 0, tokens_reasoning integer NOT NULL DEFAULT 0,
+               tokens_cache_read integer NOT NULL DEFAULT 0, tokens_cache_write integer NOT NULL DEFAULT 0,
+               revert text, permission text, agent text, model text, time_created integer NOT NULL,
+               time_updated integer NOT NULL, time_compacting integer, time_archived integer
+             );
+             CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);
+             CREATE TABLE event (
+               id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL,
+               type text NOT NULL, data text NOT NULL
+             );
+             CREATE TABLE session_input (
+               id text PRIMARY KEY, session_id text NOT NULL, prompt text NOT NULL,
+               delivery text NOT NULL, admitted_seq integer NOT NULL,
+               promoted_seq integer, time_created integer NOT NULL
+             );
+             CREATE TABLE session_message (
+               id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,
+               seq integer NOT NULL, time_created integer NOT NULL,
+               time_updated integer NOT NULL, data text NOT NULL
+             );
+             CREATE TABLE session_context_epoch (
+               session_id text PRIMARY KEY, baseline text NOT NULL, snapshot text NOT NULL,
+               baseline_seq integer NOT NULL
+             );
+             CREATE TABLE todo (
+               session_id text NOT NULL, content text NOT NULL, status text NOT NULL,
+               priority text NOT NULL, position integer NOT NULL,
+               time_created integer NOT NULL, time_updated integer NOT NULL,
+               CONSTRAINT todo_pk PRIMARY KEY(session_id, position)
+             );",
+        )
+        .expect("schema");
+        let timestamp = now_millis();
+        conn.execute(
+            "INSERT INTO session (id, project_id, slug, directory, path, title, version, permission,
+             agent, model, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                "ses_taskparent000000000000000000",
+                "proj_test",
+                "parent",
+                root.to_string_lossy(),
+                "",
+                "Parent",
+                "test",
+                "[]",
+                "build",
+                json!({ "providerID": "test", "id": "model", "variant": "default" }).to_string(),
+                timestamp,
+                timestamp,
+            ],
+        )
+        .expect("parent");
+        drop(conn);
+        (pool, root, db)
+    }
+
+    #[test]
+    fn read_returns_full_small_files() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": "Cargo.toml" }),
+        );
+        assert!(settlement.error.is_none());
+        assert_eq!(settlement.structured["encoding"], "utf8");
+        assert!(settlement.structured["content"]
+            .as_str()
+            .unwrap()
+            .contains("[workspace]"));
+    }
+
+    #[test]
+    fn read_rejects_external_paths() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": "/etc/passwd" }),
+        );
+        assert!(settlement.error.is_some());
+    }
+
+    #[test]
+    fn read_pages_by_offset() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": "Cargo.toml", "offset": 2, "limit": 1 }),
+        );
+        assert!(settlement.error.is_none());
+        assert_eq!(settlement.structured["type"], "text-page");
+        assert_eq!(settlement.structured["offset"], 2);
+    }
+
+    #[test]
+    fn read_lists_directories() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": "." }),
+        );
+        assert!(settlement.error.is_none());
+        assert!(settlement.structured["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["path"] == "server/" && entry["type"] == "directory"));
+    }
+
+    #[test]
+    fn glob_finds_rust_sources() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "glob",
+            &json!({ "pattern": "**/*.rs", "limit": 5 }),
+        );
+        assert!(settlement.error.is_none());
+        assert_eq!(settlement.structured.as_array().unwrap().len(), 5);
+        assert!(settlement.content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains(".rs"));
+    }
+
+    #[test]
+    fn grep_finds_matches() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "grep",
+            &json!({ "pattern": "opencode-server", "include": "*.toml", "limit": 3 }),
+        );
+        assert!(settlement.error.is_none());
+        assert!(settlement.content[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Found"));
+    }
+
+    #[test]
+    fn bash_runs_and_reports_exit_code() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "bash",
+            &json!({ "command": "echo hello && pwd" }),
+        );
+        assert!(settlement.error.is_none());
+        assert_eq!(settlement.structured["exit"], 0);
+        assert_eq!(settlement.structured["truncated"], false);
+        let output = settlement.content[0]["text"].as_str().unwrap();
+        assert!(output.contains("hello"));
+        assert!(output.contains("/workspace/rust"));
+        assert_eq!(
+            settlement.content[1]["text"].as_str().unwrap(),
+            "Command exited with code 0."
+        );
+    }
+
+    #[test]
+    fn bash_reports_timeouts() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "bash",
+            &json!({ "command": "sleep 5", "timeout": 200 }),
+        );
+        assert!(settlement.error.is_none());
+        assert_eq!(settlement.structured["timeout"], true);
+        assert_eq!(
+            settlement.content[1]["text"].as_str().unwrap(),
+            "Command timed out before completion."
+        );
+    }
+
+    #[test]
+    fn bash_denied_for_plan_agent_via_wildcard_still_allows() {
+        // plan denies edit but not bash (defaults allow bash).
+        let conn = memory_conn();
+        let mut plan_env = env(&conn, "/workspace/rust");
+        plan_env.agent = "plan";
+        let settlement = execute(&plan_env, "bash", &json!({ "command": "true" }));
+        assert!(settlement.error.is_none());
+        let settlement = execute(
+            &plan_env,
+            "edit",
+            &json!({ "path": "x.rs", "oldString": "a", "newString": "b" }),
+        );
+        assert_eq!(settlement.error.as_deref(), Some("Unable to edit x.rs"));
+        assert!(!settlement.interrupt);
+    }
+
+    #[test]
+    fn permission_ask_interrupts_without_model_facing_failure() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": ".env" }),
+        );
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(settlement.content.is_empty());
+    }
+
+    fn permission_conn(session_id: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(
+            "CREATE TABLE session (id text PRIMARY KEY, permission text);
+             CREATE TABLE permission (
+               id text PRIMARY KEY, project_id text NOT NULL,
+               action text NOT NULL, resource text NOT NULL,
+               time_created integer NOT NULL, time_updated integer NOT NULL,
+               UNIQUE(project_id, action, resource));",
+        )
+        .expect("schema");
+        conn.execute("INSERT INTO session (id) VALUES (?)", [session_id])
+            .unwrap();
+        conn
+    }
+
+    #[test]
+    fn permission_ask_awaits_reply_once_and_reads_file() {
+        let (dir, _guard) = mkdir_with_git();
+        std::fs::write(dir.join(".env"), "hello reply once").unwrap();
+        let session_id = "ses_askreplyonceaaaaaaaaaaaaa";
+        let conn = permission_conn(session_id);
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let directory = dir.to_string_lossy().into_owned();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        let replier = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_x",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Once,
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("no pending permission surfaced within timeout");
+        });
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id,
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_a"),
+            call_id: Some("call_a"),
+        };
+        let settlement = execute(&tool_env, "read", &json!({ "path": ".env" }));
+        replier.join().unwrap();
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.structured["content"], "hello reply once");
+    }
+
+    #[test]
+    fn permission_ask_reject_message_becomes_corrected_feedback() {
+        let (dir, _guard) = mkdir_with_git();
+        std::fs::write(dir.join(".env"), "hi").unwrap();
+        let session_id = "ses_askrejectaaaaaaaaaaaaaaa";
+        let conn = permission_conn(session_id);
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let directory = dir.to_string_lossy().into_owned();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_x",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Reject(Some("please use fs API".to_string())),
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id,
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_r"),
+            call_id: Some("call_r"),
+        };
+        let settlement = execute(&tool_env, "read", &json!({ "path": ".env" }));
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.error.as_deref(), Some("please use fs API"));
+    }
+
+    #[test]
+    fn websearch_permission_uses_query_resource_wildcard_save_and_metadata() {
+        let session_id = "ses_websearchpermissionaaaaaa";
+        let conn = permission_conn(session_id);
+        conn.execute(
+            "UPDATE session SET permission = ? WHERE id = ?",
+            rusqlite::params![
+                json!([{ "permission": "websearch", "pattern": "*", "action": "ask" }]).to_string(),
+                session_id,
+            ],
+        )
+        .unwrap();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        let replier = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    assert_eq!(request.action, "websearch");
+                    assert_eq!(request.resources, vec!["rust websearch".to_string()]);
+                    assert_eq!(request.save, Some(vec!["*".to_string()]));
+                    assert_eq!(
+                        request.metadata.as_ref().unwrap()["query"],
+                        "rust websearch"
+                    );
+                    assert_eq!(request.metadata.as_ref().unwrap()["numResults"], 3);
+                    assert!(matches!(
+                        request.metadata.as_ref().unwrap()["provider"].as_str(),
+                        Some("exa" | "parallel")
+                    ));
+                    assert_eq!(
+                        request.source.as_ref().unwrap(),
+                        &json!({ "type": "tool", "messageID": "msg_ws", "callID": "call_ws" })
+                    );
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_websearch",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Reject(Some("stop before network".into())),
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("no pending websearch permission surfaced within timeout");
+        });
+        let tool_env = ToolEnv {
+            directory: "/workspace/rust",
+            worktree: "/workspace",
+            agent: "build",
+            session_id,
+            project_id: "prj_websearch",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_ws"),
+            call_id: Some("call_ws"),
+        };
+        let settlement = execute(
+            &tool_env,
+            "websearch",
+            &json!({ "query": "rust websearch", "numResults": 3 }),
+        );
+        replier.join().unwrap();
+        assert_eq!(settlement.error.as_deref(), Some("stop before network"));
+    }
+
+    #[test]
+    fn question_tool_returns_answered_when_client_replies() {
+        let conn = memory_conn();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let tool_env = ToolEnv {
+            directory: "/tmp",
+            worktree: "/tmp",
+            agent: "build",
+            session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_q"),
+            call_id: Some("call_q"),
+        };
+        let registry_for_thread = questions.clone();
+        let bus_for_thread = bus.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = registry_for_thread.list().into_iter().next() {
+                    crate::question_v2::reply(
+                        &crate::question_v2::Env {
+                            bus: &bus_for_thread,
+                            registry: &registry_for_thread,
+                        },
+                        &request.id,
+                        vec![vec!["Yes".into()]],
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let settlement = execute(
+            &tool_env,
+            "question",
+            &json!({
+                "questions": [{
+                    "question": "Proceed?",
+                    "header": "confirm",
+                    "options": [
+                        { "label": "Yes", "description": "Go" },
+                        { "label": "No", "description": "Stop" },
+                    ],
+                }],
+                "timeout": 5,
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.structured["answers"], json!([["Yes"]]));
+    }
+
+    #[test]
+    fn question_tool_interrupt_token_cancels_wait() {
+        let conn = memory_conn();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let interrupt = crate::runner::InterruptToken::default();
+        let tool_env = ToolEnv {
+            directory: "/tmp",
+            worktree: "/tmp",
+            agent: "build",
+            session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: Some(&interrupt),
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_qi"),
+            call_id: Some("call_qi"),
+        };
+        let cancel_handle = interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel_handle.interrupt();
+        });
+        let settlement = execute(
+            &tool_env,
+            "question",
+            &json!({
+                "questions": [{
+                    "question": "Wait forever?",
+                    "header": "wait",
+                    "options": [],
+                }],
+                "timeout": 30,
+            }),
+        );
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(questions.list().is_empty());
+    }
+
+    #[test]
+    fn websearch_provider_selection_matches_typescript_checksum_and_flags() {
+        let none = WebSearchFlags {
+            enable_exa: false,
+            enable_parallel: false,
+        };
+        assert_eq!(
+            select_websearch_provider_with("ses_even", none, None),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            select_websearch_provider_with("ses_odd", none, None),
+            WebSearchProvider::Exa
+        );
+        assert_eq!(
+            select_websearch_provider_with(
+                "ses_odd",
+                WebSearchFlags {
+                    enable_exa: true,
+                    enable_parallel: true,
+                },
+                None,
+            ),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            select_websearch_provider_with(
+                "ses_even",
+                WebSearchFlags {
+                    enable_exa: true,
+                    enable_parallel: false,
+                },
+                None,
+            ),
+            WebSearchProvider::Exa
+        );
+        assert_eq!(
+            select_websearch_provider_with("ses_odd", none, Some(WebSearchProvider::Parallel),),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            websearch_exa_url(Some("key with space".into())),
+            "https://mcp.exa.ai/mcp?exaApiKey=key%20with%20space"
+        );
+    }
+
+    #[test]
+    fn websearch_parses_direct_and_sse_mcp_responses() {
+        assert_eq!(
+            parse_websearch_response(
+                r#"{"result":{"content":[{"type":"text","text":"direct result"}]}}"#
+            )
+            .unwrap(),
+            Some("direct result".into())
+        );
+        assert_eq!(
+            parse_websearch_response(
+                "event: message\ndata: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"sse result\"}]}}\n\n"
+            )
+            .unwrap(),
+            Some("sse result".into())
+        );
+        assert_eq!(
+            parse_websearch_response(r#"{"result":{"content":[{"type":"text","text":""}]}}"#)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn definitions_include_apply_patch_todo_ids_and_timeout_bounds() {
+        let definitions = definitions();
+        assert!(definitions
+            .iter()
+            .any(|tool| tool["function"]["name"] == "apply_patch"));
+        let bash = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "bash")
+            .unwrap();
+        assert_eq!(
+            bash["function"]["parameters"]["properties"]["timeout"]["maximum"],
+            BASH_MAX_TIMEOUT_MS
+        );
+        assert_eq!(
+            bash["function"]["parameters"]["properties"]["timeout"]["minimum"],
+            1
+        );
+        let todo = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "todowrite")
+            .unwrap();
+        assert!(
+            todo["function"]["parameters"]["properties"]["todos"]["items"]["properties"]
+                .get("id")
+                .is_some()
+        );
+        let webfetch = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "webfetch")
+            .unwrap();
+        assert_eq!(
+            webfetch["function"]["parameters"]["properties"]["timeout"]["maximum"],
+            120
+        );
+        let websearch = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "websearch")
+            .unwrap();
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["numResults"]["maximum"],
+            WEBSEARCH_MAX_NUM_RESULTS
+        );
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["numResults"]["minimum"],
+            1
+        );
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["contextMaxCharacters"]["maximum"],
+            WEBSEARCH_MAX_CONTEXT_CHARACTERS
+        );
+        assert!(optional_positive_integer(
+            &json!({ "numResults": WEBSEARCH_MAX_NUM_RESULTS + 1 }),
+            "numResults",
+            WEBSEARCH_MAX_NUM_RESULTS
+        )
+        .is_err());
+        assert!(optional_positive_integer(
+            &json!({ "contextMaxCharacters": WEBSEARCH_MAX_CONTEXT_CHARACTERS + 1 }),
+            "contextMaxCharacters",
+            WEBSEARCH_MAX_CONTEXT_CHARACTERS
+        )
+        .is_err());
+        let task = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "task")
+            .unwrap();
+        assert!(task["function"]["parameters"]["properties"]
+            .get("background")
+            .is_some());
+    }
+
+    #[test]
+    fn task_background_creates_child_admits_prompt_and_injects_completion() {
+        background::reset_for_tests();
+        let (pool, root, _db) = task_pool();
+        let conn = pool.get().expect("conn");
+        let directory = root.to_string_lossy().into_owned();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id: "ses_taskparent000000000000000000",
+            project_id: "proj_test",
+            conn: &conn,
+            pool: Some(&pool),
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_assistant"),
+            call_id: Some("call_task"),
+        };
+
+        let settlement = execute(
+            &tool_env,
+            "task",
+            &json!({
+                "description": "inspect bug",
+                "prompt": "look into the cache key path",
+                "subagent_type": "general",
+                "background": true
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(settlement.content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("state=\"running\""));
+        let child_id = settlement.structured["metadata"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(child_id, tool_env.session_id);
+
+        let child_parent: String = conn
+            .query_row(
+                "SELECT parent_id FROM session WHERE id = ?",
+                [&child_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_parent, tool_env.session_id);
+        let admitted_child: String = conn
+            .query_row(
+                "SELECT prompt FROM session_input WHERE session_id = ? ORDER BY admitted_seq ASC LIMIT 1",
+                [&child_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(admitted_child.contains("look into the cache key path"));
+
+        let waited = background::wait(&child_id, Some(Duration::from_secs(5)));
+        assert!(!waited.timed_out);
+        assert_eq!(waited.info.unwrap().status, background::Status::Error);
+        let mut parent_notice = None;
+        for _ in 0..100 {
+            parent_notice = conn
+                .query_row(
+                    "SELECT prompt FROM session_input WHERE session_id = ? AND prompt LIKE '%Background task failed%' ORDER BY admitted_seq DESC LIMIT 1",
+                    [tool_env.session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if parent_notice.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let parent_notice = parent_notice.expect("parent completion admission");
+        assert!(parent_notice.contains(&child_id));
+        let _ = std::fs::remove_dir_all(&root);
+        background::reset_for_tests();
+    }
+
+    #[test]
+    fn write_and_edit_round_trip() {
+        let conn = memory_conn();
+        let temp = std::env::temp_dir().join(format!("rust-tool-test-{}", std::process::id()));
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "write",
+            &json!({ "path": "notes.txt", "content": "alpha\nbeta\n" }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert_eq!(settlement.structured["operation"], "write");
+        assert_eq!(settlement.structured["existed"], false);
+        assert!(settlement.content[0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("Created file successfully"));
+
+        let settlement = execute(
+            &tool_env,
+            "edit",
+            &json!({ "path": "notes.txt", "oldString": "beta", "newString": "gamma" }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert_eq!(settlement.structured["replacements"], 1);
+        assert_eq!(settlement.structured["files"][0]["additions"], 1);
+        assert_eq!(settlement.structured["files"][0]["deletions"], 1);
+        let patch = settlement.structured["files"][0]["patch"].as_str().unwrap();
+        assert!(patch.contains("-beta"));
+        assert!(patch.contains("+gamma"));
+        assert_eq!(
+            std::fs::read_to_string(temp.join("notes.txt")).unwrap(),
+            "alpha\ngamma\n"
+        );
+
+        let settlement = execute(
+            &tool_env,
+            "edit",
+            &json!({ "path": "notes.txt", "oldString": "missing", "newString": "x" }),
+        );
+        assert!(settlement
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("Could not find oldString"));
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_add_update_delete_round_trip() {
+        let conn = memory_conn();
+        let temp =
+            std::env::temp_dir().join(format!("rust-apply-patch-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        std::fs::write(temp.join("update.txt"), "before\n").expect("update");
+        std::fs::write(temp.join("remove.txt"), "remove\n").expect("remove");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({
+                "patchText": "*** Begin Patch\n*** Add File: nested/new.txt\n+created\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: remove.txt\n*** End Patch"
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert_eq!(
+            settlement.content[0]["text"].as_str().unwrap(),
+            "Applied patch sequentially:\nA nested/new.txt\nM update.txt\nD remove.txt"
+        );
+        assert_eq!(settlement.structured["applied"][0]["type"], "add");
+        assert_eq!(settlement.structured["files"][0]["status"], "added");
+        assert_eq!(settlement.structured["files"][1]["additions"], 1);
+        assert_eq!(settlement.structured["files"][1]["deletions"], 1);
+        assert!(settlement.structured["files"][1]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("-before\n+after"));
+        assert_eq!(
+            std::fs::read_to_string(temp.join("nested/new.txt")).unwrap(),
+            "created\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.join("update.txt")).unwrap(),
+            "after\n"
+        );
+        assert!(!temp.join("remove.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_rejects_invalid_later_update_before_applying_add() {
+        let conn = memory_conn();
+        let temp = std::env::temp_dir().join(format!(
+            "rust-apply-patch-prepare-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({
+                "patchText": "*** Begin Patch\n*** Add File: created.txt\n+created\n*** Update File: missing.txt\n@@\n-before\n+after\n*** End Patch"
+            }),
+        );
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Unable to apply patch at missing.txt")
+        );
+        assert!(!temp.join("created.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_uses_edit_permission_alias() {
+        let conn = memory_conn();
+        let temp = std::env::temp_dir().join(format!(
+            "rust-apply-patch-permission-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.agent = "plan";
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({ "patchText": "*** Begin Patch\n*** Add File: created.txt\n+created\n*** End Patch" }),
+        );
+        assert_eq!(settlement.error.as_deref(), Some("Unable to apply patch"));
+        assert!(!temp.join("created.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn bash_interrupt_terminates_child_process_group() {
+        let temp =
+            std::env::temp_dir().join(format!("rust-bash-interrupt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let token = InterruptToken::new();
+        let thread_token = token.clone();
+        let thread_directory = directory.clone();
+        let handle = std::thread::spawn(move || {
+            let conn = memory_conn();
+            let mut tool_env = env(&conn, &thread_directory);
+            tool_env.worktree = &thread_directory;
+            tool_env.interrupt = Some(&thread_token);
+            execute(
+                &tool_env,
+                "bash",
+                &json!({
+                    "command": "printf started > started && sleep 5 && printf done > done",
+                    "timeout": 10_000
+                }),
+            )
+        });
+        for _ in 0..200 {
+            if temp.join("started").exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(temp.join("started").exists());
+        token.interrupt();
+        let settlement = handle.join().expect("bash thread");
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(!temp.join("done").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn todowrite_replaces_rows() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "todowrite",
+            &json!({ "todos": [
+                { "content": "first", "status": "in_progress", "priority": "high" },
+                { "content": "second", "status": "pending", "priority": "medium" }
+            ]}),
+        );
+        assert!(settlement.error.is_none());
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM todo", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 2);
+        let status: String = conn
+            .query_row("SELECT status FROM todo WHERE position = 0", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(status, "in_progress");
+    }
+
+    #[test]
+    fn skill_loads_project_skill() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "skill",
+            &json!({ "name": "effect" }),
+        );
+        assert!(settlement.error.is_none());
+        let output = settlement.structured["output"].as_str().unwrap();
+        assert!(output.starts_with("<skill_content name=\"effect\">"));
+        assert!(output.contains("Base directory for this skill:"));
+    }
+
+    #[test]
+    fn html_to_text_strips_markup() {
+        let text = html_to_text("<html><head><style>x{}</style></head><body><h1>Title</h1><p>Hello &amp; bye</p><script>alert(1)</script></body></html>");
+        assert!(text.contains("Title"));
+        assert!(text.contains("Hello & bye"));
+        assert!(!text.contains("alert"));
+    }
+
+    #[test]
+    fn diff_lines_counts_and_hunks() {
+        let (additions, deletions, patch) = diff_lines("f.txt", "a\nb\nc\n", "a\nx\nc\n");
+        assert_eq!((additions, deletions), (1, 1));
+        assert!(patch.starts_with("Index: f.txt\n==="));
+        assert!(patch.contains("@@ -1,3 +1,3 @@"));
+        assert!(patch.contains("-b\n+x"));
+    }
+}

@@ -1,0 +1,25 @@
+[package]
+name = "opencode-tui"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rust TUI client for OpenCode, built on ratatui + crossterm"
+
+[lib]
+name = "opencode_tui"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opencode-tui"
+path = "src/main.rs"
+
+[dependencies]
+# ratatui + crossterm are the Rust ecosystem's specialized terminal-interface
+# stack, the counterpart of the TS TUI's OpenTUI renderer + keymap.
+ratatui = "0.29"
+crossterm = "0.28"
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+ureq = "2"
+base64 = "0.22"
+unicode-width = "0.2.0"
+unicode-segmentation = "1.13.3"

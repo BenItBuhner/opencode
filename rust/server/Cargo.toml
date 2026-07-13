@@ -1,0 +1,37 @@
+[package]
+name = "opencode-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "Rust port of the OpenCode session HTTP surface, sharing the SQLite store with the Bun server"
+
+[lib]
+name = "opencode_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "opencode-server"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["ws"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "macros", "signal"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.25"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
+rand = "0.8"
+ureq = "2"
+sha1 = "0.10"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+ignore = "0.4.27"
+base64 = "0.22"
+opengoal-daemon = { path = "../daemon" }
+uuid = { version = "1", features = ["v4"] }
+portable-pty = "0.9.0"
+thiserror = "2.0.18"
+
+[dev-dependencies]
+tokio-tungstenite = "0.30.0"

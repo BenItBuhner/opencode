@@ -1,0 +1,16 @@
+[package]
+name = "opengoal-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+description = "OpenGoal Rust client: auto-starts the background server and launches the TUI"
+
+[[bin]]
+name = "opengoal-rust"
+path = "src/main.rs"
+
+[dependencies]
+opengoal-daemon = { path = "../daemon" }
+opencode-server = { path = "../server" }
+opencode-tui = { path = "../tui" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
