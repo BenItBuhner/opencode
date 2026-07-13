@@ -18,9 +18,11 @@ mod file;
 mod float_check;
 mod identifier;
 mod message;
+mod permission_v2;
 mod project;
 mod provider;
 pub mod pty;
+mod question_v2;
 mod runner;
 mod session;
 mod slug;
@@ -55,6 +57,8 @@ struct App {
     paths: config::Paths,
     pty: pty::Registry,
     pty_tickets: pty::TicketRegistry,
+    permissions: permission_v2::Registry,
+    questions: question_v2::Registry,
 }
 
 struct Failure(StatusCode, String);
@@ -276,6 +280,7 @@ fn remove_session(app: &App, id: &str) -> Result<(), Failure> {
     let Some(info) = session::get(&conn, id)? else {
         return Ok(());
     };
+    runner::background::cancel_task_tree(id);
     for child in session::children(&conn, id)? {
         remove_session(app, &child.id)?;
     }
@@ -303,6 +308,27 @@ async fn session_status(State(app): State<App>) -> Result<Json<Value>, Failure> 
     // server returns an empty object in the same idle state.
     let _ = app;
     Ok(Json(json!({})))
+}
+
+async fn experimental_session_background(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, Failure> {
+    {
+        let conn = app.pool.get()?;
+        require_session(&conn, &id)?;
+    }
+    let promoted = runner::background::list()
+        .into_iter()
+        .filter(|job| {
+            job.kind == "task"
+                && job.status == runner::background::Status::Running
+                && job.metadata.get("parentSessionId").and_then(Value::as_str) == Some(id.as_str())
+                && !runner::background::is_promoted(job)
+        })
+        .filter_map(|job| runner::background::promote(&job.id))
+        .count();
+    Ok(Json(Value::Bool(promoted > 0)))
 }
 
 async fn event_stream(
@@ -2084,6 +2110,10 @@ async fn api_session_prompt(
                     runner::Env {
                         pool: app.pool.clone(),
                         worktree: app.worktree.clone(),
+                        project_id: app.project_id.clone(),
+                        bus: app.bus.clone(),
+                        permissions: app.permissions.clone(),
+                        questions: app.questions.clone(),
                     },
                     id.clone(),
                 );
@@ -2642,6 +2672,313 @@ async fn api_pty_connect(
     })
 }
 
+// ---------------------------------------------------------------------------
+// /api/permission + /api/session/{id}/permission — v2 permission surface
+// ---------------------------------------------------------------------------
+
+fn permission_not_found(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "_tag": "PermissionNotFoundError",
+            "requestID": id,
+            "message": format!("Permission request not found: {id}"),
+        })),
+    )
+        .into_response()
+}
+
+fn question_not_found(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "_tag": "QuestionNotFoundError",
+            "requestID": id,
+            "message": format!("Question request not found: {id}"),
+        })),
+    )
+        .into_response()
+}
+
+async fn api_permission_request_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Response {
+    let items: Vec<Value> = app
+        .permissions
+        .list()
+        .iter()
+        .map(permission_v2::request_json)
+        .collect();
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(items),
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ApiPermissionSavedQuery {
+    #[serde(rename = "projectID")]
+    project_id: Option<String>,
+}
+
+async fn api_permission_saved_list(
+    State(app): State<App>,
+    Query(query): Query<ApiPermissionSavedQuery>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    let project = query.project_id.unwrap_or_else(|| app.project_id.clone());
+    let rows = permission_v2::saved_list(&conn, Some(&project))?;
+    let data: Vec<Value> = rows.iter().map(permission_v2::saved_json).collect();
+    Ok(Json(json!({ "data": data })).into_response())
+}
+
+async fn api_permission_saved_remove(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    permission_v2::saved_remove(&conn, &id)?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+async fn api_session_permission_list(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let data: Vec<Value> = app
+        .permissions
+        .for_session(&id)
+        .iter()
+        .map(permission_v2::request_json)
+        .collect();
+    Ok(Json(json!({ "data": data })).into_response())
+}
+
+async fn api_session_permission_get(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(request) = app.permissions.get(&request_id) else {
+        return Ok(permission_not_found(&request_id));
+    };
+    if request.session_id != id {
+        return Ok(permission_not_found(&request_id));
+    }
+    Ok(Json(json!({ "data": permission_v2::request_json(&request) })).into_response())
+}
+
+#[derive(Deserialize)]
+struct ApiPermissionCreatePayload {
+    id: Option<String>,
+    action: String,
+    #[serde(default)]
+    resources: Vec<String>,
+    #[serde(default)]
+    save: Option<Vec<String>>,
+    #[serde(default)]
+    metadata: Option<Value>,
+    #[serde(default)]
+    source: Option<Value>,
+    #[serde(default)]
+    agent: Option<String>,
+}
+
+async fn api_session_permission_create(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Json(payload): Json<ApiPermissionCreatePayload>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let outcome = permission_v2::ask(
+        &permission_v2::Env {
+            bus: &app.bus,
+            conn: &conn,
+            project_id: &app.project_id,
+            registry: &app.permissions,
+        },
+        &permission_v2::AssertInput {
+            id: payload.id,
+            session_id: id.clone(),
+            action: payload.action,
+            resources: payload.resources,
+            save: payload.save,
+            metadata: payload.metadata,
+            source: payload.source,
+            agent: payload.agent,
+        },
+    )
+    .map_err(|error| match error {
+        permission_v2::ApiError::NotFound { request_id } => Failure(
+            StatusCode::CONFLICT,
+            format!("Duplicate pending permission ID: {request_id}"),
+        ),
+    })?;
+    Ok(
+        Json(json!({ "data": permission_v2::ask_result_json(&outcome.id, outcome.effect) }))
+            .into_response(),
+    )
+}
+
+#[derive(Deserialize)]
+struct ApiPermissionReplyPayload {
+    reply: String,
+    #[serde(default)]
+    message: Option<String>,
+}
+
+async fn api_session_permission_reply(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+    Json(payload): Json<ApiPermissionReplyPayload>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(request) = app.permissions.get(&request_id) else {
+        return Ok(permission_not_found(&request_id));
+    };
+    if request.session_id != id {
+        return Ok(permission_not_found(&request_id));
+    }
+    let reply = match payload.reply.as_str() {
+        "once" => permission_v2::Reply::Once,
+        "always" => permission_v2::Reply::Always,
+        "reject" => permission_v2::Reply::Reject(payload.message),
+        other => {
+            return Err(Failure(
+                StatusCode::BAD_REQUEST,
+                format!("invalid reply: {other}"),
+            ));
+        }
+    };
+    match permission_v2::reply(
+        &permission_v2::Env {
+            bus: &app.bus,
+            conn: &conn,
+            project_id: &app.project_id,
+            registry: &app.permissions,
+        },
+        &request_id,
+        reply,
+    ) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(permission_v2::ApiError::NotFound { .. }) => Ok(permission_not_found(&request_id)),
+    }
+}
+
+async fn api_question_request_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Response {
+    let items: Vec<Value> = app
+        .questions
+        .list()
+        .iter()
+        .map(question_v2::request_json)
+        .collect();
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(items),
+    ))
+    .into_response()
+}
+
+async fn api_session_question_list(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let data: Vec<Value> = app
+        .questions
+        .for_session(&id)
+        .iter()
+        .map(question_v2::request_json)
+        .collect();
+    Ok(Json(json!({ "data": data })).into_response())
+}
+
+#[derive(Deserialize)]
+struct ApiQuestionReplyPayload {
+    answers: Vec<Vec<String>>,
+}
+
+async fn api_session_question_reply(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+    Json(payload): Json<ApiQuestionReplyPayload>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(request) = app.questions.get(&request_id) else {
+        return Ok(question_not_found(&request_id));
+    };
+    if request.session_id != id {
+        return Ok(question_not_found(&request_id));
+    }
+    match question_v2::reply(
+        &question_v2::Env {
+            bus: &app.bus,
+            registry: &app.questions,
+        },
+        &request_id,
+        payload.answers,
+    ) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(question_v2::ApiError::NotFound { .. }) => Ok(question_not_found(&request_id)),
+    }
+}
+
+async fn api_session_question_reject(
+    State(app): State<App>,
+    Path((id, request_id)): Path<(String, String)>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    let Some(request) = app.questions.get(&request_id) else {
+        return Ok(question_not_found(&request_id));
+    };
+    if request.session_id != id {
+        return Ok(question_not_found(&request_id));
+    }
+    match question_v2::reject(
+        &question_v2::Env {
+            bus: &app.bus,
+            registry: &app.questions,
+        },
+        &request_id,
+    ) {
+        Ok(()) => Ok(StatusCode::NO_CONTENT.into_response()),
+        Err(question_v2::ApiError::NotFound { .. }) => Ok(question_not_found(&request_id)),
+    }
+}
+
 async fn api_session_wait(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -2778,6 +3115,8 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         paths: config::paths(),
         pty: pty::Registry::new(bus),
         pty_tickets: pty::TicketRegistry::default(),
+        permissions: permission_v2::Registry::new(),
+        questions: question_v2::Registry::new(),
     };
 
     let auth = auth::ServerAuth {
@@ -2843,6 +3182,10 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/session/{id}/todo", get(session_todo))
         .route("/session/{id}/message", get(session_messages))
         .route("/session/{id}/message/{message_id}", get(session_message))
+        .route(
+            "/experimental/session/{id}/background",
+            post(experimental_session_background),
+        )
         .route("/project", get(project_list))
         .route("/project/current", get(project_current))
         .route("/event", get(event_stream))
@@ -2884,6 +3227,34 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/api/session/{id}/wait", post(api_session_wait))
         .route("/api/session/{id}/agent", post(api_session_switch_agent))
         .route("/api/session/{id}/model", post(api_session_switch_model))
+        .route("/api/permission/request", get(api_permission_request_list))
+        .route("/api/permission/saved", get(api_permission_saved_list))
+        .route(
+            "/api/permission/saved/{id}",
+            axum::routing::delete(api_permission_saved_remove),
+        )
+        .route(
+            "/api/session/{id}/permission",
+            get(api_session_permission_list).post(api_session_permission_create),
+        )
+        .route(
+            "/api/session/{id}/permission/{request_id}",
+            get(api_session_permission_get),
+        )
+        .route(
+            "/api/session/{id}/permission/{request_id}/reply",
+            post(api_session_permission_reply),
+        )
+        .route("/api/question/request", get(api_question_request_list))
+        .route("/api/session/{id}/question", get(api_session_question_list))
+        .route(
+            "/api/session/{id}/question/{request_id}/reply",
+            post(api_session_question_reply),
+        )
+        .route(
+            "/api/session/{id}/question/{request_id}/reject",
+            post(api_session_question_reject),
+        )
         .route("/api/pty", get(api_pty_list).post(api_pty_create))
         .route(
             "/api/pty/{id}",
@@ -3008,6 +3379,8 @@ mod tests {
             },
             pty: crate::pty::Registry::new(bus),
             pty_tickets: crate::pty::TicketRegistry::default(),
+            permissions: crate::permission_v2::Registry::new(),
+            questions: crate::question_v2::Registry::new(),
         };
         let query = ApiLocationQuery {
             location_directory: None,

@@ -10,6 +10,7 @@
 //! event + projection transactions the Bun server uses, so either server can
 //! continue a Session the other started.
 
+pub mod background;
 pub mod context;
 pub mod goal;
 pub mod llm;
@@ -28,12 +29,16 @@ use std::sync::{
     Arc, Mutex,
 };
 
-type Pool = r2d2::Pool<SqliteConnectionManager>;
+pub(crate) type Pool = r2d2::Pool<SqliteConnectionManager>;
 
 #[derive(Clone)]
 pub struct Env {
     pub pool: Pool,
     pub worktree: String,
+    pub project_id: String,
+    pub bus: crate::bus::Bus,
+    pub permissions: crate::permission_v2::Registry,
+    pub questions: crate::question_v2::Registry,
 }
 
 /// Guard against unbounded tool loops on free models; the Bun runner bounds
@@ -116,7 +121,7 @@ fn schedule(env: Env, session_id: String, force: bool) {
     if joined {
         return;
     }
-    tokio::spawn(async move {
+    let task = async move {
         let mut next_force = force;
         loop {
             let run_env = env.clone();
@@ -150,7 +155,23 @@ fn schedule(env: Env, session_id: String, force: bool) {
             }
             next_force = false;
         }
-    });
+    };
+    match tokio::runtime::Handle::try_current() {
+        Ok(handle) => {
+            handle.spawn(task);
+        }
+        Err(_) => {
+            std::thread::spawn(move || {
+                let Ok(runtime) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                else {
+                    return;
+                };
+                runtime.block_on(task);
+            });
+        }
+    }
 }
 
 fn now() -> i64 {
@@ -483,8 +504,15 @@ fn run_turn(
                         worktree: &worktree,
                         agent: &agent,
                         session_id,
+                        project_id: &env.project_id,
                         conn,
+                        pool: Some(&env.pool),
                         interrupt: Some(interrupt),
+                        bus: Some(&env.bus),
+                        permissions: Some(&env.permissions),
+                        questions: Some(&env.questions),
+                        message_id: Some(&assistant_id),
+                        call_id: Some(id),
                     },
                     name,
                     &input,

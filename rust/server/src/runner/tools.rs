@@ -12,13 +12,16 @@
 //! feeding a synthetic permission failure back to the model. Interactive tools
 //! (question) and provider-backed tools (websearch) remain with the Bun runner.
 
+use crate::runner::background;
 use crate::runner::permission;
+use crate::runner::Env as RunnerEnv;
 use crate::runner::InterruptToken;
 use serde_json::{json, Map, Value};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Child;
+use std::time::Duration;
 
 pub struct Settlement {
     pub structured: Value,
@@ -32,8 +35,15 @@ pub struct ToolEnv<'a> {
     pub worktree: &'a str,
     pub agent: &'a str,
     pub session_id: &'a str,
+    pub project_id: &'a str,
     pub conn: &'a rusqlite::Connection,
+    pub pool: Option<&'a crate::runner::Pool>,
     pub interrupt: Option<&'a InterruptToken>,
+    pub bus: Option<&'a crate::bus::Bus>,
+    pub permissions: Option<&'a crate::permission_v2::Registry>,
+    pub questions: Option<&'a crate::question_v2::Registry>,
+    pub message_id: Option<&'a str>,
+    pub call_id: Option<&'a str>,
 }
 
 const MAX_READ_LINES: usize = 2_000;
@@ -182,6 +192,28 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "task",
+                "description": "Launch a specialized subagent in a child session. Use foreground mode when the result is needed before continuing, or background=true for independent work that can finish later and notify this session.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "description": { "type": "string", "description": "A short (3-5 words) description of the task" },
+                        "prompt": { "type": "string", "description": "The task for the agent to perform" },
+                        "subagent_type": { "type": "string", "description": "The type of specialized agent to use for this task" },
+                        "background": { "type": "boolean", "description": "Run the agent in the background. You will be notified when it completes. Do not poll for progress." },
+                        "task_id": { "type": "string", "description": "A prior child session id to resume instead of creating a fresh task" },
+                        "command": { "type": "string", "description": "The command that triggered this task" },
+                        "goal_mode": { "type": "boolean", "description": "Enable goal-mode harness behavior for this child session" },
+                        "goal": { "type": "string", "description": "Optional child-specific goal text for goal_mode" }
+                    },
+                    "required": ["description", "prompt", "subagent_type"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "todowrite",
                 "description": "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
                 "parameters": {
@@ -226,6 +258,49 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "question",
+                "description": "Ask the user one or more multiple-choice questions and wait for their reply. Use ONLY when a decision materially changes the plan and cannot be made confidently from context; keep the wording concise and provide clear labelled options.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "questions": {
+                            "type": "array",
+                            "description": "One or more questions to ask the user",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "question": { "type": "string", "description": "Complete question" },
+                                    "header": { "type": "string", "description": "Very short label (max 30 chars)" },
+                                    "options": {
+                                        "type": "array",
+                                        "description": "Available choices",
+                                        "items": {
+                                            "type": "object",
+                                            "properties": {
+                                                "label": { "type": "string", "description": "Display text (1-5 words, concise)" },
+                                                "description": { "type": "string", "description": "Explanation of choice" }
+                                            },
+                                            "required": ["label", "description"],
+                                            "additionalProperties": false
+                                        }
+                                    },
+                                    "multiple": { "type": "boolean", "description": "Allow selecting multiple choices" },
+                                    "custom": { "type": "boolean", "description": "Allow typing a custom answer (default: true)" }
+                                },
+                                "required": ["question", "header", "options"],
+                                "additionalProperties": false
+                            }
+                        },
+                        "timeout": { "type": "number", "description": "Timeout in seconds (default 300, max 600)" }
+                    },
+                    "required": ["questions"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "webfetch",
                 "description": "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML. Markdown is the default.\n\nUse a more targeted tool when one is available. This tool is read-only. Large text results may be replaced with a preview while the complete output is retained in managed storage.",
                 "parameters": {
@@ -244,16 +319,101 @@ pub fn definitions() -> Vec<Value> {
 }
 
 pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
-    let session = permission::session_rules(env.conn, env.session_id);
+    let session_rules = permission::session_rules(env.conn, env.session_id);
     let resources = permission_resources(env, name, input);
     let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
-    match permission::evaluate_with(env.agent, &session, permission_action(name), &resource_refs) {
-        permission::Effect::Allow => {}
-        permission::Effect::Deny => {
-            return failure(denied_message(name, input));
+    let evaluated = if let Some(registry_bus) = env.bus.zip(env.permissions) {
+        // Full ask/reply flow when the tool is running under the live runner.
+        let (bus, registry) = registry_bus;
+        crate::permission_v2::evaluate_input(
+            env.conn,
+            env.project_id,
+            env.session_id,
+            env.agent,
+            permission_action(name),
+            &resource_refs,
+        );
+        match permission::evaluate_with(
+            env.agent,
+            &session_rules,
+            permission_action(name),
+            &resource_refs,
+        ) {
+            permission::Effect::Allow => {}
+            permission::Effect::Deny => return failure(denied_message(name, input)),
+            permission::Effect::Ask => {
+                let source = env
+                    .message_id
+                    .zip(env.call_id)
+                    .map(|(message_id, call_id)| {
+                        json!({
+                            "type": "tool",
+                            "messageID": message_id,
+                            "callID": call_id,
+                        })
+                    });
+                let ask_env = crate::permission_v2::Env {
+                    bus,
+                    conn: env.conn,
+                    project_id: env.project_id,
+                    registry,
+                };
+                let ask_result = crate::permission_v2::ask(
+                    &ask_env,
+                    &crate::permission_v2::AssertInput {
+                        id: None,
+                        session_id: env.session_id.to_string(),
+                        action: permission_action(name).to_string(),
+                        resources: resources.clone(),
+                        save: Some(resources.clone()),
+                        metadata: None,
+                        source,
+                        agent: Some(env.agent.to_string()),
+                    },
+                );
+                match ask_result {
+                    Ok(outcome) => match outcome.wait {
+                        None if outcome.effect == "allow" => {}
+                        None => return failure(denied_message(name, input)),
+                        Some(rx) => {
+                            let interrupt_token = env.interrupt.cloned();
+                            let resolution = crate::permission_v2::wait_for(rx, move || {
+                                interrupt_token
+                                    .as_ref()
+                                    .is_some_and(|token| token.is_interrupted())
+                            });
+                            match resolution {
+                                crate::permission_v2::Resolution::Allowed => {}
+                                crate::permission_v2::Resolution::Declined => {
+                                    return failure(denied_message(name, input));
+                                }
+                                crate::permission_v2::Resolution::Corrected(feedback) => {
+                                    return failure(feedback);
+                                }
+                            }
+                        }
+                    },
+                    Err(_) => return failure(denied_message(name, input)),
+                }
+            }
         }
-        permission::Effect::Ask => return interrupted(),
-    }
+        true
+    } else {
+        // Legacy path (tool-registry unit tests without a live runner):
+        // preserve historical `ask -> interrupt` behavior.
+        match permission::evaluate_with(
+            env.agent,
+            &session_rules,
+            permission_action(name),
+            &resource_refs,
+        ) {
+            permission::Effect::Allow => {}
+            permission::Effect::Deny => return failure(denied_message(name, input)),
+            permission::Effect::Ask => return interrupted(),
+        }
+        true
+    };
+    let _ = evaluated;
     if name.starts_with("goal_") {
         let outcome = crate::runner::goal::execute(env.conn, env.session_id, name, input);
         if let Some(message) = outcome.error {
@@ -274,9 +434,11 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
         "edit" => edit(env, input),
         "write" => write(env, input),
         "apply_patch" => apply_patch(env, input),
+        "task" => task(env, input),
         "todowrite" => todowrite(env, input),
         "skill" => skill(env.worktree, input),
         "webfetch" => webfetch(input),
+        "question" => question(env, input),
         other => failure(format!("Unknown tool: {other}")),
     }
 }
@@ -321,8 +483,10 @@ fn permission_resources(env: &ToolEnv, name: &str, input: &Value) -> Vec<String>
             .unwrap_or_else(|_| vec!["*".to_string()]),
         "grep" | "glob" => vec![text("pattern")],
         "read" => vec![text("path")],
+        "task" => vec![text("subagent_type")],
         "skill" => vec![text("name")],
         "webfetch" => vec![text("url")],
+        "question" => vec!["*".to_string()],
         _ => vec!["*".to_string()],
     }
 }
@@ -340,9 +504,11 @@ fn denied_message(name: &str, input: &Value) -> String {
         "read" => format!("Unable to read {}", text("path")),
         "glob" => format!("Unable to find files matching {}", text("pattern")),
         "grep" => format!("Unable to search for {}", text("pattern")),
+        "task" => format!("Unable to run task with {}", text("subagent_type")),
         "todowrite" => "Unable to update todos".to_string(),
         "skill" => format!("Unable to load skill {}", text("name")),
         "webfetch" => format!("Unable to fetch {}", text("url")),
+        "question" => "Unable to ask question".to_string(),
         other => format!("Unable to run {other}"),
     }
 }
@@ -1780,6 +1946,471 @@ fn strip_heredoc(input: &str) -> &str {
 }
 
 // ---------------------------------------------------------------------------
+// task
+// ---------------------------------------------------------------------------
+
+const BACKGROUND_STARTED: &str = "The task is working in the background. You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you launched and end your response.";
+const BACKGROUND_UPDATED: &str = "Additional context sent to the running background task.\nThe task is still working in the background. You will be notified automatically when it finishes.\nDO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.\nWork on non-overlapping tasks, or briefly tell the user what you sent and end your response.";
+
+fn task(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(pool) = env.pool.cloned() else {
+        return failure("Task tool requires the session runner".into());
+    };
+    let Some(description) = input.get("description").and_then(Value::as_str) else {
+        return failure("Invalid tool input: description is required".into());
+    };
+    let Some(prompt) = input.get("prompt").and_then(Value::as_str) else {
+        return failure("Invalid tool input: prompt is required".into());
+    };
+    let Some(agent) = input.get("subagent_type").and_then(Value::as_str) else {
+        return failure("Invalid tool input: subagent_type is required".into());
+    };
+    if !is_subagent(env.worktree, env.directory, agent) {
+        return failure(format!(
+            "Unknown agent type: {agent} is not a valid agent type"
+        ));
+    }
+
+    let child_id = match input.get("task_id").and_then(Value::as_str) {
+        Some(task_id) => task_id.to_string(),
+        None => match create_child_session(&pool, env.session_id, description, agent) {
+            Ok(id) => id,
+            Err(message) => return failure(message),
+        },
+    };
+    if let Err(message) = ensure_child_session(&pool, env.session_id, &child_id, description, agent)
+    {
+        return failure(message);
+    }
+    if let Err(message) = admit_child_prompt(&pool, &child_id, prompt) {
+        return failure(message);
+    }
+
+    let (Some(bus), Some(permissions), Some(questions)) = (
+        env.bus.cloned(),
+        env.permissions.cloned(),
+        env.questions.cloned(),
+    ) else {
+        return failure("Task tool requires the session runner".into());
+    };
+    let runner_env = RunnerEnv {
+        pool: pool.clone(),
+        worktree: env.worktree.to_string(),
+        project_id: env.project_id.to_string(),
+        bus,
+        permissions,
+        questions,
+    };
+    crate::runner::wake(runner_env.clone(), child_id.clone());
+
+    let metadata = background::metadata(&[
+        ("parentSessionId", json!(env.session_id)),
+        ("sessionId", json!(child_id)),
+        ("model", parent_model(env.conn, env.session_id)),
+    ]);
+
+    if background::extend(&child_id) {
+        let _ = background::promote(&child_id);
+        return task_running(
+            description,
+            &child_id,
+            "Background task updated",
+            BACKGROUND_UPDATED,
+        );
+    }
+
+    let parent_id = env.session_id.to_string();
+    let parent_runner_env = runner_env.clone();
+    let task_description = description.to_string();
+    let job_id = child_id.clone();
+    let run_pool = pool.clone();
+    let complete_pool = pool.clone();
+    let start_info = background::start(background::StartInput {
+        id: child_id.clone(),
+        kind: "task".into(),
+        title: Some(description.to_string()),
+        metadata,
+        run: Box::new(move |control| run_child_task(&run_pool, runner_env, &job_id, control)),
+        on_complete: Some(Box::new(move |info| {
+            if !background::is_promoted(&info) {
+                return;
+            }
+            let state = match info.status {
+                background::Status::Completed => "completed",
+                background::Status::Error => "error",
+                background::Status::Cancelled => "error",
+                background::Status::Running => return,
+            };
+            let text = info
+                .output
+                .clone()
+                .or(info.error.clone())
+                .unwrap_or_else(|| "Task cancelled".into());
+            inject_task_result(
+                &complete_pool,
+                parent_runner_env.clone(),
+                &parent_id,
+                &info.id,
+                state,
+                &task_description,
+                &text,
+            );
+        })),
+        on_cancel: Some(Box::new({
+            let child_id = child_id.clone();
+            move || crate::runner::interrupt(&child_id)
+        })),
+    });
+
+    if input
+        .get("background")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        let _ = background::promote(&child_id);
+        return task_running(
+            description,
+            &child_id,
+            "Background task started",
+            BACKGROUND_STARTED,
+        );
+    }
+
+    if start_info.status != background::Status::Running {
+        return task_finished(description, &start_info);
+    }
+    match background::wait_done_or_promoted(&child_id) {
+        Some(info)
+            if background::is_promoted(&info) && info.status == background::Status::Running =>
+        {
+            task_running(
+                description,
+                &child_id,
+                "Background task started",
+                BACKGROUND_STARTED,
+            )
+        }
+        Some(info) => task_finished(description, &info),
+        None => failure("Task disappeared before completion".into()),
+    }
+}
+
+fn is_subagent(worktree: &str, directory: &str, agent: &str) -> bool {
+    crate::official_agents(
+        worktree,
+        directory,
+        &crate::config::instance(directory, worktree),
+    )
+    .iter()
+    .any(|item| {
+        item.get("id").and_then(Value::as_str) == Some(agent)
+            && item.get("mode").and_then(Value::as_str) == Some("subagent")
+    })
+}
+
+fn create_child_session(
+    pool: &crate::runner::Pool,
+    parent_id: &str,
+    description: &str,
+    agent: &str,
+) -> Result<String, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let parent = parent_session_row(&conn, parent_id)?;
+    let child_id = format!("ses_{}", crate::identifier::descending());
+    let timestamp = now_millis();
+    conn.execute(
+        "INSERT INTO session (id, project_id, workspace_id, parent_id, slug, directory, path, title, \
+         version, metadata, permission, agent, model, cost, tokens_input, tokens_output, tokens_reasoning, \
+         tokens_cache_read, tokens_cache_write, time_created, time_updated) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 0, 0, 0, 0, 0, 0, ?, ?)",
+        rusqlite::params![
+            child_id,
+            parent.project_id,
+            parent.workspace_id,
+            parent_id,
+            crate::slug::create(),
+            parent.directory,
+            parent.path,
+            format!("{description} (@{agent} subagent)"),
+            parent.version,
+            parent.permission,
+            agent,
+            parent.model,
+            timestamp,
+            timestamp,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(child_id)
+}
+
+fn ensure_child_session(
+    pool: &crate::runner::Pool,
+    parent_id: &str,
+    child_id: &str,
+    description: &str,
+    agent: &str,
+) -> Result<(), String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    if crate::v2::get(&conn, child_id)
+        .map_err(|error| error.to_string())?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if child_id.starts_with("ses_") {
+        return Err(format!("Session not found: {child_id}"));
+    }
+    let _ = description;
+    let _ = agent;
+    let _ = parent_id;
+    Err(format!("Session not found: {child_id}"))
+}
+
+struct ParentSessionRow {
+    project_id: String,
+    workspace_id: Option<String>,
+    directory: String,
+    path: Option<String>,
+    version: String,
+    permission: Option<String>,
+    model: Option<String>,
+}
+
+fn parent_session_row(
+    conn: &rusqlite::Connection,
+    parent_id: &str,
+) -> Result<ParentSessionRow, String> {
+    conn.query_row(
+        "SELECT project_id, workspace_id, directory, path, version, permission, model FROM session WHERE id = ?",
+        [parent_id],
+        |row| {
+            Ok(ParentSessionRow {
+                project_id: row.get(0)?,
+                workspace_id: row.get(1)?,
+                directory: row.get(2)?,
+                path: row.get(3)?,
+                version: row.get(4)?,
+                permission: row.get(5)?,
+                model: row.get(6)?,
+            })
+        },
+    )
+    .map_err(|error| match error {
+        rusqlite::Error::QueryReturnedNoRows => format!("Session not found: {parent_id}"),
+        other => other.to_string(),
+    })
+}
+
+fn admit_child_prompt(
+    pool: &crate::runner::Pool,
+    child_id: &str,
+    prompt: &str,
+) -> Result<(), String> {
+    let mut conn = pool.get().map_err(|error| error.to_string())?;
+    crate::v2::admit(
+        &mut conn,
+        child_id,
+        &json!({
+            "id": format!("msg_{}", crate::identifier::ascending()),
+            "prompt": { "text": prompt },
+            "delivery": "steer",
+        }),
+    )
+    .map(|_| ())
+    .map_err(|error| match error {
+        crate::v2::AdmitError::NotFound => format!("Session not found: {child_id}"),
+        crate::v2::AdmitError::Conflict(id) => {
+            format!("Prompt message ID conflicts with an existing durable record: {id}")
+        }
+        crate::v2::AdmitError::BadRequest(message) | crate::v2::AdmitError::Storage(message) => {
+            message
+        }
+    })
+}
+
+fn run_child_task(
+    pool: &crate::runner::Pool,
+    env: RunnerEnv,
+    child_id: &str,
+    control: background::Control,
+) -> Result<String, String> {
+    crate::runner::wake(env, child_id.to_string());
+    while crate::runner::is_active(child_id) {
+        if control.is_cancelled() {
+            crate::runner::interrupt(child_id);
+            return Err("Task cancelled".into());
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    child_task_output(pool, child_id)
+}
+
+fn child_task_output(pool: &crate::runner::Pool, child_id: &str) -> Result<String, String> {
+    let conn = pool.get().map_err(|error| error.to_string())?;
+    let raw: Option<String> = conn
+        .query_row(
+            "SELECT data FROM session_message WHERE session_id = ? AND type = 'assistant' ORDER BY seq DESC LIMIT 1",
+            [child_id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })
+        .map_err(|error| error.to_string())?;
+    let Some(raw) = raw else {
+        return Ok(String::new());
+    };
+    let message: Value = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    if let Some(error) = message
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+    {
+        return Err(error.to_string());
+    }
+    Ok(message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|content| {
+            content.iter().rev().find_map(|part| {
+                (part.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| part.get("text").and_then(Value::as_str).map(str::to_string))
+                    .flatten()
+            })
+        })
+        .unwrap_or_default())
+}
+
+fn parent_model(conn: &rusqlite::Connection, parent_id: &str) -> Value {
+    conn.query_row(
+        "SELECT model FROM session WHERE id = ?",
+        [parent_id],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .ok()
+    .flatten()
+    .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+    .unwrap_or(Value::Null)
+}
+
+fn inject_task_result(
+    pool: &crate::runner::Pool,
+    runner_env: RunnerEnv,
+    parent_id: &str,
+    child_id: &str,
+    state: &str,
+    description: &str,
+    text: &str,
+) {
+    let Ok(mut conn) = pool.get() else {
+        return;
+    };
+    if crate::v2::admit(
+        &mut conn,
+        parent_id,
+        &json!({
+            "id": format!("msg_{}", crate::identifier::ascending()),
+            "prompt": {
+                "text": render_task_output(
+                    child_id,
+                    state,
+                    Some(if state == "completed" {
+                        format!("Background task completed: {description}")
+                    } else {
+                        format!("Background task failed: {description}")
+                    }),
+                    text,
+                )
+            },
+            "delivery": "steer",
+        }),
+    )
+    .is_ok()
+    {
+        crate::runner::wake(runner_env, parent_id.to_string());
+    }
+}
+
+fn task_running(description: &str, child_id: &str, summary: &str, text: &str) -> Settlement {
+    let output = render_task_output(child_id, "running", Some(summary.to_string()), text);
+    success_text(
+        json!({
+            "title": description,
+            "metadata": {
+                "sessionId": child_id,
+                "background": true,
+                "jobId": child_id,
+            },
+            "output": output,
+        }),
+        output,
+    )
+}
+
+fn task_finished(description: &str, info: &background::Info) -> Settlement {
+    match info.status {
+        background::Status::Completed => {
+            let output = render_task_output(
+                &info.id,
+                "completed",
+                None,
+                info.output.as_deref().unwrap_or_default(),
+            );
+            success_text(
+                json!({
+                    "title": description,
+                    "metadata": { "sessionId": info.id },
+                    "output": output,
+                }),
+                output,
+            )
+        }
+        background::Status::Error => {
+            failure(info.error.clone().unwrap_or_else(|| "Task failed".into()))
+        }
+        background::Status::Cancelled => failure("Task cancelled".into()),
+        background::Status::Running => task_running(
+            description,
+            &info.id,
+            "Background task started",
+            BACKGROUND_STARTED,
+        ),
+    }
+}
+
+fn render_task_output(
+    session_id: &str,
+    state: &str,
+    summary: Option<String>,
+    text: &str,
+) -> String {
+    let tag = if state == "error" {
+        "task_error"
+    } else {
+        "task_result"
+    };
+    let mut lines = vec![format!(r#"<task id="{session_id}" state="{state}">"#)];
+    if let Some(summary) = summary {
+        lines.push(format!("<summary>{summary}</summary>"));
+    }
+    lines.push(format!("<{tag}>"));
+    lines.push(text.to_string());
+    lines.push(format!("</{tag}>"));
+    lines.push("</task>".into());
+    lines.join("\n")
+}
+
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock before epoch")
+        .as_millis() as i64
+}
+
+// ---------------------------------------------------------------------------
 // todowrite
 // ---------------------------------------------------------------------------
 
@@ -1947,6 +2578,110 @@ fn webfetch(input: &Value) -> Settlement {
     }
 }
 
+// ---------------------------------------------------------------------------
+// question
+// ---------------------------------------------------------------------------
+
+/// Ask the user one or more multiple-choice questions and wait for the reply.
+/// The tool records a Question request in the process-local registry and
+/// suspends the Rust runner turn (via a bounded blocking wait) until the
+/// client replies, rejects, or the deadline elapses. Cancellation via the
+/// runner InterruptToken settles the tool as interrupted without blocking
+/// other Sessions.
+fn question(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(bus_registry) = env.bus.zip(env.questions) else {
+        return failure("question tool requires the live runner".into());
+    };
+    let (bus, registry) = bus_registry;
+    let Some(questions) = input.get("questions").and_then(Value::as_array) else {
+        return failure("Invalid tool input: questions is required".into());
+    };
+    let mut infos: Vec<crate::question_v2::Info> = Vec::with_capacity(questions.len());
+    for question in questions {
+        let text = question
+            .get("question")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let header = question
+            .get("header")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let options = question
+            .get("options")
+            .and_then(Value::as_array)
+            .map(|options| {
+                options
+                    .iter()
+                    .map(|option| crate::question_v2::QOption {
+                        label: option
+                            .get("label")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                        description: option
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default()
+                            .to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        infos.push(crate::question_v2::Info {
+            question: text,
+            header,
+            options,
+            multiple: question.get("multiple").and_then(Value::as_bool),
+            custom: question.get("custom").and_then(Value::as_bool),
+        });
+    }
+    let timeout = input
+        .get("timeout")
+        .and_then(Value::as_f64)
+        .map(|value| value.round() as u64);
+    let tool = env
+        .message_id
+        .zip(env.call_id)
+        .map(|(message_id, call_id)| crate::question_v2::Tool {
+            message_id: message_id.to_string(),
+            call_id: call_id.to_string(),
+        });
+    let ask_env = crate::question_v2::Env { bus, registry };
+    let outcome = crate::question_v2::ask(
+        &ask_env,
+        &crate::question_v2::AskInput {
+            session_id: env.session_id.to_string(),
+            questions: infos,
+            tool,
+            timeout,
+        },
+    );
+    let interrupt_token = env.interrupt.cloned();
+    match crate::question_v2::wait_for(&ask_env, outcome, move || {
+        interrupt_token
+            .as_ref()
+            .is_some_and(|token| token.is_interrupted())
+    }) {
+        crate::question_v2::Resolution::Rejected => interrupted(),
+        crate::question_v2::Resolution::Answered(answers) => {
+            let structured = json!({ "answers": answers });
+            let text = answers
+                .iter()
+                .map(|answer| answer.join(", "))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Settlement {
+                structured,
+                content: vec![json!({ "type": "text", "text": text })],
+                error: None,
+                interrupt: false,
+            }
+        }
+    }
+}
+
 /// Minimal HTML -> readable text: drops script/style, converts common block
 /// elements to line breaks, and decodes basic entities.
 fn html_to_text(html: &str) -> String {
@@ -2035,8 +2770,15 @@ mod tests {
             worktree: "/workspace",
             agent: "build",
             session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_tooltest",
             conn,
+            pool: None,
             interrupt: None,
+            bus: None,
+            permissions: None,
+            questions: None,
+            message_id: None,
+            call_id: None,
         }
     }
 
@@ -2053,6 +2795,77 @@ mod tests {
         )
         .expect("schema");
         conn
+    }
+
+    fn task_pool() -> (crate::runner::Pool, PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("rust-task-tool-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".git")).expect("worktree");
+        let db = root.join("opencode.db");
+        let manager = r2d2_sqlite::SqliteConnectionManager::file(&db);
+        let pool = r2d2::Pool::new(manager).expect("pool");
+        let conn = pool.get().expect("conn");
+        conn.execute_batch(
+            "CREATE TABLE session (
+               id text PRIMARY KEY, project_id text NOT NULL, workspace_id text, parent_id text,
+               slug text NOT NULL, directory text NOT NULL, path text, title text NOT NULL,
+               version text NOT NULL, share_url text, summary_additions integer,
+               summary_deletions integer, summary_files integer, summary_diffs text,
+               metadata text, cost real NOT NULL DEFAULT 0, tokens_input integer NOT NULL DEFAULT 0,
+               tokens_output integer NOT NULL DEFAULT 0, tokens_reasoning integer NOT NULL DEFAULT 0,
+               tokens_cache_read integer NOT NULL DEFAULT 0, tokens_cache_write integer NOT NULL DEFAULT 0,
+               revert text, permission text, agent text, model text, time_created integer NOT NULL,
+               time_updated integer NOT NULL, time_compacting integer, time_archived integer
+             );
+             CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);
+             CREATE TABLE event (
+               id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL,
+               type text NOT NULL, data text NOT NULL
+             );
+             CREATE TABLE session_input (
+               id text PRIMARY KEY, session_id text NOT NULL, prompt text NOT NULL,
+               delivery text NOT NULL, admitted_seq integer NOT NULL,
+               promoted_seq integer, time_created integer NOT NULL
+             );
+             CREATE TABLE session_message (
+               id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,
+               seq integer NOT NULL, time_created integer NOT NULL,
+               time_updated integer NOT NULL, data text NOT NULL
+             );
+             CREATE TABLE session_context_epoch (
+               session_id text PRIMARY KEY, baseline text NOT NULL, snapshot text NOT NULL,
+               baseline_seq integer NOT NULL
+             );
+             CREATE TABLE todo (
+               session_id text NOT NULL, content text NOT NULL, status text NOT NULL,
+               priority text NOT NULL, position integer NOT NULL,
+               time_created integer NOT NULL, time_updated integer NOT NULL,
+               CONSTRAINT todo_pk PRIMARY KEY(session_id, position)
+             );",
+        )
+        .expect("schema");
+        let timestamp = now_millis();
+        conn.execute(
+            "INSERT INTO session (id, project_id, slug, directory, path, title, version, permission,
+             agent, model, time_created, time_updated) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                "ses_taskparent000000000000000000",
+                "proj_test",
+                "parent",
+                root.to_string_lossy(),
+                "",
+                "Parent",
+                "test",
+                "[]",
+                "build",
+                json!({ "providerID": "test", "id": "model", "variant": "default" }).to_string(),
+                timestamp,
+                timestamp,
+            ],
+        )
+        .expect("parent");
+        drop(conn);
+        (pool, root, db)
     }
 
     #[test]
@@ -2246,6 +3059,99 @@ mod tests {
             webfetch["function"]["parameters"]["properties"]["timeout"]["maximum"],
             120
         );
+        let task = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "task")
+            .unwrap();
+        assert!(task["function"]["parameters"]["properties"]
+            .get("background")
+            .is_some());
+    }
+
+    #[test]
+    fn task_background_creates_child_admits_prompt_and_injects_completion() {
+        background::reset_for_tests();
+        let (pool, root, _db) = task_pool();
+        let conn = pool.get().expect("conn");
+        let directory = root.to_string_lossy().into_owned();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id: "ses_taskparent000000000000000000",
+            project_id: "proj_test",
+            conn: &conn,
+            pool: Some(&pool),
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_assistant"),
+            call_id: Some("call_task"),
+        };
+
+        let settlement = execute(
+            &tool_env,
+            "task",
+            &json!({
+                "description": "inspect bug",
+                "prompt": "look into the cache key path",
+                "subagent_type": "general",
+                "background": true
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(settlement.content[0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("state=\"running\""));
+        let child_id = settlement.structured["metadata"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ne!(child_id, tool_env.session_id);
+
+        let child_parent: String = conn
+            .query_row(
+                "SELECT parent_id FROM session WHERE id = ?",
+                [&child_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(child_parent, tool_env.session_id);
+        let admitted_child: String = conn
+            .query_row(
+                "SELECT prompt FROM session_input WHERE session_id = ? ORDER BY admitted_seq ASC LIMIT 1",
+                [&child_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(admitted_child.contains("look into the cache key path"));
+
+        let waited = background::wait(&child_id, Some(Duration::from_secs(5)));
+        assert!(!waited.timed_out);
+        assert_eq!(waited.info.unwrap().status, background::Status::Error);
+        let mut parent_notice = None;
+        for _ in 0..100 {
+            parent_notice = conn
+                .query_row(
+                    "SELECT prompt FROM session_input WHERE session_id = ? AND prompt LIKE '%Background task failed%' ORDER BY admitted_seq DESC LIMIT 1",
+                    [tool_env.session_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .ok();
+            if parent_notice.is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let parent_notice = parent_notice.expect("parent completion admission");
+        assert!(parent_notice.contains(&child_id));
+        let _ = std::fs::remove_dir_all(&root);
+        background::reset_for_tests();
     }
 
     #[test]
