@@ -1445,8 +1445,7 @@ async fn api_command_list(
                                 include_str!(
                                     "../../../packages/core/src/plugin/command/initialize.txt"
                                 )
-                                .replace("${path}", &scoped.worktree)
-                                .into(),
+                                .replace("${path}", &scoped.worktree),
                             );
                         }
                         Some("review") => {
