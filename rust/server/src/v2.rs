@@ -130,9 +130,17 @@ pub fn parse_cursor(cursor: &str) -> Option<ListQuery> {
     let decoded = b64::decode(cursor)?;
     let parsed: Value = serde_json::from_slice(&decoded).ok()?;
     let anchor = parsed.get("anchor")?;
+    let order = text(&parsed, "order");
+    if !valid_order(order.as_deref()) {
+        return None;
+    }
+    let direction = anchor.get("direction")?.as_str()?.to_string();
+    if !matches!(direction.as_str(), "previous" | "next") {
+        return None;
+    }
     Some(ListQuery {
         workspace: text(&parsed, "workspace"),
-        order: text(&parsed, "order"),
+        order,
         search: text(&parsed, "search"),
         directory: text(&parsed, "directory"),
         project: text(&parsed, "project"),
@@ -140,13 +148,17 @@ pub fn parse_cursor(cursor: &str) -> Option<ListQuery> {
         anchor: Some(Anchor {
             id: anchor.get("id")?.as_str()?.to_string(),
             time: anchor.get("time")?.as_i64()?,
-            direction: anchor.get("direction")?.as_str()?.to_string(),
+            direction,
         }),
     })
 }
 
 fn text(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+pub fn valid_order(order: Option<&str>) -> bool {
+    order.is_none_or(|value| matches!(value, "asc" | "desc"))
 }
 
 /// Cursor payloads mirror `withCursor(...)` field order: workspace, order,
@@ -254,13 +266,14 @@ pub fn list(conn: &Connection, query: &ListQuery, limit: i64) -> rusqlite::Resul
     };
     let previous = rows.first().map(|info| cursor_for(info, "previous"));
     let next = rows.last().map(|info| cursor_for(info, "next"));
-    Ok(json!({
-        "data": rows,
-        "cursor": {
-            "previous": previous.unwrap_or(Value::Null),
-            "next": next.unwrap_or(Value::Null),
-        },
-    }))
+    let mut cursor = Map::new();
+    if let Some(previous) = previous {
+        cursor.insert("previous".into(), previous);
+    }
+    if let Some(next) = next {
+        cursor.insert("next".into(), next);
+    }
+    Ok(json!({ "data": rows, "cursor": cursor }))
 }
 
 // ---------------------------------------------------------------------------
@@ -665,6 +678,57 @@ pub fn history(
     after: Option<i64>,
     limit: i64,
 ) -> rusqlite::Result<Value> {
+    let rows = durable_event_rows(conn, session_id, after.unwrap_or(-1), limit + 1)?;
+    let has_more = rows.len() as i64 > limit;
+    let events: Vec<Value> = rows
+        .into_iter()
+        .take(limit as usize)
+        .filter_map(|(id, seq, versioned_type, data)| {
+            durable_event(&id, session_id, seq, &versioned_type, &data)
+        })
+        .collect();
+    Ok(json!({ "data": events, "hasMore": has_more }))
+}
+
+pub fn durable_events_after(
+    conn: &Connection,
+    session_id: &str,
+    after: i64,
+) -> rusqlite::Result<Vec<Value>> {
+    Ok(durable_event_rows(conn, session_id, after, i64::MAX)?
+        .into_iter()
+        .filter_map(|(id, seq, versioned_type, data)| {
+            durable_event(&id, session_id, seq, &versioned_type, &data)
+        })
+        .collect())
+}
+
+pub fn event_at(conn: &Connection, session_id: &str, seq: i64) -> rusqlite::Result<Option<Value>> {
+    let mut statement = conn.prepare_cached(
+        "SELECT id, seq, type, data FROM event WHERE aggregate_id = ? AND seq = ?",
+    )?;
+    let mut rows = statement.query_map(rusqlite::params![session_id, seq], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, String>(3)?,
+        ))
+    })?;
+    Ok(rows
+        .next()
+        .transpose()?
+        .and_then(|(id, seq, versioned_type, data)| {
+            durable_event(&id, session_id, seq, &versioned_type, &data)
+        }))
+}
+
+fn durable_event_rows(
+    conn: &Connection,
+    session_id: &str,
+    after: i64,
+    limit: i64,
+) -> rusqlite::Result<Vec<(String, i64, String, String)>> {
     let versioned: Vec<String> = DURABLE_MANIFEST
         .iter()
         .map(|(kind, version)| format!("{kind}.{version}"))
@@ -675,40 +739,39 @@ pub fn history(
          WHERE aggregate_id = ? AND seq > ? AND type IN ({placeholders}) \
          ORDER BY seq ASC LIMIT ?"
     );
-    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-        Box::new(session_id.to_string()),
-        Box::new(after.unwrap_or(-1)),
-    ];
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> =
+        vec![Box::new(session_id.to_string()), Box::new(after)];
     for kind in &versioned {
         params.push(Box::new(kind.clone()));
     }
-    params.push(Box::new(limit + 1));
+    params.push(Box::new(limit));
 
     let mut statement = conn.prepare_cached(&sql)?;
-    let rows: Vec<(String, i64, String, String)> = statement
+    let rows = statement
         .query_map(
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )?
         .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
 
-    let has_more = rows.len() as i64 > limit;
-    let events: Vec<Value> = rows
-        .into_iter()
-        .take(limit as usize)
-        .filter_map(|(id, seq, versioned_type, data)| {
-            let (kind, version) = DURABLE_MANIFEST
-                .iter()
-                .find(|(kind, version)| format!("{kind}.{version}") == versioned_type)?;
-            Some(json!({
-                "id": id,
-                "type": kind,
-                "durable": { "aggregateID": session_id, "seq": seq, "version": version },
-                "data": serde_json::from_str::<Value>(&data).ok()?,
-            }))
-        })
-        .collect();
-    Ok(json!({ "data": events, "hasMore": has_more }))
+fn durable_event(
+    id: &str,
+    session_id: &str,
+    seq: i64,
+    versioned_type: &str,
+    data: &str,
+) -> Option<Value> {
+    let (kind, version) = DURABLE_MANIFEST
+        .iter()
+        .find(|(kind, version)| format!("{kind}.{version}") == versioned_type)?;
+    Some(json!({
+        "id": id,
+        "type": kind,
+        "durable": { "aggregateID": session_id, "seq": seq, "version": version },
+        "data": serde_json::from_str::<Value>(data).ok()?,
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -791,6 +854,73 @@ pub fn message(
         .next()
         .transpose()?
         .and_then(|(id, kind, data)| message_json(&id, &kind, &data)))
+}
+
+pub fn context(conn: &Connection, session_id: &str) -> rusqlite::Result<Vec<Value>> {
+    let baseline_seq: Option<i64> = conn
+        .query_row(
+            "SELECT baseline_seq FROM session_context_epoch WHERE session_id = ?",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let compaction_seq: Option<i64> = conn
+        .query_row(
+            "SELECT seq FROM session_message WHERE session_id = ? AND type = 'compaction' ORDER BY seq DESC LIMIT 1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map(Some)
+        .or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(other),
+        })?;
+    let mut sql = "SELECT id, type, data FROM session_message WHERE session_id = ?".to_string();
+    let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(session_id.to_string())];
+    if let Some(compaction_seq) = compaction_seq {
+        if let Some(baseline_seq) = baseline_seq {
+            sql.push_str(" AND (seq >= ? OR (type = 'system' AND seq > ?))");
+            params.push(Box::new(compaction_seq));
+            params.push(Box::new(baseline_seq));
+        } else {
+            sql.push_str(" AND seq >= ?");
+            params.push(Box::new(compaction_seq));
+        }
+    }
+    if let Some(baseline_seq) = baseline_seq {
+        sql.push_str(" AND (type != 'system' OR seq > ?)");
+        params.push(Box::new(baseline_seq));
+    }
+    sql.push_str(" ORDER BY seq ASC");
+    let mut statement = conn.prepare_cached(&sql)?;
+    let rows = statement
+        .query_map(
+            rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(id, kind, data)| message_json(&id, &kind, &data))
+        .collect::<Vec<_>>())
+}
+
+pub fn connected_event() -> Value {
+    json!({ "id": format!("evt_{}", identifier::ascending()), "type": "server.connected", "data": {} })
+}
+
+pub fn sse_message_bytes(value: &Value) -> String {
+    format!("event: message\ndata: {}\n\n", value)
 }
 
 pub struct MessagesQuery {
@@ -893,24 +1023,48 @@ pub fn messages(
         });
         Value::String(b64::encode(&raw.to_string()))
     };
-    let previous = rows.first().map(|info| encode(info, "previous"));
-    let next = rows.last().map(|info| encode(info, "next"));
-    Ok(Some(json!({
-        "data": rows,
-        "cursor": {
-            "previous": previous.unwrap_or(Value::Null),
-            "next": next.unwrap_or(Value::Null),
-        },
-    })))
+    let mut cursor = Map::new();
+    if let Some(previous) = rows.first().map(|info| encode(info, "previous")) {
+        cursor.insert("previous".into(), previous);
+    }
+    if let Some(next) = rows.last().map(|info| encode(info, "next")) {
+        cursor.insert("next".into(), next);
+    }
+    Ok(Some(json!({ "data": rows, "cursor": cursor })))
 }
 
 fn empty_messages_page() -> Value {
-    json!({ "data": [], "cursor": { "previous": null, "next": null } })
+    json!({ "data": [], "cursor": {} })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn event_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE event (id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL, type text NOT NULL, data text NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
+
+    fn message_db() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, data text NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE session_context_epoch (session_id text PRIMARY KEY, baseline_seq integer NOT NULL)",
+            [],
+        )
+        .unwrap();
+        conn
+    }
 
     #[test]
     fn resolves_data_uri_mime() {
@@ -995,5 +1149,119 @@ mod tests {
             rebuilt.to_string(),
             r#"{"type":"compaction","reason":"auto","summary":"s","recent":"r","id":"msg_2","time":{"created":9}}"#
         );
+    }
+
+    #[test]
+    fn sse_message_bytes_match_effect_encoder_shape() {
+        assert_eq!(
+            sse_message_bytes(&json!({"id":"evt_1","type":"server.connected","data":{}})),
+            "event: message\ndata: {\"id\":\"evt_1\",\"type\":\"server.connected\",\"data\":{}}\n\n"
+        );
+    }
+
+    #[test]
+    fn durable_replay_filters_after_and_formats_envelope() {
+        let conn = event_db();
+        conn.execute(
+            "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![
+                "evt_0",
+                "ses_1",
+                0,
+                "session.next.prompt.admitted.1",
+                r#"{"timestamp":1,"sessionID":"ses_1","messageID":"msg_0","prompt":{"text":"zero"},"delivery":"steer"}"#,
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?, ?, ?, ?, ?)",
+            rusqlite::params![
+                "evt_1",
+                "ses_1",
+                1,
+                "session.next.prompt.admitted.1",
+                r#"{"timestamp":2,"sessionID":"ses_1","messageID":"msg_1","prompt":{"text":"one"},"delivery":"queue"}"#,
+            ],
+        )
+        .unwrap();
+
+        let events = durable_events_after(&conn, "ses_1", 0).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].to_string(),
+            r#"{"id":"evt_1","type":"session.next.prompt.admitted","durable":{"aggregateID":"ses_1","seq":1,"version":1},"data":{"timestamp":2,"sessionID":"ses_1","messageID":"msg_1","prompt":{"text":"one"},"delivery":"queue"}}"#
+        );
+    }
+
+    #[test]
+    fn context_matches_projected_history_after_epoch_and_compaction() {
+        let conn = message_db();
+        conn.execute(
+            "INSERT INTO session_context_epoch (session_id, baseline_seq) VALUES (?, ?)",
+            rusqlite::params!["ses_1", 1],
+        )
+        .unwrap();
+        for (id, kind, seq, data) in [
+            (
+                "msg_system_old",
+                "system",
+                0,
+                r#"{"time":{"created":0},"text":"old"}"#,
+            ),
+            (
+                "msg_user_old",
+                "user",
+                1,
+                r#"{"time":{"created":1},"text":"old user"}"#,
+            ),
+            (
+                "msg_compact",
+                "compaction",
+                2,
+                r#"{"reason":"auto","summary":"sum","recent":"recent","time":{"created":2}}"#,
+            ),
+            (
+                "msg_system_new",
+                "system",
+                3,
+                r#"{"time":{"created":3},"text":"new"}"#,
+            ),
+        ] {
+            conn.execute(
+                "INSERT INTO session_message (id, session_id, type, seq, data) VALUES (?, ?, ?, ?, ?)",
+                rusqlite::params![id, "ses_1", kind, seq, data],
+            )
+            .unwrap();
+        }
+
+        let messages = context(&conn, "ses_1").unwrap();
+        assert_eq!(
+            Value::Array(messages).to_string(),
+            r#"[{"type":"compaction","reason":"auto","summary":"sum","recent":"recent","id":"msg_compact","time":{"created":2}},{"id":"msg_system_new","time":{"created":3},"type":"system","text":"new"}]"#
+        );
+    }
+
+    #[test]
+    fn empty_message_page_omits_optional_cursors() {
+        let conn = message_db();
+        let page = messages(
+            &conn,
+            "ses_1",
+            &MessagesQuery {
+                limit: 50,
+                order: "desc".into(),
+                cursor_id: None,
+                direction: None,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(page.to_string(), r#"{"data":[],"cursor":{}}"#);
+    }
+
+    #[test]
+    fn session_cursor_rejects_invalid_direction() {
+        let cursor = b64::encode(r#"{"anchor":{"id":"ses_1","time":1,"direction":"sideways"}}"#);
+        assert!(parse_cursor(&cursor).is_none());
     }
 }

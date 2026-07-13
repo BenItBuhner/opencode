@@ -101,9 +101,6 @@ for path, handlers in re.findall(r'\.route\(\s*"([^"]+)",\s*((?:[^()]|\([^()]*\)
 # The intentionally-unported v2 surface (each entry needs an explicit decision
 # when porting; remove entries as they land in the Rust server).
 V2_ENDPOINT_BACKLOG = {
-    ("get", "/api/event"),
-    ("get", "/api/session/{}/event"),
-    ("get", "/api/session/{}/context"),
     ("post", "/api/session/{}/compact"),
     ("post", "/api/session/{}/revert/stage"),
     ("post", "/api/session/{}/revert/clear"),

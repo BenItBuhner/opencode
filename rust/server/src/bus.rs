@@ -11,6 +11,7 @@ use tokio::sync::broadcast;
 #[derive(Clone)]
 pub struct Bus {
     sender: broadcast::Sender<Value>,
+    v2_sender: broadcast::Sender<Value>,
 }
 
 /// Durable v1 session events all use version 1 with the sessionID aggregate
@@ -21,11 +22,20 @@ impl Bus {
     pub fn new() -> Self {
         Bus {
             sender: broadcast::channel(1024).0,
+            v2_sender: broadcast::channel(1024).0,
         }
     }
 
     pub fn subscribe(&self) -> broadcast::Receiver<Value> {
         self.sender.subscribe()
+    }
+
+    pub fn subscribe_v2(&self) -> broadcast::Receiver<Value> {
+        self.v2_sender.subscribe()
+    }
+
+    pub fn publish_v2(&self, event: Value) {
+        let _ = self.v2_sender.send(event);
     }
 
     /// Publish a durable session event: write the versioned copy to the

@@ -26,6 +26,7 @@ mod slug;
 mod v2;
 mod vcs;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -34,6 +35,8 @@ use axum::{Json, Router};
 use r2d2_sqlite::SqliteConnectionManager;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::VecDeque;
+use std::convert::Infallible;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 type Pool = r2d2::Pool<SqliteConnectionManager>;
@@ -1307,6 +1310,86 @@ fn v2_invalid_cursor(message: &str) -> Response {
         .into_response()
 }
 
+#[derive(Debug)]
+struct V2InvalidRequest {
+    message: String,
+    field: &'static str,
+}
+
+fn v2_invalid_request(error: V2InvalidRequest) -> Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "_tag": "InvalidRequestError",
+            "message": error.message,
+            "field": error.field,
+        })),
+    )
+        .into_response()
+}
+
+fn invalid_request(message: impl Into<String>, field: &'static str) -> V2InvalidRequest {
+    V2InvalidRequest {
+        message: message.into(),
+        field,
+    }
+}
+
+fn validate_positive_limit(
+    limit: Option<i64>,
+    default: i64,
+    max: i64,
+    field: &'static str,
+) -> Result<i64, V2InvalidRequest> {
+    let value = limit.unwrap_or(default);
+    if !(1..=max).contains(&value) {
+        return Err(invalid_request(
+            format!("{field} must be an integer between 1 and {max}"),
+            field,
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_non_negative(
+    value: Option<i64>,
+    field: &'static str,
+) -> Result<Option<i64>, V2InvalidRequest> {
+    if value.is_some_and(|value| value < 0) {
+        return Err(invalid_request(
+            format!("{field} must be a non-negative integer"),
+            field,
+        ));
+    }
+    Ok(value)
+}
+
+fn validate_order(order: Option<&str>) -> Result<(), V2InvalidRequest> {
+    if v2::valid_order(order) {
+        return Ok(());
+    }
+    Err(invalid_request("order must be asc or desc", "order"))
+}
+
+fn v2_sse_response<S>(stream: S) -> Response
+where
+    S: futures::Stream<Item = Result<String, Infallible>> + Send + 'static,
+{
+    let mut response = Body::from_stream(stream).into_response();
+    let headers = response.headers_mut();
+    headers.insert(
+        header::CONTENT_TYPE,
+        "text/event-stream".parse().expect("header"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        "no-cache, no-transform".parse().expect("header"),
+    );
+    headers.insert("X-Accel-Buffering", "no".parse().expect("header"));
+    headers.insert("X-Content-Type-Options", "nosniff".parse().expect("header"));
+    response
+}
+
 #[derive(Deserialize, Default)]
 struct ApiLocationQuery {
     #[serde(rename = "location[directory]")]
@@ -1409,6 +1492,26 @@ fn hex(byte: u8) -> Option<u8> {
 
 async fn api_health() -> Json<Value> {
     Json(json!({ "healthy": true }))
+}
+
+async fn api_event_stream(State(app): State<App>) -> Response {
+    use futures::StreamExt;
+
+    let receiver = app.bus.subscribe_v2();
+    let connected =
+        futures::stream::once(async move { Ok(v2::sse_message_bytes(&v2::connected_event())) });
+    let events =
+        tokio_stream::wrappers::BroadcastStream::new(receiver).filter_map(|item| async move {
+            match item {
+                Ok(value) => Some(Ok(v2::sse_message_bytes(&value))),
+                Err(_) => None,
+            }
+        });
+    let heartbeat =
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(15)))
+            .skip(1)
+            .map(|_| Ok(": heartbeat\n\n".to_string()));
+    v2_sse_response(futures::stream::select(connected.chain(events), heartbeat))
 }
 
 async fn api_session_active() -> Json<Value> {
@@ -1688,6 +1791,13 @@ async fn api_session_list(
     State(app): State<App>,
     Query(query): Query<ApiSessionsQuery>,
 ) -> Result<Response, Failure> {
+    if let Err(error) = validate_order(query.order.as_deref()) {
+        return Ok(v2_invalid_request(error));
+    }
+    let limit = match validate_positive_limit(query.limit, 50, i64::MAX, "limit") {
+        Ok(limit) => limit,
+        Err(error) => return Ok(v2_invalid_request(error)),
+    };
     let resolved = match query.cursor.as_deref() {
         Some(cursor) => match v2::parse_cursor(cursor) {
             Some(parsed) => parsed,
@@ -1704,7 +1814,7 @@ async fn api_session_list(
         },
     };
     let conn = app.pool.get()?;
-    Ok(Json(v2::list(&conn, &resolved, query.limit.unwrap_or(50))?).into_response())
+    Ok(Json(v2::list(&conn, &resolved, limit)?).into_response())
 }
 
 #[derive(Deserialize)]
@@ -1961,6 +2071,9 @@ async fn api_session_prompt(
     let mut conn = app.pool.get()?;
     Ok(match v2::admit(&mut conn, &id, &payload) {
         Ok(admitted) => {
+            if let Some(seq) = admitted.get("admittedSeq").and_then(Value::as_i64) {
+                publish_v2_event_at(&app, &id, seq)?;
+            }
             // Admission schedules advisory SessionExecution.wake unless
             // resume: false requests admit-only behavior.
             if payload.get("resume").and_then(Value::as_bool) != Some(false) {
@@ -1995,6 +2108,14 @@ async fn api_session_prompt(
     })
 }
 
+fn publish_v2_event_at(app: &App, session_id: &str, seq: i64) -> Result<(), Failure> {
+    let conn = app.pool.get()?;
+    if let Some(event) = v2::event_at(&conn, session_id, seq)? {
+        app.bus.publish_v2(event);
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct ApiHistoryQuery {
     after: Option<i64>,
@@ -2006,17 +2127,95 @@ async fn api_session_history(
     Path(id): Path<String>,
     Query(query): Query<ApiHistoryQuery>,
 ) -> Result<Response, Failure> {
+    let after = match validate_non_negative(query.after, "after") {
+        Ok(after) => after,
+        Err(error) => return Ok(v2_invalid_request(error)),
+    };
+    let limit = match validate_positive_limit(query.limit, 50, 100, "limit") {
+        Ok(limit) => limit,
+        Err(error) => return Ok(v2_invalid_request(error)),
+    };
     let conn = app.pool.get()?;
     if v2::get(&conn, &id)?.is_none() {
         return Ok(v2_session_not_found(&id));
     }
-    Ok(Json(v2::history(
-        &conn,
-        &id,
-        query.after,
-        query.limit.unwrap_or(50).clamp(1, 100),
-    )?)
-    .into_response())
+    Ok(Json(v2::history(&conn, &id, after, limit)?).into_response())
+}
+
+async fn api_session_context(
+    State(app): State<App>,
+    Path(id): Path<String>,
+) -> Result<Response, Failure> {
+    let conn = app.pool.get()?;
+    if v2::get(&conn, &id)?.is_none() {
+        return Ok(v2_session_not_found(&id));
+    }
+    Ok(Json(json!({ "data": v2::context(&conn, &id)? })).into_response())
+}
+
+#[derive(Deserialize)]
+struct ApiSessionEventQuery {
+    after: Option<i64>,
+}
+
+struct V2SessionEventTail {
+    pool: Pool,
+    session_id: String,
+    after: i64,
+    pending: VecDeque<Value>,
+}
+
+async fn api_session_events(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    Query(query): Query<ApiSessionEventQuery>,
+) -> Result<Response, Failure> {
+    let after = match validate_non_negative(query.after, "after") {
+        Ok(after) => after.unwrap_or(-1),
+        Err(error) => return Ok(v2_invalid_request(error)),
+    };
+    {
+        let conn = app.pool.get()?;
+        if v2::get(&conn, &id)?.is_none() {
+            return Ok(v2_session_not_found(&id));
+        }
+    }
+    let stream = futures::stream::unfold(
+        V2SessionEventTail {
+            pool: app.pool.clone(),
+            session_id: id,
+            after,
+            pending: VecDeque::new(),
+        },
+        |mut state| async move {
+            loop {
+                if let Some(event) = state.pending.pop_front() {
+                    if let Some(seq) = event
+                        .get("durable")
+                        .and_then(|durable| durable.get("seq"))
+                        .and_then(Value::as_i64)
+                    {
+                        state.after = seq;
+                    }
+                    return Some((Ok(v2::sse_message_bytes(&event)), state));
+                }
+                if let Some(events) = state
+                    .pool
+                    .get()
+                    .ok()
+                    .and_then(|conn| {
+                        v2::durable_events_after(&conn, &state.session_id, state.after).ok()
+                    })
+                    .filter(|events| !events.is_empty())
+                {
+                    state.pending = events.into();
+                    continue;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        },
+    );
+    Ok(v2_sse_response(stream))
 }
 
 #[derive(Deserialize)]
@@ -2031,6 +2230,13 @@ async fn api_session_messages(
     Path(id): Path<String>,
     Query(query): Query<ApiMessagesQuery>,
 ) -> Result<Response, Failure> {
+    if let Err(error) = validate_order(query.order.as_deref()) {
+        return Ok(v2_invalid_request(error));
+    }
+    let limit = match validate_positive_limit(query.limit, 50, 200, "limit") {
+        Ok(limit) => limit,
+        Err(error) => return Ok(v2_invalid_request(error)),
+    };
     if query.cursor.is_some() && query.order.is_some() {
         return Ok(v2_invalid_cursor("Cursor cannot be combined with order"));
     }
@@ -2039,11 +2245,13 @@ async fn api_session_messages(
             let parsed = b64::decode(cursor)
                 .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
                 .and_then(|value| {
-                    Some((
-                        value.get("id")?.as_str()?.to_string(),
-                        value.get("order")?.as_str()?.to_string(),
-                        value.get("direction")?.as_str()?.to_string(),
-                    ))
+                    let id = value.get("id")?.as_str()?.to_string();
+                    let order = value.get("order")?.as_str()?.to_string();
+                    let direction = value.get("direction")?.as_str()?.to_string();
+                    (id.starts_with("msg_")
+                        && matches!(order.as_str(), "asc" | "desc")
+                        && matches!(direction.as_str(), "previous" | "next"))
+                    .then_some((id, order, direction))
                 });
             match parsed {
                 Some(parsed) => Some(parsed),
@@ -2065,7 +2273,7 @@ async fn api_session_messages(
         &conn,
         &id,
         &v2::MessagesQuery {
-            limit: query.limit.unwrap_or(50).clamp(1, 200),
+            limit,
             order,
             cursor_id: decoded.as_ref().map(|(id, _, _)| id.clone()),
             direction: decoded.map(|(_, _, direction)| direction),
@@ -2134,7 +2342,7 @@ async fn api_session_switch_agent(
         json!(format!("msg_{}", identifier::ascending())),
     );
     data.insert("agent".into(), json!(agent));
-    publisher
+    let seq = publisher
         .publish(
             &mut conn,
             "session.next.agent.switched",
@@ -2142,6 +2350,7 @@ async fn api_session_switch_agent(
             &Value::Object(data),
         )
         .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    publish_v2_event_at(&app, &id, seq)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -2178,7 +2387,7 @@ async fn api_session_switch_model(
         json!(format!("msg_{}", identifier::ascending())),
     );
     data.insert("model".into(), Value::Object(reference));
-    publisher
+    let seq = publisher
         .publish(
             &mut conn,
             "session.next.model.switched",
@@ -2186,6 +2395,7 @@ async fn api_session_switch_model(
             &Value::Object(data),
         )
         .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
+    publish_v2_event_at(&app, &id, seq)?;
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
@@ -2397,6 +2607,7 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/file/content", get(file_content))
         .route("/file/status", get(file_status))
         .route("/api/health", get(api_health))
+        .route("/api/event", get(api_event_stream))
         .route("/api/location", get(api_location_get))
         .route("/api/agent", get(api_agent_list))
         .route("/api/command", get(api_command_list))
@@ -2415,7 +2626,9 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/api/session/active", get(api_session_active))
         .route("/api/session/{id}", get(api_session_get))
         .route("/api/session/{id}/prompt", post(api_session_prompt))
+        .route("/api/session/{id}/context", get(api_session_context))
         .route("/api/session/{id}/history", get(api_session_history))
+        .route("/api/session/{id}/event", get(api_session_events))
         .route("/api/session/{id}/message", get(api_session_messages))
         .route(
             "/api/session/{id}/message/{message_id}",
@@ -2488,7 +2701,7 @@ async fn bind_listener(
 mod tests {
     use super::{
         bus, chrono_iso, config, location_response, parse_frontmatter, relative_path,
-        ApiLocationQuery, App,
+        validate_non_negative, validate_order, validate_positive_limit, ApiLocationQuery, App,
     };
     use axum::http::HeaderMap;
     use r2d2_sqlite::SqliteConnectionManager;
@@ -2557,5 +2770,16 @@ mod tests {
             })
         );
         assert!(matches!(wrapped, Value::Object(_)));
+    }
+
+    #[test]
+    fn v2_query_validation_matches_protocol_bounds() {
+        assert!(validate_non_negative(Some(0), "after").is_ok());
+        assert!(validate_non_negative(Some(-1), "after").is_err());
+        assert_eq!(validate_positive_limit(None, 50, 100, "limit").unwrap(), 50);
+        assert!(validate_positive_limit(Some(0), 50, 100, "limit").is_err());
+        assert!(validate_positive_limit(Some(101), 50, 100, "limit").is_err());
+        assert!(validate_order(Some("asc")).is_ok());
+        assert!(validate_order(Some("sideways")).is_err());
     }
 }
