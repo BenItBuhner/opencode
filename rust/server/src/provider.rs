@@ -3,6 +3,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 const PRIORITY: &[&str] = &["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"];
+const OPENCODE_FREE_MODELS: &[&str] = &[
+    "mimo-v2.5-free",
+    "nemotron-3-ultra-free",
+    "deepseek-v4-flash-free",
+    "north-mini-code-free",
+    "hy3-free",
+    "big-pickle",
+];
 
 pub fn list(config: &Value) -> Value {
     let all = filtered_catalog(config);
@@ -100,14 +108,7 @@ fn connected(config: &Value) -> BTreeMap<String, Value> {
 
 fn opencode_provider(catalog: &BTreeMap<String, Value>) -> Option<Value> {
     let mut provider = catalog.get("opencode")?.clone();
-    let keep = [
-        "mimo-v2.5-free",
-        "nemotron-3-ultra-free",
-        "deepseek-v4-flash-free",
-        "north-mini-code-free",
-        "big-pickle",
-    ];
-    let models = keep
+    let models = OPENCODE_FREE_MODELS
         .into_iter()
         .filter_map(|id| {
             provider
@@ -296,16 +297,9 @@ fn official_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
         .map(|(id, provider)| {
             let mut record = official_record_from_models_dev(&provider);
             if id == "opencode" && std::env::var("OPENCODE_API_KEY").is_err() {
-                let keep = [
-                    "mimo-v2.5-free",
-                    "nemotron-3-ultra-free",
-                    "deepseek-v4-flash-free",
-                    "north-mini-code-free",
-                    "big-pickle",
-                ];
                 record
                     .models
-                    .retain(|model_id, _| keep.contains(&model_id.as_str()));
+                    .retain(|model_id, _| OPENCODE_FREE_MODELS.contains(&model_id.as_str()));
                 record.provider["request"]["body"]["apiKey"] = Value::String("public".into());
             }
             (id, record)
@@ -927,6 +921,12 @@ mod tests {
         }))
         .expect("models");
         assert_eq!(sort_models(&models)[0], "gpt-5-chat-latest");
+    }
+
+    #[test]
+    fn free_catalog_tracks_current_opencode_models() {
+        assert!(OPENCODE_FREE_MODELS.contains(&"hy3-free"));
+        assert!(OPENCODE_FREE_MODELS.contains(&"big-pickle"));
     }
 
     #[test]

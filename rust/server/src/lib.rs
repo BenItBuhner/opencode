@@ -2041,7 +2041,8 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         directory: options.directory.clone(),
         worktree: worktree.clone(),
         path,
-        version: opengoal_daemon::VERSION.into(),
+        version: std::env::var("OPENCODE_VERSION")
+            .unwrap_or_else(|_| opengoal_daemon::VERSION.into()),
         port,
         paths: config::paths(),
     };
