@@ -18,6 +18,12 @@ pub struct Bus {
 /// (packages/schema/src/v1/session.ts `options`).
 const DURABLE_VERSION: i64 = 1;
 
+impl Default for Bus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Bus {
     pub fn new() -> Self {
         Bus {
@@ -36,6 +42,19 @@ impl Bus {
 
     pub fn publish_v2(&self, event: Value) {
         let _ = self.v2_sender.send(event);
+    }
+
+    /// Publish a transient event (not persisted to the event store). Used for
+    /// PTY lifecycle events which the TS port emits through `EventV2.publish`
+    /// but which are not part of the durable event manifest.
+    pub fn publish(&self, event_type: &str, properties: Value) {
+        let id = format!("evt_{}", identifier::create(false, now_millis()));
+        let _ = self
+            .sender
+            .send(json!({ "id": id.clone(), "type": event_type, "properties": properties.clone() }));
+        let _ = self
+            .v2_sender
+            .send(json!({ "id": id, "type": event_type, "data": properties }));
     }
 
     /// Publish a durable session event: write the versioned copy to the

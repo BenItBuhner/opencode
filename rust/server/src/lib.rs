@@ -12,7 +12,7 @@
 
 mod auth;
 mod b64;
-mod bus;
+pub mod bus;
 mod config;
 mod file;
 mod float_check;
@@ -20,6 +20,7 @@ mod identifier;
 mod message;
 mod project;
 mod provider;
+pub mod pty;
 mod runner;
 mod session;
 mod slug;
@@ -52,6 +53,8 @@ struct App {
     version: String,
     port: u16,
     paths: config::Paths,
+    pty: pty::Registry,
+    pty_tickets: pty::TicketRegistry,
 }
 
 struct Failure(StatusCode, String);
@@ -2399,6 +2402,246 @@ async fn api_session_switch_model(
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 
+// ---------------------------------------------------------------------------
+// /api/pty routes — WebSocket protocol matches packages/core/src/pty/protocol.ts
+// ---------------------------------------------------------------------------
+
+fn pty_not_found(id: &str) -> Response {
+    (
+        StatusCode::NOT_FOUND,
+        Json(json!({
+            "_tag": "PtyNotFoundError",
+            "ptyID": id,
+            "message": format!("PTY session not found: {id}"),
+        })),
+    )
+        .into_response()
+}
+
+fn pty_forbidden(message: &str) -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({
+            "_tag": "ForbiddenError",
+            "message": message,
+        })),
+    )
+        .into_response()
+}
+
+fn pty_ticket_scope(
+    app: &App,
+    headers: &HeaderMap,
+    query: &ApiLocationQuery,
+    id: &str,
+) -> pty::Scope {
+    pty::Scope {
+        pty_id: id.to_string(),
+        directory: Some(location_directory(app, headers, query)),
+        workspace_id: query.location_workspace.clone().or_else(|| {
+            headers
+                .get("x-opencode-workspace")
+                .and_then(|value| value.to_str().ok())
+                .map(ToString::to_string)
+        }),
+    }
+}
+
+async fn api_pty_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(
+            app.pty
+                .list()
+                .into_iter()
+                .map(|info| serde_json::to_value(info).expect("serializable"))
+                .collect(),
+        ),
+    ))
+}
+
+#[derive(Deserialize)]
+struct ApiPtyCreatePayload {
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    cwd: Option<String>,
+    #[serde(default)]
+    title: Option<String>,
+    #[serde(default)]
+    env: Option<std::collections::HashMap<String, String>>,
+}
+
+async fn api_pty_create(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+    Json(payload): Json<ApiPtyCreatePayload>,
+) -> Response {
+    let cwd = payload
+        .cwd
+        .clone()
+        .unwrap_or_else(|| location_directory(&app, &headers, &query));
+    match app.pty.create(pty::CreateInput {
+        command: payload.command,
+        args: payload.args,
+        cwd: Some(cwd),
+        title: payload.title,
+        env: payload.env,
+    }) {
+        Ok(info) => Json(location_response(
+            &app,
+            &headers,
+            &query,
+            serde_json::to_value(info).expect("serializable"),
+        ))
+        .into_response(),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_pty_get(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Response {
+    match app.pty.get(&id) {
+        Ok(info) => Json(location_response(
+            &app,
+            &headers,
+            &query,
+            serde_json::to_value(info).expect("serializable"),
+        ))
+        .into_response(),
+        Err(_) => pty_not_found(&id),
+    }
+}
+
+async fn api_pty_update(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+    Json(payload): Json<pty::UpdateInput>,
+) -> Response {
+    match app.pty.update(&id, payload) {
+        Ok(info) => Json(location_response(
+            &app,
+            &headers,
+            &query,
+            serde_json::to_value(info).expect("serializable"),
+        ))
+        .into_response(),
+        Err(pty::Error::NotFound(_)) => pty_not_found(&id),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_pty_remove(State(app): State<App>, Path(id): Path<String>) -> Response {
+    match app.pty.remove(&id) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(pty::Error::NotFound(_)) => pty_not_found(&id),
+        Err(error) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "message": error.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+async fn api_pty_connect_token(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Response {
+    // The custom header forces a CORS preflight, matching the TS route: cross-
+    // origin browser pages cannot mint tickets without the server's origin
+    // policy accepting them.
+    let header_ok = headers
+        .get("x-opencode-ticket")
+        .and_then(|value| value.to_str().ok())
+        == Some("1");
+    if !header_ok {
+        return pty_forbidden("Invalid PTY connect token request");
+    }
+    if app.pty.get(&id).is_err() {
+        return pty_not_found(&id);
+    }
+    let token = app
+        .pty_tickets
+        .issue(pty_ticket_scope(&app, &headers, &query, &id));
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        serde_json::to_value(token).expect("serializable"),
+    ))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+struct ApiPtyConnectQuery {
+    #[serde(flatten)]
+    location: ApiLocationQuery,
+    #[serde(default)]
+    ticket: Option<String>,
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+async fn api_pty_connect(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ApiPtyConnectQuery>,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
+    if app.pty.get(&id).is_err() {
+        return pty_not_found(&id);
+    }
+    if let Some(ticket) = query.ticket.as_deref() {
+        let scope = pty_ticket_scope(&app, &headers, &query.location, &id);
+        if !app.pty_tickets.consume(ticket, &scope) {
+            return pty_forbidden("Invalid or expired PTY ticket");
+        }
+    }
+    let cursor = query
+        .cursor
+        .as_deref()
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= -1);
+    let registry = app.pty.clone();
+    ws.on_upgrade(move |socket| {
+        pty::router::handle_socket(
+            pty::router::State_ {
+                registry,
+                tickets: app.pty_tickets.clone(),
+            },
+            id,
+            cursor,
+            socket,
+        )
+    })
+}
+
 async fn api_session_wait(
     State(app): State<App>,
     Path(id): Path<String>,
@@ -2521,9 +2764,10 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
     let (port, listener) = bind_listener(&options.hostname, options.port).await?;
     let url = format!("http://{}:{port}", options.hostname);
 
+    let bus = bus::Bus::new();
     let app = App {
         pool,
-        bus: bus::Bus::new(),
+        bus: bus.clone(),
         project_id: project_id.clone(),
         directory: options.directory.clone(),
         worktree: worktree.clone(),
@@ -2532,6 +2776,8 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
             .unwrap_or_else(|_| opengoal_daemon::VERSION.into()),
         port,
         paths: config::paths(),
+        pty: pty::Registry::new(bus),
+        pty_tickets: pty::TicketRegistry::default(),
     };
 
     let auth = auth::ServerAuth {
@@ -2638,6 +2884,13 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/api/session/{id}/wait", post(api_session_wait))
         .route("/api/session/{id}/agent", post(api_session_switch_agent))
         .route("/api/session/{id}/model", post(api_session_switch_model))
+        .route("/api/pty", get(api_pty_list).post(api_pty_create))
+        .route(
+            "/api/pty/{id}",
+            get(api_pty_get).put(api_pty_update).delete(api_pty_remove),
+        )
+        .route("/api/pty/{id}/connect-token", post(api_pty_connect_token))
+        .route("/api/pty/{id}/connect", get(api_pty_connect))
         .layer(axum::middleware::from_fn_with_state(
             auth.clone(),
             auth::middleware,
@@ -2734,12 +2987,13 @@ mod tests {
 
     #[test]
     fn location_response_wraps_current_protocol_shape() {
+        let bus = bus::Bus::new();
         let app = App {
             pool: r2d2::Pool::builder()
                 .max_size(1)
                 .build(SqliteConnectionManager::memory())
                 .expect("pool"),
-            bus: bus::Bus::new(),
+            bus: bus.clone(),
             project_id: "project-id".into(),
             directory: "/tmp/project".into(),
             worktree: "/tmp/project".into(),
@@ -2752,6 +3006,8 @@ mod tests {
                 state: "/tmp/state".into(),
                 cache: "/tmp/cache".into(),
             },
+            pty: crate::pty::Registry::new(bus),
+            pty_tickets: crate::pty::TicketRegistry::default(),
         };
         let query = ApiLocationQuery {
             location_directory: None,
