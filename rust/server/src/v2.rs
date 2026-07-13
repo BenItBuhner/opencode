@@ -267,12 +267,8 @@ pub fn list(conn: &Connection, query: &ListQuery, limit: i64) -> rusqlite::Resul
     let previous = rows.first().map(|info| cursor_for(info, "previous"));
     let next = rows.last().map(|info| cursor_for(info, "next"));
     let mut cursor = Map::new();
-    if let Some(previous) = previous {
-        cursor.insert("previous".into(), previous);
-    }
-    if let Some(next) = next {
-        cursor.insert("next".into(), next);
-    }
+    cursor.insert("previous".into(), previous.unwrap_or(Value::Null));
+    cursor.insert("next".into(), next.unwrap_or(Value::Null));
     Ok(json!({ "data": rows, "cursor": cursor }))
 }
 
@@ -1024,17 +1020,23 @@ pub fn messages(
         Value::String(b64::encode(&raw.to_string()))
     };
     let mut cursor = Map::new();
-    if let Some(previous) = rows.first().map(|info| encode(info, "previous")) {
-        cursor.insert("previous".into(), previous);
-    }
-    if let Some(next) = rows.last().map(|info| encode(info, "next")) {
-        cursor.insert("next".into(), next);
-    }
+    cursor.insert(
+        "previous".into(),
+        rows.first()
+            .map(|info| encode(info, "previous"))
+            .unwrap_or(Value::Null),
+    );
+    cursor.insert(
+        "next".into(),
+        rows.last()
+            .map(|info| encode(info, "next"))
+            .unwrap_or(Value::Null),
+    );
     Ok(Some(json!({ "data": rows, "cursor": cursor })))
 }
 
 fn empty_messages_page() -> Value {
-    json!({ "data": [], "cursor": {} })
+    json!({ "data": [], "cursor": { "previous": null, "next": null } })
 }
 
 #[cfg(test)]
@@ -1242,7 +1244,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_message_page_omits_optional_cursors() {
+    fn empty_message_page_keeps_null_cursors_for_wire_parity() {
         let conn = message_db();
         let page = messages(
             &conn,
@@ -1256,7 +1258,10 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(page.to_string(), r#"{"data":[],"cursor":{}}"#);
+        assert_eq!(
+            page.to_string(),
+            r#"{"data":[],"cursor":{"previous":null,"next":null}}"#
+        );
     }
 
     #[test]
