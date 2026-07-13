@@ -187,7 +187,7 @@ const layer = Layer.effect(
             const info = data.info
             yield* sync(info.sessionID, [{ type: "message", data: structuredClone(info) as SDK.Message }])
             if (info.role !== "user") return
-            const model = yield* provider.getModel(info.model.providerID, info.model.modelID)
+            const model = Provider.toSDKModel(yield* provider.getModel(info.model.providerID, info.model.modelID))
             yield* sync(info.sessionID, [{ type: "model", data: [model] }])
           }),
         )
@@ -285,7 +285,10 @@ const layer = Layer.effect(
               .map((item) => [`${item.providerID}/${item.modelID}`, item] as const),
           ).values(),
         ),
-        (item) => provider.getModel(ProviderV2.ID.make(item.providerID), ModelV2.ID.make(item.modelID)),
+        (item) =>
+          provider
+            .getModel(ProviderV2.ID.make(item.providerID), ModelV2.ID.make(item.modelID))
+            .pipe(Effect.map(Provider.toSDKModel)),
         { concurrency: 8 },
       )
 

@@ -1101,6 +1101,28 @@ export function toPublicInfo(provider: Info): Info {
   )
 }
 
+export function toSDKModel(model: Model) {
+  return {
+    ...model,
+    reasoning_options: model.reasoning_options?.map((option) =>
+      option.type === "effort"
+        ? {
+            ...option,
+            values: option.values.filter((value): value is string => value !== null),
+          }
+        : option,
+    ),
+  }
+}
+
+function toPluginInfo(provider: Info) {
+  const info = toPublicInfo(provider)
+  return {
+    ...info,
+    models: mapValues(info.models, toSDKModel),
+  }
+}
+
 export function defaultModelIDs<T extends { models: Record<string, { id: string }> }>(providers: Record<string, T>) {
   return mapValues(providers, (item) => sort(Object.values(item.models))[0].id)
 }
@@ -1441,7 +1463,7 @@ const layer = Layer.effect(
           const pluginAuth = yield* auth.get(providerID).pipe(Effect.orDie)
 
           provider.models = yield* Effect.promise(async () => {
-            const next = await models(toPublicInfo(provider), { auth: pluginAuth })
+            const next = await models(toPluginInfo(provider), { auth: pluginAuth })
             return Object.fromEntries(
               Object.entries(next).map(([id, model]) => [
                 id,
@@ -1920,10 +1942,10 @@ const layer = Layer.effect(
       const provider = s.providers[providerID]
       if (!provider) return undefined
 
-      const experimental = yield* plugin.trigger<"experimental.provider.small_model">(
+      const experimental = yield* plugin.trigger(
         "experimental.provider.small_model",
-        { provider: toPublicInfo(provider) },
-        { model: undefined },
+        { provider: toPluginInfo(provider) },
+        { model: undefined as ReturnType<typeof toSDKModel> | undefined },
       )
       if (experimental.model) {
         return {
