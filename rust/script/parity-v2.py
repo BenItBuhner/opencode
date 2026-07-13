@@ -76,6 +76,22 @@ for path in [
     rust = get(RUST, path)
     check(f"GET {path}", bun == rust, "" if bun == rust else f"bun={bun} rust={rust}")
 
+# Current location-scoped catalog surface used by the official v2 clients.
+for path in [
+    "/api/location",
+    "/api/agent",
+    "/api/command",
+    "/api/skill",
+    "/api/reference",
+    "/api/model",
+    "/api/provider",
+    "/api/provider/opencode",
+    "/api/fs/list?path=src",
+]:
+    bun = get(BUN, path)
+    rust = get(RUST, path)
+    check(f"GET {path}", bun == rust, "" if bun == rust else f"bun={bun} rust={rust}")
+
 # Cursor round-trip: follow Bun's next cursor on the Rust server and vice versa.
 bun_page = json.loads(get(BUN, "/api/session?limit=2")[1])
 cursor = bun_page["cursor"]["next"]
