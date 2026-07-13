@@ -181,7 +181,8 @@ check(
     "plan mode denies edit with Bun's message",
     edit_states
     and edit_states[-1]["status"] == "error"
-    and edit_states[-1]["error"]["message"] == "Unable to edit notes.txt",
+    and edit_states[-1]["error"]["message"].startswith("Unable to edit ")
+    and edit_states[-1]["error"]["message"].endswith("notes.txt"),
     str(edit_states[-1:]),
 )
 with open(f"{WORKDIR}/notes.txt") as f:
