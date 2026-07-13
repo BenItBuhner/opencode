@@ -284,7 +284,7 @@ pub fn official_models(config: &Value) -> Vec<Value> {
 
 struct OfficialRecord {
     provider: Value,
-    models: BTreeMap<String, Value>,
+    models: Map<String, Value>,
 }
 
 fn official_active_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
@@ -508,7 +508,7 @@ fn empty_official_record(provider_id: &str) -> OfficialRecord {
             "api": { "type": "native", "settings": {} },
             "request": { "headers": {}, "body": {} },
         }),
-        models: BTreeMap::new(),
+        models: Map::new(),
     }
 }
 
