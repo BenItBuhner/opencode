@@ -49,9 +49,9 @@ impl Bus {
     /// but which are not part of the durable event manifest.
     pub fn publish(&self, event_type: &str, properties: Value) {
         let id = format!("evt_{}", identifier::create(false, now_millis()));
-        let _ = self
-            .sender
-            .send(json!({ "id": id.clone(), "type": event_type, "properties": properties.clone() }));
+        let _ = self.sender.send(
+            json!({ "id": id.clone(), "type": event_type, "properties": properties.clone() }),
+        );
         let _ = self
             .v2_sender
             .send(json!({ "id": id, "type": event_type, "data": properties }));
