@@ -22,7 +22,9 @@ use crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use serde_json::Value;
-use state::{App, Dialog, HitTarget, Route, COMMANDS, LEADER_TIMEOUT};
+use state::{
+    App, Dialog, DynamicCommand, HitTarget, InputMode, Route, AUTOCOMPLETE_MAX_ROWS, LEADER_TIMEOUT,
+};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -35,6 +37,7 @@ pub enum Msg {
     Active(Vec<String>),
     Agents(Vec<Value>),
     Models(Vec<(String, String)>),
+    Commands(Vec<DynamicCommand>),
     Toast(String),
 }
 
@@ -152,6 +155,7 @@ pub fn handle_mouse(
     match mouse.kind {
         MouseEventKind::ScrollUp => {
             if app.autocomplete.is_some() {
+                app.input_mode = InputMode::Mouse;
                 autocomplete_move(app, -1);
             } else if app.dialog == Dialog::None {
                 app.scroll = app.scroll.saturating_add(3);
@@ -161,7 +165,8 @@ pub fn handle_mouse(
         }
         MouseEventKind::ScrollDown => {
             if let Some(auto) = &app.autocomplete {
-                if !auto.matches.is_empty() {
+                if !auto.entries.is_empty() {
+                    app.input_mode = InputMode::Mouse;
                     autocomplete_move(app, 1);
                 }
             } else if app.dialog == Dialog::None {
@@ -176,11 +181,17 @@ pub fn handle_mouse(
         MouseEventKind::Moved | MouseEventKind::Drag(_) => {
             let target = hit_test(app, mouse.column, mouse.row);
             app.hover = target;
+            if app.autocomplete.is_some() {
+                app.input_mode = InputMode::Mouse;
+            }
             update_row_selection(app, target);
         }
         MouseEventKind::Down(MouseButton::Left) => {
             let target = hit_test(app, mouse.column, mouse.row);
             app.pressed = target;
+            if app.autocomplete.is_some() {
+                app.input_mode = InputMode::Mouse;
+            }
             update_row_selection(app, target);
         }
         MouseEventKind::Up(MouseButton::Left) => {
@@ -199,7 +210,8 @@ pub fn handle_mouse(
                 HitTarget::Row(index) => {
                     if app.autocomplete.is_some() {
                         if let Some(auto) = app.autocomplete.as_mut() {
-                            auto.index = index.min(auto.matches.len().saturating_sub(1));
+                            auto.index = index.min(auto.entries.len().saturating_sub(1));
+                            auto.ensure_visible();
                         }
                         commit_autocomplete(app, worker);
                     } else if app.dialog != Dialog::None {
@@ -239,9 +251,17 @@ fn update_row_selection(app: &mut App, target: Option<HitTarget>) {
     let Some(HitTarget::Row(index)) = target else {
         return;
     };
-    if let Some(auto) = app.autocomplete.as_mut() {
-        if index < auto.matches.len() {
-            auto.index = index;
+    if app.autocomplete.is_some() {
+        // A stale hover should not hijack keyboard selection; only follow
+        // the mouse when the user actually moved it.
+        if app.input_mode != InputMode::Mouse {
+            return;
+        }
+        if let Some(auto) = app.autocomplete.as_mut() {
+            if index < auto.entries.len() {
+                auto.index = index;
+                auto.ensure_visible();
+            }
         }
         return;
     }
@@ -255,8 +275,8 @@ fn update_row_selection(app: &mut App, target: Option<HitTarget>) {
 pub fn hit_test(app: &App, column: u16, row: u16) -> Option<HitTarget> {
     if let (Some(area), Some(auto)) = (app.geometry.autocomplete, &app.autocomplete) {
         if area.contains(column, row) && row >= app.geometry.autocomplete_list_top {
-            let relative = (row - app.geometry.autocomplete_list_top) as usize;
-            if relative < auto.matches.len() {
+            let relative = (row - app.geometry.autocomplete_list_top) as usize + auto.scroll;
+            if relative < auto.entries.len() {
                 return Some(HitTarget::Row(relative));
             }
         }
@@ -384,6 +404,14 @@ fn apply(app: &mut App, message: Msg) {
         }
         Msg::Agents(agents) => app.agents = agents,
         Msg::Models(models) => app.models = models,
+        Msg::Commands(commands) => {
+            app.server_commands = commands;
+            // Refresh the popover so newly-arrived server commands appear
+            // (or disappear) without waiting for the next keystroke.
+            if app.autocomplete.is_some() {
+                app.sync_autocomplete();
+            }
+        }
         Msg::Toast(text) => app.toast = Some(text),
     }
 }
@@ -631,11 +659,12 @@ fn autocomplete_move(app: &mut App, delta: isize) {
     let Some(auto) = app.autocomplete.as_mut() else {
         return;
     };
-    if auto.matches.is_empty() {
+    if auto.entries.is_empty() {
         return;
     }
-    let count = auto.matches.len() as isize;
+    let count = auto.entries.len() as isize;
     auto.index = ((auto.index as isize + delta).rem_euclid(count)) as usize;
+    auto.ensure_visible();
 }
 
 /// Returns `true` when the key was consumed by the autocomplete popover.
@@ -645,6 +674,9 @@ fn handle_autocomplete_key(
     modifiers: KeyModifiers,
     worker: &mpsc::Sender<Cmd>,
 ) -> bool {
+    // Every autocomplete keystroke flips input mode back to Keyboard so a
+    // stale hover event can no longer hijack the selection.
+    app.input_mode = InputMode::Keyboard;
     match code {
         KeyCode::Up => {
             autocomplete_move(app, -1);
@@ -660,6 +692,14 @@ fn handle_autocomplete_key(
         }
         KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => {
             autocomplete_move(app, 1);
+            true
+        }
+        KeyCode::PageUp => {
+            autocomplete_move(app, -(AUTOCOMPLETE_MAX_ROWS as isize));
+            true
+        }
+        KeyCode::PageDown => {
+            autocomplete_move(app, AUTOCOMPLETE_MAX_ROWS as isize);
             true
         }
         KeyCode::Tab => {
@@ -682,27 +722,29 @@ fn handle_autocomplete_key(
 }
 
 fn commit_autocomplete(app: &mut App, worker: &mpsc::Sender<Cmd>) {
-    // Prefer an exact command match if the user already typed one, so
-    // Enter after `/help` executes rather than re-completes.
+    // Prefer an exact command match if the user already typed one so
+    // Enter after `/help` executes rather than re-completes. Exact match
+    // is checked against every entry (built-in or server) so a server
+    // command name typed in full also runs directly.
     let filter = app
         .autocomplete
         .as_ref()
         .map(|auto| auto.filter.clone())
         .unwrap_or_default();
-    let exact = COMMANDS.iter().position(|spec| spec.name == filter);
-    if let Some(index) = exact {
+    let exact_index = app
+        .autocomplete
+        .as_ref()
+        .and_then(|auto| auto.entries.iter().position(|entry| entry.name == filter));
+    if let Some(index) = exact_index {
         if let Some(auto) = app.autocomplete.as_mut() {
-            auto.index = auto
-                .matches
-                .iter()
-                .position(|value| *value == index)
-                .unwrap_or(auto.index);
+            auto.index = index;
+            auto.ensure_visible();
         }
         submit_prompt(app, worker);
         return;
     }
-    let spec = app.complete_autocomplete(false);
-    if spec.is_some_and(|command| !command.takes_args) {
+    let entry = app.complete_autocomplete(false);
+    if entry.is_some_and(|command| !command.takes_args) {
         submit_prompt(app, worker);
     }
 }
@@ -743,7 +785,19 @@ pub fn submit_prompt(app: &mut App, worker: &mpsc::Sender<Cmd>) {
                 }
             }
             "external-access" => toggle_external_access(app, worker),
-            other => app.toast = Some(format!("Unknown command: /{other}")),
+            other => {
+                // Dynamic server commands (loaded from /api/command) submit
+                // as the raw slash text; the server resolves the template.
+                if app
+                    .server_commands
+                    .iter()
+                    .any(|command| command.name == other)
+                {
+                    dispatch_server_command(app, other, args, worker);
+                } else {
+                    app.toast = Some(format!("Unknown command: /{other}"));
+                }
+            }
         }
         return;
     }
@@ -771,6 +825,21 @@ pub fn submit_prompt(app: &mut App, worker: &mpsc::Sender<Cmd>) {
             });
         }
     }
+}
+
+fn dispatch_server_command(app: &mut App, name: &str, args: &str, worker: &mpsc::Sender<Cmd>) {
+    let Some(session_id) = app.session_id.clone() else {
+        app.toast = Some(format!("Open a session before running /{name}"));
+        return;
+    };
+    let text = if args.is_empty() {
+        format!("/{name}")
+    } else {
+        format!("/{name} {args}")
+    };
+    app.push_history(text.clone());
+    app.busy = true;
+    let _ = worker.send(Cmd::Prompt(session_id, text));
 }
 
 fn run_goal_command(app: &mut App, args: &str, worker: &mpsc::Sender<Cmd>) {
@@ -1050,6 +1119,9 @@ fn worker(
                 }
                 if let Ok(models) = api.models() {
                     let _ = to_ui.send(Msg::Models(models));
+                }
+                if let Ok(commands) = api.commands() {
+                    let _ = to_ui.send(Msg::Commands(commands));
                 }
             }
             Ok(Cmd::SelectSession(id)) => {

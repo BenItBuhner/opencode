@@ -1,6 +1,7 @@
 //! HTTP client for the OpenCode v2 (/api) surface. All calls are blocking and
 //! run on the worker thread, never on the render thread.
 
+use crate::state::DynamicCommand;
 use serde_json::{json, Value};
 use std::time::Duration;
 
@@ -196,6 +197,53 @@ impl Api {
                 agent.get("hidden").and_then(Value::as_bool) != Some(true)
                     && agent.get("mode").and_then(Value::as_str) != Some("subagent")
             })
+            .collect())
+    }
+
+    /// Dynamic slash commands from the v2 command list. Skill-sourced
+    /// commands are excluded (skills reach the model via a dedicated
+    /// mechanism); MCP-sourced commands are annotated with a `:mcp` label.
+    pub fn commands(&self) -> Result<Vec<DynamicCommand>, String> {
+        let response = self.get("/api/command")?;
+        let data = response
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        Ok(data
+            .into_iter()
+            .filter(|command| command.get("source").and_then(Value::as_str) != Some("skill"))
+            .map(|command| {
+                let template = command
+                    .get("template")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                DynamicCommand {
+                    name: command
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    description: command
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
+                    // Templates that mention `$ARGUMENTS`, `$1`, `$2`, ...
+                    // accept inline arguments after the slash name.
+                    takes_args: template.contains("$ARGUMENTS")
+                        || template
+                            .chars()
+                            .zip(template.chars().skip(1))
+                            .any(|(a, b)| a == '$' && b.is_ascii_digit()),
+                    label: if command.get("source").and_then(Value::as_str) == Some("mcp") {
+                        ":mcp".to_string()
+                    } else {
+                        String::new()
+                    },
+                }
+            })
+            .filter(|command| !command.name.is_empty())
             .collect())
     }
 

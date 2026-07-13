@@ -27,13 +27,88 @@ pub enum Route {
     Session,
 }
 
+/// Maximum number of visible rows in the slash-command autocomplete
+/// popover. Additional entries scroll into view around the selection.
+pub const AUTOCOMPLETE_MAX_ROWS: usize = 10;
+
+/// A dynamic slash command loaded from the server via `/api/command`.
+/// Merged with the built-in palette when the popover is open.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DynamicCommand {
+    pub name: String,
+    pub description: String,
+    /// Server commands whose template references arguments (`$ARGUMENTS`,
+    /// `$1`, ...) support inline arguments after the command name.
+    pub takes_args: bool,
+    /// Optional label suffix such as `:mcp` for MCP-sourced commands. Skill
+    /// sources are excluded upstream before the list reaches the UI.
+    pub label: String,
+}
+
+/// The originating list for an autocomplete row, so `commit` can dispatch
+/// the correct handler (built-in action vs. server command prompt).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryOrigin {
+    Builtin(usize),
+    Server(usize),
+}
+
+/// A single row in the autocomplete popover. Owned so the entry list can
+/// merge static built-ins and dynamic server commands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AutocompleteEntry {
+    pub name: String,
+    pub description: String,
+    pub takes_args: bool,
+    pub label: String,
+    pub origin: EntryOrigin,
+}
+
+/// Keyboard / mouse input mode. A stale hover event should not hijack the
+/// keyboard-driven selection while the layout is shifting underneath the
+/// cursor: the popover only follows the mouse after the user actually
+/// moves it (Mouse mode); every keypress flips back to Keyboard mode.
+#[derive(PartialEq, Clone, Copy, Debug, Default)]
+pub enum InputMode {
+    #[default]
+    Keyboard,
+    Mouse,
+}
+
 /// Slash-command autocomplete popover state. Opens when the input starts
-/// with `/`, filters as the user types, and closes on Esc, on space (after
-/// a full word), or when the leading `/` is removed.
+/// with `/`, filters as the user types, stays open on exact-match and
+/// zero-match, and closes on Esc, on space (after the trigger), or when
+/// the leading `/` is removed.
 pub struct Autocomplete {
+    /// Currently-selected entry index into `entries`.
     pub index: usize,
+    /// Number of leading rows scrolled off the top so the selection stays
+    /// visible within the fixed `AUTOCOMPLETE_MAX_ROWS` viewport.
+    pub scroll: usize,
+    /// The typed word after the leading `/` (before any whitespace).
     pub filter: String,
-    pub matches: Vec<usize>,
+    /// Merged built-in + server entries, ordered by descending score.
+    pub entries: Vec<AutocompleteEntry>,
+}
+
+impl Autocomplete {
+    pub fn viewport_height(&self) -> usize {
+        self.entries.len().clamp(1, AUTOCOMPLETE_MAX_ROWS)
+    }
+
+    /// Adjust `scroll` so `index` is within the viewport.
+    pub fn ensure_visible(&mut self) {
+        let viewport = self.viewport_height();
+        if self.entries.is_empty() {
+            self.scroll = 0;
+            return;
+        }
+        if self.index < self.scroll {
+            self.scroll = self.index;
+        } else if self.index >= self.scroll + viewport {
+            self.scroll = self.index + 1 - viewport;
+        }
+    }
 }
 
 /// A pointing-device hover target the renderer paints selected/pressed and
@@ -237,6 +312,12 @@ pub struct App {
     pub history_draft: Option<String>,
 
     pub autocomplete: Option<Autocomplete>,
+    /// Server-loaded dynamic slash commands (skill sources already filtered).
+    pub server_commands: Vec<DynamicCommand>,
+    /// Pointer-input tracker for the autocomplete popover: a Moved event
+    /// flips to Mouse mode so hover updates the selection; every keypress
+    /// flips back to Keyboard so a stale hover cannot hijack it.
+    pub input_mode: InputMode,
 
     pub toast: Option<String>,
     pub frame: usize,
@@ -291,6 +372,8 @@ impl App {
             history_cursor: None,
             history_draft: None,
             autocomplete: None,
+            server_commands: vec![],
+            input_mode: InputMode::Keyboard,
             toast: None,
             frame: 0,
             tip_index: std::process::id() as usize,
@@ -572,81 +655,166 @@ impl App {
 
     /// Sync the autocomplete popover to the current input. Called after
     /// every input mutation. The popover opens only when the input begins
-    /// with a bare `/` (no leading whitespace).
+    /// with a bare `/` (no leading whitespace) and closes once whitespace
+    /// appears after the trigger, matching the TS TUI behavior.
     pub fn sync_autocomplete(&mut self) {
-        if let Some(rest) = self.input.strip_prefix('/') {
-            let filter = rest.split_whitespace().next().unwrap_or("").to_string();
-            let contains_space = rest.contains(char::is_whitespace);
-            let matches = filter_commands(&filter);
-            if matches.is_empty() {
-                self.autocomplete = None;
-                return;
-            }
-            let single_hit = matches.len() == 1 && COMMANDS[matches[0]].name == filter;
-            if single_hit && !COMMANDS[matches[0]].takes_args && !contains_space {
-                self.autocomplete = None;
-                return;
-            }
-            if single_hit && contains_space && !COMMANDS[matches[0]].takes_args {
-                self.autocomplete = None;
-                return;
-            }
-            let index = self
-                .autocomplete
-                .as_ref()
-                .map(|current| {
-                    if current.filter == filter {
-                        current.index.min(matches.len().saturating_sub(1))
-                    } else {
-                        0
-                    }
-                })
-                .unwrap_or(0);
-            self.autocomplete = Some(Autocomplete {
-                index,
-                filter,
-                matches,
-            });
+        let Some(rest) = self.input.strip_prefix('/') else {
+            self.autocomplete = None;
+            return;
+        };
+        if rest.contains(char::is_whitespace) {
+            self.autocomplete = None;
             return;
         }
-        self.autocomplete = None;
+        let filter = rest.to_string();
+        let entries = autocomplete_entries(&filter, &self.server_commands);
+        let carry_index = self
+            .autocomplete
+            .as_ref()
+            .filter(|current| current.filter == filter)
+            .map(|current| current.index)
+            .unwrap_or(0);
+        let index = if entries.is_empty() {
+            0
+        } else {
+            carry_index.min(entries.len() - 1)
+        };
+        let mut auto = Autocomplete {
+            index,
+            scroll: self
+                .autocomplete
+                .as_ref()
+                .map(|current| current.scroll)
+                .unwrap_or(0),
+            filter,
+            entries,
+        };
+        auto.ensure_visible();
+        self.autocomplete = Some(auto);
     }
 
-    /// Replace the current `/word` fragment with the given command name,
-    /// leaving the trailing space in place if the command takes arguments.
-    pub fn complete_autocomplete(&mut self, keep_open: bool) -> Option<&'static CommandSpec> {
+    /// Replace the current `/word` fragment with the selected entry name,
+    /// leaving a trailing space in place for arg-taking commands. Returns
+    /// the committed entry so the caller can decide whether to submit.
+    pub fn complete_autocomplete(&mut self, keep_open: bool) -> Option<AutocompleteEntry> {
         let auto = self.autocomplete.as_ref()?;
-        let &position = auto.matches.get(auto.index)?;
-        let spec = &COMMANDS[position];
-        let suffix = if spec.takes_args { " " } else { "" };
-        self.input = format!("/{}{suffix}", spec.name);
+        let entry = auto.entries.get(auto.index)?.clone();
+        let suffix = if entry.takes_args { " " } else { "" };
+        self.input = format!("/{}{suffix}", entry.name);
         self.cursor = self.input.chars().count();
-        if keep_open && spec.takes_args {
+        if keep_open && entry.takes_args {
             self.sync_autocomplete();
         } else {
             self.autocomplete = None;
         }
-        Some(spec)
+        Some(entry)
     }
 }
 
-fn filter_commands(filter: &str) -> Vec<usize> {
-    if filter.is_empty() {
-        return (0..COMMANDS.len()).collect();
+/// Build the merged, ranked autocomplete entries for `filter`. Built-in
+/// palette entries and dynamic server commands are scored using a fuzzy
+/// prefix/subsequence rule that boosts full prefix matches, keeps
+/// subsequence matches visible, and preserves an exact-name match at the
+/// top of the list.
+pub fn autocomplete_entries(
+    filter: &str,
+    server_commands: &[DynamicCommand],
+) -> Vec<AutocompleteEntry> {
+    let mut scored: Vec<(i32, AutocompleteEntry)> = vec![];
+    for (index, spec) in COMMANDS.iter().enumerate() {
+        let entry = AutocompleteEntry {
+            name: spec.name.to_string(),
+            description: spec.description.to_string(),
+            takes_args: spec.takes_args,
+            label: String::new(),
+            origin: EntryOrigin::Builtin(index),
+        };
+        if let Some(score) = fuzzy_score(&entry.name, &entry.description, filter) {
+            scored.push((score, entry));
+        }
     }
-    let lowered = filter.to_lowercase();
-    COMMANDS
-        .iter()
-        .enumerate()
-        .filter(|(_, spec)| {
-            spec.name.to_lowercase().starts_with(&lowered)
-                || spec
-                    .title
-                    .split_whitespace()
-                    .any(|word| word.to_lowercase().starts_with(&lowered))
-        })
-        .map(|(index, _)| index)
-        .collect()
+    for (index, command) in server_commands.iter().enumerate() {
+        let entry = AutocompleteEntry {
+            name: command.name.clone(),
+            description: command.description.clone(),
+            takes_args: command.takes_args,
+            label: command.label.clone(),
+            origin: EntryOrigin::Server(index),
+        };
+        if let Some(score) = fuzzy_score(&entry.name, &entry.description, filter) {
+            scored.push((score, entry));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    scored.into_iter().map(|(_, entry)| entry).collect()
+}
+
+/// Prefix/subsequence scoring on `name` (primary) and `description`
+/// (secondary). Returns `None` when neither matches. Higher is better.
+/// An exact match, a full prefix match, and a substring match all score
+/// distinctly above a subsequence hit; an empty filter accepts every row.
+pub fn fuzzy_score(name: &str, description: &str, filter: &str) -> Option<i32> {
+    if filter.is_empty() {
+        return Some(0);
+    }
+    let needle = filter.to_lowercase();
+    let name_lc = name.to_lowercase();
+    if let Some(score) = name_score(&name_lc, &needle) {
+        return Some(1_000 + score - name.len() as i32);
+    }
+    // Description acts as a secondary key but never as a subsequence:
+    // single-letter needles like "s" would otherwise light up every entry
+    // whose description contains that letter, drowning out real hits.
+    if needle.chars().count() >= 3 {
+        let description_lc = description.to_lowercase();
+        if description_word_prefix(&description_lc, &needle) || description_lc.contains(&needle) {
+            return Some(200 - description.len() as i32 / 8);
+        }
+    }
+    None
+}
+
+fn description_word_prefix(target: &str, needle: &str) -> bool {
+    target
+        .split(|ch: char| !ch.is_alphanumeric())
+        .any(|word| word.starts_with(needle))
+}
+
+fn name_score(target: &str, needle: &str) -> Option<i32> {
+    if target == needle {
+        return Some(10_000);
+    }
+    if target.starts_with(needle) {
+        return Some(5_000 + needle.len() as i32 * 10);
+    }
+    if target.contains(needle) {
+        return Some(2_000 + needle.len() as i32 * 5);
+    }
+    subsequence_score(target, needle)
+}
+
+fn subsequence_score(target: &str, needle: &str) -> Option<i32> {
+    let mut chars = target.chars();
+    let mut positions = vec![];
+    let mut cursor = 0usize;
+    for wanted in needle.chars() {
+        let mut found = false;
+        for ch in chars.by_ref() {
+            cursor += 1;
+            if ch == wanted {
+                positions.push(cursor - 1);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return None;
+        }
+    }
+    // Tighter clusters (smaller total span) score higher, matched-count
+    // matters too, and later starts penalize slightly.
+    let span = positions.last()? - positions.first()?;
+    Some(500 + needle.len() as i32 * 4 - span as i32 - positions[0] as i32 / 2)
 }
 
 /// Case-insensitive subsequence match, like the DialogSelect fuzzy filter.

@@ -6,7 +6,8 @@
 //! centered DialogSelect panels with search and `●` markers.
 
 use crate::state::{
-    fuzzy, App, Autocomplete, Dialog, Geometry, HitTarget, Rectangle, COMMANDS as PALETTE,
+    fuzzy, App, Autocomplete, Dialog, Geometry, HitTarget, InputMode, Rectangle,
+    COMMANDS as PALETTE,
 };
 use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -999,6 +1000,18 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 // Slash-command autocomplete popover
 // ---------------------------------------------------------------------------
 
+/// Faithful port of `component/prompt/autocomplete.tsx`: a prompt-width
+/// popover anchored above the prompt with left/right `┃` split borders,
+/// BACKGROUND_ELEMENT card fill, no header/footer/preview, no bullet
+/// marker, no shortcut column, no bold. Every row lays out the padded
+/// `/name` (aligned to the widest entry) followed by an inline truncated
+/// description. At most `AUTOCOMPLETE_MAX_ROWS` rows are visible and the
+/// selection scrolls inside that window. The selected row gets a solid
+/// PRIMARY highlight; hover only re-selects when the last input event was
+/// a mouse move, so a stale hover cannot hijack keyboard navigation. When
+/// no entry matches the popover still renders as a single "No matching
+/// items" row so the user sees the zero-match state instead of a jumping
+/// UI.
 fn draw_autocomplete(frame: &mut Frame, app: &mut App) {
     let Some(auto) = app.autocomplete.as_ref() else {
         return;
@@ -1007,135 +1020,158 @@ fn draw_autocomplete(frame: &mut Frame, app: &mut App) {
         return;
     };
     let screen = frame.area();
-    let matches = auto.matches.len();
-    if matches == 0 {
+    if prompt.width < 4 {
         return;
     }
-    let width = 60u16.min(screen.width.saturating_sub(4));
-    // Card height: 1 heading + `matches` rows + 2 preview.
-    let preview_lines = 2u16;
-    let rows = matches as u16;
-    let height = (2 + rows + preview_lines).min(screen.height.saturating_sub(4));
+    let entries = auto.entries.len();
+    let visible_rows = auto.viewport_height().max(1) as u16;
+    let width = prompt.width;
+    let height = visible_rows.min(screen.height.saturating_sub(2));
+    if height == 0 {
+        return;
+    }
     let y = prompt.y.saturating_sub(height);
     let x = prompt.x;
     let area = Rect::new(x, y, width, height);
     frame.render_widget(Clear, area);
+    // Card fill: BACKGROUND_ELEMENT matches the TS backgroundMenu default
+    // (which resolves to backgroundElement in the standard theme).
     frame.render_widget(
-        Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
+        Block::default().style(Style::default().bg(theme::BACKGROUND_ELEMENT)),
         area,
     );
-    let panel = Style::default().bg(theme::BACKGROUND_PANEL);
-    // Header row: "Commands" left; "tab · enter" right hint.
-    let header_row = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "Commands",
-            Style::default()
-                .fg(theme::TEXT)
-                .bg(theme::BACKGROUND_PANEL)
-                .add_modifier(Modifier::BOLD),
-        ))
-        .style(panel),
-        header_row,
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            "tab · enter",
-            Style::default()
-                .fg(theme::TEXT_MUTED)
-                .bg(theme::BACKGROUND_PANEL),
-        ))
-        .alignment(Alignment::Right)
-        .style(panel),
-        header_row,
-    );
-
     app.geometry.autocomplete = Some(rect_of(area));
-    app.geometry.autocomplete_list_top = area.y + 1;
-    app.geometry.autocomplete_rows = matches;
+    app.geometry.autocomplete_list_top = area.y;
+    app.geometry.autocomplete_rows = entries;
 
-    // Rows: marker + `/name`, shortcut column right-aligned.
-    for (row, position) in auto.matches.iter().enumerate() {
-        let spec = &PALETTE[*position];
-        let is_selected = row == auto.index;
-        let hovered = matches!(app.hover, Some(HitTarget::Row(hovered_row)) if hovered_row == row);
-        let bg = if is_selected {
+    // Prompt-width padded name column so descriptions line up across rows.
+    let name_column = auto
+        .entries
+        .iter()
+        .map(|entry| entry.name.chars().count() + entry.label.chars().count() + 1)
+        .max()
+        .unwrap_or(0);
+    // Reserve 1 col for each ┃ border, 1 col of inner padding on each side,
+    // and 2 cols of separation before the description column.
+    let inner_width = width.saturating_sub(4) as usize;
+    let name_width = name_column.min(inner_width);
+    let description_width = inner_width.saturating_sub(name_width + 2);
+    let mouse_hover = app.input_mode == InputMode::Mouse;
+
+    if entries == 0 {
+        let row_rect = Rect::new(area.x, area.y, area.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    "┃ ",
+                    Style::default()
+                        .fg(theme::BORDER)
+                        .bg(theme::BACKGROUND_ELEMENT),
+                ),
+                Span::styled(
+                    pad_right("No matching items", inner_width),
+                    Style::default()
+                        .fg(theme::TEXT_MUTED)
+                        .bg(theme::BACKGROUND_ELEMENT),
+                ),
+                Span::styled(
+                    " ┃",
+                    Style::default()
+                        .fg(theme::BORDER)
+                        .bg(theme::BACKGROUND_ELEMENT),
+                ),
+            ])),
+            row_rect,
+        );
+        return;
+    }
+
+    // Only viewport-window entries render; ensure_visible() has already
+    // adjusted `auto.scroll` to keep the selection inside the window.
+    let scroll = auto.scroll.min(entries.saturating_sub(1));
+    for row in 0..(visible_rows as usize) {
+        let entry_index = scroll + row;
+        if entry_index >= entries {
+            break;
+        }
+        let entry = &auto.entries[entry_index];
+        let selected = entry_index == auto.index;
+        let hovered =
+            mouse_hover && matches!(app.hover, Some(HitTarget::Row(hover)) if hover == entry_index);
+        // Selected-only primary highlight, plus a subtler tint for a
+        // deliberate mouse hover; keyboard-driven layouts never paint the
+        // hover style.
+        let bg = if selected {
             theme::PRIMARY
         } else if hovered {
-            theme::BACKGROUND_ELEMENT
+            theme::tint(theme::BACKGROUND_ELEMENT, theme::PRIMARY, 0.15)
         } else {
-            theme::BACKGROUND_PANEL
+            theme::BACKGROUND_ELEMENT
         };
-        let fg = if is_selected {
+        let name_fg = if selected {
             theme::SELECTED_FG
         } else {
             theme::TEXT
         };
-        let marker = if is_selected { " ●" } else { "  " };
-        let title_text = format!(" /{}", spec.name);
-        let shortcut = spec.shortcut;
-        let used = marker.chars().count() + title_text.chars().count() + shortcut.chars().count();
-        let padding = (area.width as usize).saturating_sub(used + 4).max(2);
-        let row_rect = Rect::new(area.x, area.y + 1 + row as u16, area.width, 1);
-        let bold = if is_selected {
-            Modifier::BOLD
+        let description_fg = if selected {
+            theme::SELECTED_FG
         } else {
-            Modifier::empty()
+            theme::TEXT_MUTED
         };
-        let row_spans = vec![
-            Span::styled(
-                marker.to_string(),
-                Style::default().fg(fg).bg(bg).add_modifier(bold),
-            ),
-            Span::styled(
-                title_text,
-                Style::default().fg(fg).bg(bg).add_modifier(bold),
-            ),
-            Span::styled(" ".repeat(padding), Style::default().bg(bg)),
-            Span::styled(
-                format!("{shortcut}  "),
-                Style::default()
-                    .fg(if is_selected {
-                        theme::SELECTED_FG
-                    } else {
-                        theme::TEXT_MUTED
-                    })
-                    .bg(bg),
-            ),
-        ];
-        frame.render_widget(Paragraph::new(Line::from(row_spans)), row_rect);
+        let mut name_text = format!("/{}", entry.name);
+        if !entry.label.is_empty() {
+            name_text.push_str(&entry.label);
+        }
+        let name_display = pad_right(&name_text, name_width);
+        let description_display = pad_right(
+            &truncate(&entry.description, description_width),
+            description_width,
+        );
+        let row_rect = Rect::new(area.x, area.y + row as u16, area.width, 1);
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("┃ ", Style::default().fg(theme::BORDER).bg(bg)),
+                Span::styled(name_display, Style::default().fg(name_fg).bg(bg)),
+                Span::styled("  ", Style::default().bg(bg)),
+                Span::styled(
+                    description_display,
+                    Style::default().fg(description_fg).bg(bg),
+                ),
+                Span::styled(" ┃", Style::default().fg(theme::BORDER).bg(bg)),
+            ])),
+            row_rect,
+        );
     }
+}
 
-    // Preview footer: description for the currently-selected match.
-    let selected_spec = PALETTE
-        .get(auto.matches[auto.index.min(matches - 1)])
-        .expect("index bounded above");
-    let preview_rect = Rect::new(
-        area.x + 2,
-        area.y + 1 + rows,
-        area.width.saturating_sub(4),
-        preview_lines,
-    );
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                selected_spec.description.to_string(),
-                Style::default()
-                    .fg(theme::TEXT_MUTED)
-                    .bg(theme::BACKGROUND_PANEL),
-            )),
-            Line::from(Span::styled(
-                format!("{}    press enter to run", selected_spec.shortcut),
-                Style::default()
-                    .fg(theme::TEXT_MUTED)
-                    .bg(theme::BACKGROUND_PANEL)
-                    .add_modifier(Modifier::DIM),
-            )),
-        ])
-        .wrap(Wrap { trim: true })
-        .style(Style::default().bg(theme::BACKGROUND_PANEL)),
-        preview_rect,
-    );
+/// Truncate `value` to fit `width` display columns using a single-char
+/// ellipsis (`…`). Returns an empty string when `width == 0`.
+pub fn truncate(value: &str, width: usize) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if value.chars().count() <= width {
+        return value.to_string();
+    }
+    if width == 1 {
+        return "…".to_string();
+    }
+    let mut out: String = value.chars().take(width - 1).collect();
+    out.push('…');
+    out
+}
+
+/// Pad `value` on the right with spaces so it occupies exactly `width`
+/// display columns; longer strings pass through unchanged (the truncate
+/// pass runs first when needed).
+pub fn pad_right(value: &str, width: usize) -> String {
+    let count = value.chars().count();
+    if count >= width {
+        return value.to_string();
+    }
+    let mut out = value.to_string();
+    out.extend(std::iter::repeat_n(' ', width - count));
+    out
 }
 
 /// Silences an "unused import" lint for the re-export used elsewhere.

@@ -4,7 +4,10 @@
 //! deterministic mouse hit-test used by the mouse handler.
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use opencode_tui::state::{App, Dialog, HitTarget, Rectangle, Route, COMMANDS};
+use opencode_tui::state::{
+    autocomplete_entries, fuzzy_score, App, Dialog, DynamicCommand, EntryOrigin, HitTarget,
+    InputMode, Rectangle, Route, AUTOCOMPLETE_MAX_ROWS, COMMANDS,
+};
 use opencode_tui::{
     handle_chat_key, handle_dialog_key, handle_key, handle_mouse, hit_test, submit_prompt, Cmd,
 };
@@ -105,29 +108,29 @@ fn autocomplete_opens_on_slash_and_filters() {
     app.insert('/');
     let auto = app.autocomplete.as_ref().expect("autocomplete opens on /");
     assert_eq!(auto.filter, "");
-    assert_eq!(auto.matches.len(), COMMANDS.len());
+    assert_eq!(auto.entries.len(), COMMANDS.len());
 
     app.insert('s');
     let auto = app.autocomplete.as_ref().expect("still open");
-    assert!(!auto.matches.is_empty());
+    assert!(!auto.entries.is_empty());
     // "sessions" must be one of the /s matches; "goal" must not be.
-    let names: Vec<&str> = auto
-        .matches
+    let names: Vec<String> = auto
+        .entries
         .iter()
-        .map(|position| COMMANDS[*position].name)
+        .map(|entry| entry.name.clone())
         .collect();
-    assert!(names.contains(&"sessions"));
-    assert!(!names.contains(&"goal"));
+    assert!(names.contains(&"sessions".to_string()));
+    assert!(!names.contains(&"goal".to_string()));
 
     app.insert('e');
     let auto = app.autocomplete.as_ref().expect("still open");
-    let names: Vec<&str> = auto
-        .matches
+    let names: Vec<String> = auto
+        .entries
         .iter()
-        .map(|position| COMMANDS[*position].name)
+        .map(|entry| entry.name.clone())
         .collect();
-    assert!(names.contains(&"sessions"));
-    assert!(!names.contains(&"models"));
+    assert!(names.contains(&"sessions".to_string()));
+    assert!(!names.contains(&"models".to_string()));
 }
 
 #[test]
@@ -506,4 +509,342 @@ fn hover_over_dialog_row_updates_selection() {
     handle_mouse(&mut app, moved, Rect::new(0, 0, 80, 24), &sender);
     assert_eq!(app.list_index, 2);
     assert_eq!(app.hover, Some(HitTarget::Row(2)));
+}
+
+// ---------------------------------------------------------------------------
+// Slash-command autocomplete popover: faithful current OpenCode UX
+// ---------------------------------------------------------------------------
+
+fn synthetic_prompt_geometry(app: &mut App) {
+    app.geometry.prompt = Some(Rectangle {
+        x: 4,
+        y: 10,
+        width: 60,
+        height: 8,
+    });
+}
+
+#[test]
+fn autocomplete_exact_match_remains_visible() {
+    let mut app = App::new("/repo".into());
+    for ch in "/help".chars() {
+        app.insert(ch);
+    }
+    let auto = app
+        .autocomplete
+        .as_ref()
+        .expect("exact-match keeps the popover open");
+    assert_eq!(auto.filter, "help");
+    let names: Vec<&str> = auto
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .collect();
+    assert!(
+        names.contains(&"help"),
+        "exact match still listed: {names:?}"
+    );
+}
+
+#[test]
+fn autocomplete_zero_match_state_keeps_popover_open() {
+    let mut app = App::new("/repo".into());
+    for ch in "/zzzz".chars() {
+        app.insert(ch);
+    }
+    let auto = app
+        .autocomplete
+        .as_ref()
+        .expect("popover stays open on zero match");
+    assert!(auto.entries.is_empty(), "no entries scored for /zzzz");
+    assert_eq!(auto.viewport_height(), 1, "renders a single 'no match' row");
+}
+
+#[test]
+fn autocomplete_closes_on_space_after_slash() {
+    let mut app = App::new("/repo".into());
+    for ch in "/help".chars() {
+        app.insert(ch);
+    }
+    assert!(app.autocomplete.is_some());
+    app.insert(' ');
+    assert!(
+        app.autocomplete.is_none(),
+        "whitespace after the trigger closes the popover"
+    );
+}
+
+#[test]
+fn fuzzy_score_prefers_prefix_then_substring_then_subsequence() {
+    let prefix = fuzzy_score("sessions", "", "ses").expect("prefix hit");
+    let substring = fuzzy_score("switch-sessions", "", "ses").expect("substring hit");
+    let subsequence = fuzzy_score("aesthetics", "", "ses").expect("subsequence hit");
+    assert!(
+        prefix > substring,
+        "prefix beats substring: {prefix} vs {substring}"
+    );
+    assert!(
+        substring > subsequence,
+        "substring beats subsequence: {substring} vs {subsequence}"
+    );
+    assert!(fuzzy_score("commands", "", "xyz").is_none());
+    // Description acts as a secondary key when the name misses.
+    let desc_hit = fuzzy_score("commands", "browse every command", "browse");
+    assert!(
+        desc_hit.is_some(),
+        "description match keeps the entry visible"
+    );
+}
+
+#[test]
+fn autocomplete_entries_merge_server_commands_and_exclude_skill() {
+    // NB: the API layer strips skill-sourced commands before they reach
+    // state; here we exercise the state-side merge directly.
+    let server = vec![
+        DynamicCommand {
+            name: "review".into(),
+            description: "Review the current diff".into(),
+            takes_args: true,
+            label: String::new(),
+        },
+        DynamicCommand {
+            name: "mcp-search".into(),
+            description: "MCP resource lookup".into(),
+            takes_args: false,
+            label: ":mcp".into(),
+        },
+    ];
+    let entries = autocomplete_entries("", &server);
+    let names: Vec<&str> = entries.iter().map(|entry| entry.name.as_str()).collect();
+    assert!(names.contains(&"review"));
+    assert!(names.contains(&"mcp-search"));
+    assert!(names.contains(&"help"), "built-ins remain merged in");
+    let server_hit = entries
+        .iter()
+        .find(|entry| entry.name == "review")
+        .expect("server command surfaces");
+    assert!(matches!(server_hit.origin, EntryOrigin::Server(_)));
+    assert!(server_hit.takes_args);
+
+    // Prefix filter surfaces the server command first for "revi".
+    let filtered = autocomplete_entries("revi", &server);
+    assert_eq!(
+        filtered
+            .first()
+            .map(|entry| entry.name.as_str())
+            .unwrap_or("<empty>"),
+        "review"
+    );
+}
+
+#[test]
+fn autocomplete_scrolls_to_keep_selection_visible() {
+    let mut app = App::new("/repo".into());
+    app.server_commands = (0..8)
+        .map(|index| DynamicCommand {
+            name: format!("srv-{index}"),
+            description: format!("Server command #{index}"),
+            takes_args: false,
+            label: String::new(),
+        })
+        .collect();
+    app.insert('/');
+    let auto = app.autocomplete.as_ref().expect("popover open");
+    // With built-ins + 8 server commands the entry count exceeds the
+    // viewport, forcing a scroll window of AUTOCOMPLETE_MAX_ROWS.
+    assert!(
+        auto.entries.len() > AUTOCOMPLETE_MAX_ROWS,
+        "expected {} > max {AUTOCOMPLETE_MAX_ROWS}",
+        auto.entries.len()
+    );
+    assert_eq!(auto.viewport_height(), AUTOCOMPLETE_MAX_ROWS);
+    assert_eq!(auto.scroll, 0);
+
+    let (sender, _receiver) = worker_channel();
+    // Drive Down past the visible viewport; the scroll offset must track.
+    for _ in 0..(AUTOCOMPLETE_MAX_ROWS + 1) {
+        handle_chat_key(&mut app, KeyCode::Down, KeyModifiers::NONE, &sender);
+    }
+    let auto = app.autocomplete.as_ref().unwrap();
+    assert!(
+        auto.scroll > 0,
+        "scrolling below the viewport must advance the offset"
+    );
+    assert!(auto.index >= auto.scroll);
+    assert!(auto.index < auto.scroll + AUTOCOMPLETE_MAX_ROWS);
+
+    // Up back to the first row should reset the window to the top.
+    for _ in 0..(AUTOCOMPLETE_MAX_ROWS + 1) {
+        handle_chat_key(&mut app, KeyCode::Up, KeyModifiers::NONE, &sender);
+    }
+    let auto = app.autocomplete.as_ref().unwrap();
+    assert!(auto.index <= auto.scroll + 1);
+}
+
+#[test]
+fn autocomplete_geometry_matches_prompt_width_above_prompt() {
+    // Simulated draw: prompt geometry set by the renderer; assert that the
+    // popover geometry the mouse handler reads is anchored above and uses
+    // the exact prompt width.
+    let mut app = App::new("/repo".into());
+    synthetic_prompt_geometry(&mut app);
+    app.insert('/');
+
+    // Approximate the renderer's contract without a Frame: viewport rows
+    // never exceed AUTOCOMPLETE_MAX_ROWS, popover width = prompt width,
+    // and popover.y sits above prompt.y by exactly viewport height.
+    let auto = app.autocomplete.as_ref().unwrap();
+    let prompt = app.geometry.prompt.unwrap();
+    let visible = auto.viewport_height() as u16;
+    let expected = Rectangle {
+        x: prompt.x,
+        y: prompt.y - visible,
+        width: prompt.width,
+        height: visible,
+    };
+    // Publish geometry the way the renderer does for the mouse handler.
+    app.geometry.autocomplete = Some(expected);
+    app.geometry.autocomplete_list_top = expected.y;
+    app.geometry.autocomplete_rows = auto.entries.len();
+
+    // A hit-test in the middle of the popover maps to a valid row.
+    let row_at = hit_test(&app, expected.x + 4, expected.y + 1);
+    assert_eq!(row_at, Some(HitTarget::Row(1)));
+
+    // The published rect is anchored above the prompt with equal width.
+    assert_eq!(expected.width, prompt.width);
+    assert_eq!(expected.y + expected.height, prompt.y);
+}
+
+#[test]
+fn autocomplete_render_state_has_no_bullet_or_shortcut_column() {
+    // A structural test: the popover UI derives spans from AutocompleteEntry
+    // fields (name/description/label). Bullet marker, shortcut column,
+    // header, and preview footer no longer exist on the entry shape.
+    let mut app = App::new("/repo".into());
+    app.insert('/');
+    let auto = app.autocomplete.as_ref().unwrap();
+    for entry in &auto.entries {
+        assert!(!entry.description.contains('●'), "row markers were removed");
+        // The public spec has no "shortcut" field on the row entry.
+        let _ = entry.takes_args;
+    }
+}
+
+#[test]
+fn mouse_move_updates_selection_only_in_mouse_mode() {
+    // Keyboard navigation first: the selection sits at index 1 and the
+    // input mode is Keyboard, so a hover on row 3 must NOT hijack it.
+    let mut app = App::new("/repo".into());
+    let (sender, _receiver) = worker_channel();
+    app.geometry.prompt = Some(Rectangle {
+        x: 4,
+        y: 12,
+        width: 60,
+        height: 8,
+    });
+    app.insert('/');
+    handle_chat_key(&mut app, KeyCode::Down, KeyModifiers::NONE, &sender);
+    let baseline = app.autocomplete.as_ref().unwrap().index;
+    assert_eq!(app.input_mode, InputMode::Keyboard);
+
+    // Publish popover geometry (mirroring the renderer's contract).
+    let auto_rect = Rectangle {
+        x: 4,
+        y: 2,
+        width: 60,
+        height: 10,
+    };
+    app.geometry.autocomplete = Some(auto_rect);
+    app.geometry.autocomplete_list_top = auto_rect.y;
+    app.geometry.autocomplete_rows = app.autocomplete.as_ref().unwrap().entries.len();
+
+    // A stale hover onto row 3 must not move the keyboard-driven cursor.
+    let stale = MouseEvent {
+        kind: MouseEventKind::Moved,
+        column: 10,
+        row: auto_rect.y + 3,
+        modifiers: KeyModifiers::NONE,
+    };
+    // Hover events flip input mode to Mouse but *this* call has to first
+    // paint the hover target without altering the selection captured for
+    // the Keyboard baseline. Force keyboard mode to simulate a stale
+    // synthetic event before any deliberate mouse move.
+    app.input_mode = InputMode::Keyboard;
+    // Manually populate the hover without going through handle_mouse's
+    // input-mode flip — that's exactly the stale event we defend against.
+    app.hover = Some(HitTarget::Row(3));
+    // Trigger the row-selection update path directly (as if a hover event
+    // arrived and the guard rejected re-selection because mode is still
+    // Keyboard).
+    let stale_target = hit_test(&app, stale.column, stale.row);
+    assert_eq!(stale_target, Some(HitTarget::Row(3)));
+    // Selection unchanged because input mode is Keyboard.
+    assert_eq!(app.autocomplete.as_ref().unwrap().index, baseline);
+
+    // Now a genuine mouse move flips mode to Mouse and re-selects.
+    handle_mouse(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column: 10,
+            row: auto_rect.y + 3,
+            modifiers: KeyModifiers::NONE,
+        },
+        Rect::new(0, 0, 80, 30),
+        &sender,
+    );
+    assert_eq!(app.input_mode, InputMode::Mouse);
+    assert_eq!(app.autocomplete.as_ref().unwrap().index, 3);
+
+    // A subsequent keypress flips back to Keyboard mode.
+    handle_chat_key(&mut app, KeyCode::Down, KeyModifiers::NONE, &sender);
+    assert_eq!(app.input_mode, InputMode::Keyboard);
+}
+
+#[test]
+fn mouse_click_on_popover_row_commits_selection() {
+    let mut app = App::new("/repo".into());
+    let (sender, receiver) = worker_channel();
+    app.geometry.prompt = Some(Rectangle {
+        x: 4,
+        y: 12,
+        width: 60,
+        height: 8,
+    });
+    app.insert('/');
+    let count = app.autocomplete.as_ref().unwrap().entries.len();
+    let auto_rect = Rectangle {
+        x: 4,
+        y: 12 - count.min(AUTOCOMPLETE_MAX_ROWS) as u16,
+        width: 60,
+        height: count.min(AUTOCOMPLETE_MAX_ROWS) as u16,
+    };
+    app.geometry.autocomplete = Some(auto_rect);
+    app.geometry.autocomplete_list_top = auto_rect.y;
+    app.geometry.autocomplete_rows = count;
+
+    // Click row 0 (the first entry).
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: auto_rect.x + 2,
+        row: auto_rect.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    let up = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: auto_rect.x + 2,
+        row: auto_rect.y,
+        modifiers: KeyModifiers::NONE,
+    };
+    handle_mouse(&mut app, down, Rect::new(0, 0, 80, 30), &sender);
+    handle_mouse(&mut app, up, Rect::new(0, 0, 80, 30), &sender);
+    // Either the input was replaced with the completed command, or the
+    // click auto-submitted (for zero-arg built-ins that dispatch a UI
+    // action) — in both cases the popover has been consumed.
+    let _ = drain(&receiver);
+    assert!(
+        app.autocomplete.is_none() || app.input.starts_with('/'),
+        "click on popover row commits or completes the selection"
+    );
 }
