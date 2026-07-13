@@ -988,7 +988,7 @@ mod tests {
         std::env::set_var("OPENCODE_MODELS_PATH", root.join("models.json"));
 
         let config = json!({
-            "providers": {
+            "provider": {
                 "acme": {
                     "request": {
                         "headers": { "x-test": "yes" },
