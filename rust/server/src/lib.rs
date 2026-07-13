@@ -740,6 +740,28 @@ fn official_agents(worktree: &str) -> Vec<Value> {
         json!({ "id": "summary", "mode": "primary", "hidden": true, "request": { "headers": {}, "body": {} }, "permissions": [] }),
     ]
     .into_iter()
+    .map(|mut agent| {
+        let id = agent
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if let Some(system) = runner::agent_system(id) {
+            agent["system"] = Value::String(system.into());
+        }
+        agent["permissions"] = Value::Array(
+            runner::permission::agent_rules(id)
+                .into_iter()
+                .map(|rule| {
+                    json!({
+                        "action": rule.action,
+                        "resource": rule.resource,
+                        "effect": rule.effect,
+                    })
+                })
+                .collect(),
+        );
+        agent
+    })
     .chain(markdown_agents(worktree).into_iter().map(official_markdown_agent))
     .collect()
 }
@@ -806,6 +828,57 @@ fn official_skill(skill: &Value) -> Value {
         }
     }
     Value::Object(info)
+}
+
+fn reference_list(config: &Value, paths: &config::Paths) -> Vec<Value> {
+    config
+        .get("references")
+        .and_then(Value::as_object)
+        .map(|references| {
+            references
+                .iter()
+                .filter_map(|(name, reference)| {
+                    let description = reference.get("description").cloned();
+                    let hidden = reference.get("hidden").cloned();
+                    let (path, mut source) = if let Some(path) =
+                        reference.get("path").and_then(Value::as_str)
+                    {
+                        let path = path
+                            .strip_prefix("~/")
+                            .map(|suffix| format!("{}/{suffix}", paths.home))
+                            .unwrap_or_else(|| path.to_string());
+                        (path.clone(), json!({ "type": "local", "path": path }))
+                    } else {
+                        let repository = reference.get("repository")?.as_str()?;
+                        (
+                            format!("{}/.local/share/opencode/repos/{}", paths.home, repository),
+                            json!({ "type": "git", "repository": repository }),
+                        )
+                    };
+                    if let Some(description) = &description {
+                        source["description"] = description.clone();
+                    }
+                    if let Some(branch) = reference.get("branch").filter(|value| !value.is_null()) {
+                        source["branch"] = branch.clone();
+                    }
+                    if let Some(hidden) = &hidden {
+                        source["hidden"] = hidden.clone();
+                    }
+                    let mut info = serde_json::Map::new();
+                    info.insert("name".into(), Value::String(name.clone()));
+                    info.insert("path".into(), Value::String(path));
+                    if let Some(description) = description {
+                        info.insert("description".into(), description);
+                    }
+                    if let Some(hidden) = hidden {
+                        info.insert("hidden".into(), hidden);
+                    }
+                    info.insert("source".into(), source);
+                    Some(Value::Object(info))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 async fn empty_array() -> Json<Value> {
@@ -1214,16 +1287,46 @@ async fn api_command_list(
     Query(query): Query<ApiLocationQuery>,
 ) -> Json<Value> {
     let Json(commands) = command_list(State(scoped_app(&app, &headers, &query))).await;
+    let commands = commands
+        .as_array()
+        .map(|items| {
+            items
+                .iter()
+                .filter(|command| {
+                    command.get("source").and_then(Value::as_str) != Some("skill")
+                        && command.get("name").and_then(Value::as_str) != Some("goal")
+                })
+                .map(|command| {
+                    let mut command = official_command(command);
+                    match command.get("name").and_then(Value::as_str) {
+                        Some("init") => {
+                            command["template"] = Value::String(
+                                include_str!(
+                                    "../../../packages/core/src/plugin/command/initialize.txt"
+                                )
+                                .into(),
+                            );
+                        }
+                        Some("review") => {
+                            command["template"] = Value::String(
+                                include_str!(
+                                    "../../../packages/core/src/plugin/command/review.txt"
+                                )
+                                .into(),
+                            );
+                        }
+                        _ => {}
+                    }
+                    command
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     Json(location_response(
         &app,
         &headers,
         &query,
-        Value::Array(
-            commands
-                .as_array()
-                .map(|items| items.iter().map(official_command).collect())
-                .unwrap_or_default(),
-        ),
+        Value::Array(commands),
     ))
 }
 
@@ -1233,16 +1336,23 @@ async fn api_skill_list(
     Query(query): Query<ApiLocationQuery>,
 ) -> Json<Value> {
     let Json(skills) = skill_list(State(scoped_app(&app, &headers, &query))).await;
+    let mut data = vec![json!({
+        "name": "customize-opencode",
+        "description": "Use ONLY when the user is editing or creating opencode's own configuration: opencode.json, opencode.jsonc, files under .opencode/, or files under ~/.config/opencode/. Also use when creating or fixing opencode agents, subagents, commands, skills, plugins, MCP servers, or permission rules. Do not use for the user's own application code, or for any project that is not configuring opencode itself.",
+        "location": "/builtin/customize-opencode.md",
+        "content": include_str!("../../../packages/core/src/plugin/skill/customize-opencode.md"),
+    })];
+    data.extend(
+        skills
+            .as_array()
+            .map(|items| items.iter().map(official_skill).collect())
+            .unwrap_or_default(),
+    );
     Json(location_response(
         &app,
         &headers,
         &query,
-        Value::Array(
-            skills
-                .as_array()
-                .map(|items| items.iter().map(official_skill).collect())
-                .unwrap_or_default(),
-        ),
+        Value::Array(data),
     ))
 }
 
@@ -1251,11 +1361,13 @@ async fn api_reference_list(
     headers: HeaderMap,
     Query(query): Query<ApiLocationQuery>,
 ) -> Json<Value> {
+    let scoped = scoped_app(&app, &headers, &query);
+    let config = config::instance(&scoped.directory, &scoped.worktree);
     Json(location_response(
         &app,
         &headers,
         &query,
-        Value::Array(vec![]),
+        Value::Array(reference_list(&config, &app.paths)),
     ))
 }
 

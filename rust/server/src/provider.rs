@@ -245,7 +245,7 @@ fn models_path() -> String {
 }
 
 pub fn official_providers(config: &Value) -> Vec<Value> {
-    official_catalog(config)
+    official_active_catalog(config)
         .into_values()
         .map(|record| record.provider)
         .collect()
@@ -258,7 +258,7 @@ pub fn official_provider(config: &Value, provider_id: &str) -> Option<Value> {
 }
 
 pub fn official_models(config: &Value) -> Vec<Value> {
-    let mut items = official_catalog(config)
+    let mut items = official_active_catalog(config)
         .into_values()
         .flat_map(|record| {
             record
@@ -287,6 +287,14 @@ struct OfficialRecord {
     models: BTreeMap<String, Value>,
 }
 
+fn official_active_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
+    let active = connected(config);
+    official_catalog(config)
+        .into_iter()
+        .filter(|(id, _)| active.contains_key(id))
+        .collect()
+}
+
 fn official_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
     let disabled = string_set(config.get("disabled_providers"));
     let enabled = optional_string_set(config.get("enabled_providers"));
@@ -298,9 +306,6 @@ fn official_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
         .map(|(id, provider)| {
             let mut record = official_record_from_models_dev(&provider);
             if id == "opencode" && std::env::var("OPENCODE_API_KEY").is_err() {
-                record
-                    .models
-                    .retain(|model_id, _| OPENCODE_FREE_MODELS.contains(&model_id.as_str()));
                 record.provider["request"]["body"]["apiKey"] = Value::String("public".into());
             }
             (id, record)
