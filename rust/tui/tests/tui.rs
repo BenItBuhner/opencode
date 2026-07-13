@@ -9,7 +9,8 @@ use opencode_tui::state::{
     InputMode, Rectangle, Route, AUTOCOMPLETE_MAX_ROWS, COMMANDS,
 };
 use opencode_tui::{
-    handle_chat_key, handle_dialog_key, handle_key, handle_mouse, hit_test, submit_prompt, Cmd,
+    apply, handle_chat_key, handle_dialog_key, handle_key, handle_mouse, handle_worker_cmd,
+    hit_test, submit_prompt, Cmd, Msg, WorkerApi, WorkerState,
 };
 use ratatui::layout::Rect;
 use std::sync::mpsc;
@@ -24,6 +25,147 @@ fn drain(receiver: &mpsc::Receiver<Cmd>) -> Vec<Cmd> {
         items.push(cmd);
     }
     items
+}
+
+#[derive(Default)]
+struct FakeApi {
+    calls: std::cell::RefCell<Vec<String>>,
+}
+
+impl FakeApi {
+    fn calls(&self) -> Vec<String> {
+        self.calls.borrow().clone()
+    }
+}
+
+impl WorkerApi for FakeApi {
+    fn sessions(&self) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn session(&self, session_id: &str) -> Result<serde_json::Value, String> {
+        Ok(match session_id {
+            "ses_child" => serde_json::json!({
+                "id": "ses_child",
+                "parentID": "ses_parent",
+                "title": "Child",
+                "location": { "directory": "/repo" }
+            }),
+            _ => serde_json::json!({
+                "id": session_id,
+                "title": "Parent",
+                "location": { "directory": "/repo" }
+            }),
+        })
+    }
+    fn create_session_with(
+        &self,
+        _directory: &str,
+        _agent: &str,
+        _provider: &str,
+        _model: &str,
+    ) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({ "id": "ses_created", "title": "Created" }))
+    }
+    fn messages(&self, _session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn active(&self) -> Result<Vec<String>, String> {
+        Ok(vec![])
+    }
+    fn session_status(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({}))
+    }
+    fn children(&self, _session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn permissions(&self, _session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn questions(&self, _session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn prompt(&self, session_id: &str, text: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("prompt:{session_id}:{text}"));
+        Ok(())
+    }
+    fn interrupt(&self, session_id: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("interrupt:{session_id}"));
+        Ok(())
+    }
+    fn permission_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        reply: &str,
+        message: Option<&str>,
+    ) -> Result<(), String> {
+        self.calls.borrow_mut().push(format!(
+            "permission:{session_id}:{request_id}:{reply}:{}",
+            message.unwrap_or("")
+        ));
+        Ok(())
+    }
+    fn question_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answers: &[Vec<String>],
+    ) -> Result<(), String> {
+        self.calls.borrow_mut().push(format!(
+            "question-reply:{session_id}:{request_id}:{}",
+            answers[0][0]
+        ));
+        Ok(())
+    }
+    fn question_reject(&self, session_id: &str, request_id: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("question-reject:{session_id}:{request_id}"));
+        Ok(())
+    }
+    fn background(&self, session_id: &str) -> Result<bool, String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("background:{session_id}"));
+        Ok(true)
+    }
+    fn switch_agent(&self, session_id: &str, agent: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("agent:{session_id}:{agent}"));
+        Ok(())
+    }
+    fn switch_model(&self, session_id: &str, provider: &str, model: &str) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("model:{session_id}:{provider}:{model}"));
+        Ok(())
+    }
+    fn goal(&self, _session_id: &str) -> Result<Option<serde_json::Value>, String> {
+        Ok(None)
+    }
+    fn todos(&self, _session_id: &str) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String> {
+        self.calls
+            .borrow_mut()
+            .push(format!("external:{session_id}:{allow}"));
+        Ok(())
+    }
+    fn agents(&self) -> Result<Vec<serde_json::Value>, String> {
+        Ok(vec![])
+    }
+    fn models(&self) -> Result<Vec<(String, String)>, String> {
+        Ok(vec![])
+    }
+    fn commands(&self) -> Result<Vec<DynamicCommand>, String> {
+        Ok(vec![])
+    }
 }
 
 #[test]
@@ -301,6 +443,250 @@ fn selecting_a_session_retargets_worker_polling() {
         drain(&receiver),
         vec![Cmd::SelectSession("ses_selected".into())]
     );
+}
+
+#[test]
+fn apply_updates_child_pending_and_status_state() {
+    let mut app = App::new("/repo".into());
+    app.adopt_session(&serde_json::json!({
+        "id": "ses_parent",
+        "title": "Parent",
+        "location": { "directory": "/repo" }
+    }));
+
+    apply(
+        &mut app,
+        Msg::Children(
+            "ses_parent".into(),
+            vec![serde_json::json!({ "id": "ses_child", "parentID": "ses_parent" })],
+        ),
+    );
+    apply(
+        &mut app,
+        Msg::Permissions(
+            "ses_parent".into(),
+            vec![serde_json::json!({ "id": "per_1", "sessionID": "ses_child" })],
+        ),
+    );
+    apply(
+        &mut app,
+        Msg::Questions(
+            "ses_parent".into(),
+            vec![serde_json::json!({ "id": "que_1", "sessionID": "ses_child" })],
+        ),
+    );
+    apply(
+        &mut app,
+        Msg::SessionStatus(serde_json::json!({ "ses_child": "running" })),
+    );
+
+    assert_eq!(app.child_sessions.len(), 1);
+    assert_eq!(app.pending_permissions[0]["id"], "per_1");
+    assert_eq!(app.pending_questions[0]["id"], "que_1");
+    assert_eq!(app.session_status["ses_child"], "running");
+}
+
+#[test]
+fn permission_key_dispatches_reply_command() {
+    let mut app = App::new("/repo".into());
+    app.pending_permissions = vec![serde_json::json!({
+        "id": "per_1",
+        "sessionID": "ses_parent",
+        "action": "read",
+        "resources": [".env"]
+    })];
+    let (sender, receiver) = worker_channel();
+
+    handle_key(&mut app, KeyCode::Char('1'), KeyModifiers::NONE, &sender);
+    handle_key(&mut app, KeyCode::Char('3'), KeyModifiers::NONE, &sender);
+
+    assert_eq!(
+        drain(&receiver),
+        vec![
+            Cmd::PermissionReply {
+                session_id: "ses_parent".into(),
+                request_id: "per_1".into(),
+                reply: "once".into(),
+                message: None,
+            },
+            Cmd::PermissionReply {
+                session_id: "ses_parent".into(),
+                request_id: "per_1".into(),
+                reply: "reject".into(),
+                message: None,
+            },
+        ]
+    );
+}
+
+#[test]
+fn question_key_dispatches_reply_and_reject_commands() {
+    let mut app = App::new("/repo".into());
+    app.pending_questions = vec![serde_json::json!({
+        "id": "que_1",
+        "sessionID": "ses_parent",
+        "questions": [{
+            "question": "Continue?",
+            "header": "choice",
+            "options": [
+                { "label": "Yes", "description": "Proceed" },
+                { "label": "No", "description": "Stop" }
+            ]
+        }]
+    })];
+    let (sender, receiver) = worker_channel();
+
+    handle_key(&mut app, KeyCode::Char('2'), KeyModifiers::NONE, &sender);
+    handle_key(&mut app, KeyCode::Esc, KeyModifiers::NONE, &sender);
+
+    assert_eq!(
+        drain(&receiver),
+        vec![
+            Cmd::QuestionReply {
+                session_id: "ses_parent".into(),
+                request_id: "que_1".into(),
+                answers: vec![vec!["No".into()]],
+            },
+            Cmd::QuestionReject {
+                session_id: "ses_parent".into(),
+                request_id: "que_1".into(),
+            },
+        ]
+    );
+}
+
+#[test]
+fn background_shortcut_promotes_foreground_tasks_without_pending_request_blocking() {
+    let mut app = App::new("/repo".into());
+    app.adopt_session(&serde_json::json!({
+        "id": "ses_parent",
+        "title": "Parent",
+        "location": { "directory": "/repo" }
+    }));
+    app.messages = vec![serde_json::json!({
+        "parts": [{
+            "tool": "task",
+            "state": {
+                "status": "running",
+                "metadata": { "sessionId": "ses_child" }
+            }
+        }]
+    })];
+    app.pending_permissions = vec![serde_json::json!({
+        "id": "per_1",
+        "sessionID": "ses_parent"
+    })];
+    let (sender, receiver) = worker_channel();
+
+    handle_key(&mut app, KeyCode::Char('b'), KeyModifiers::CONTROL, &sender);
+
+    assert_eq!(drain(&receiver), vec![Cmd::Background("ses_parent".into())]);
+    assert_eq!(
+        app.pending_permissions[0]["id"], "per_1",
+        "backgrounding does not require settling pending prompts first"
+    );
+}
+
+#[test]
+fn child_navigation_keybindings_dispatch_select_child_and_parent() {
+    let mut app = App::new("/repo".into());
+    app.adopt_session(&serde_json::json!({
+        "id": "ses_parent",
+        "title": "Parent",
+        "location": { "directory": "/repo" }
+    }));
+    app.child_sessions = vec![
+        serde_json::json!({ "id": "ses_child_a", "parentID": "ses_parent", "title": "A" }),
+        serde_json::json!({ "id": "ses_child_b", "parentID": "ses_parent", "title": "B" }),
+    ];
+    let (sender, receiver) = worker_channel();
+
+    handle_key(&mut app, KeyCode::Char('x'), KeyModifiers::CONTROL, &sender);
+    handle_key(&mut app, KeyCode::Down, KeyModifiers::NONE, &sender);
+    assert_eq!(
+        drain(&receiver),
+        vec![Cmd::SelectChild("ses_child_a".into())]
+    );
+
+    app.parent_session = Some(serde_json::json!({
+        "id": "ses_parent",
+        "title": "Parent",
+        "location": { "directory": "/repo" }
+    }));
+    handle_key(&mut app, KeyCode::Right, KeyModifiers::NONE, &sender);
+    handle_key(&mut app, KeyCode::Up, KeyModifiers::NONE, &sender);
+
+    assert_eq!(
+        drain(&receiver),
+        vec![
+            Cmd::SelectChild("ses_child_b".into()),
+            Cmd::SelectParent("ses_parent".into()),
+        ]
+    );
+}
+
+#[test]
+fn worker_command_handler_dispatches_reply_background_and_child_selection() {
+    let api = FakeApi::default();
+    let mut state = WorkerState::default();
+    let (sender, receiver) = mpsc::channel();
+
+    handle_worker_cmd(
+        &api,
+        &mut state,
+        &sender,
+        Cmd::PermissionReply {
+            session_id: "ses_parent".into(),
+            request_id: "per_1".into(),
+            reply: "always".into(),
+            message: None,
+        },
+    );
+    handle_worker_cmd(
+        &api,
+        &mut state,
+        &sender,
+        Cmd::QuestionReply {
+            session_id: "ses_parent".into(),
+            request_id: "que_1".into(),
+            answers: vec![vec!["Yes".into()]],
+        },
+    );
+    handle_worker_cmd(
+        &api,
+        &mut state,
+        &sender,
+        Cmd::QuestionReject {
+            session_id: "ses_parent".into(),
+            request_id: "que_1".into(),
+        },
+    );
+    handle_worker_cmd(
+        &api,
+        &mut state,
+        &sender,
+        Cmd::Background("ses_parent".into()),
+    );
+    handle_worker_cmd(
+        &api,
+        &mut state,
+        &sender,
+        Cmd::SelectChild("ses_child".into()),
+    );
+
+    assert_eq!(
+        api.calls(),
+        vec![
+            "permission:ses_parent:per_1:always:",
+            "question-reply:ses_parent:que_1:Yes",
+            "question-reject:ses_parent:que_1",
+            "background:ses_parent",
+        ]
+    );
+    assert_eq!(state.session_id.as_deref(), Some("ses_child"));
+    assert_eq!(state.parent_id.as_deref(), Some("ses_parent"));
+    assert!(matches!(receiver.try_recv().unwrap(), Msg::Toast(_)));
+    assert!(matches!(receiver.try_recv().unwrap(), Msg::Session(_)));
 }
 
 #[test]

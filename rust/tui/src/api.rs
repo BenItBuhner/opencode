@@ -111,6 +111,36 @@ impl Api {
             .unwrap_or_default())
     }
 
+    pub fn session_status(&self) -> Result<Value, String> {
+        self.get("/session/status")
+    }
+
+    pub fn children(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        Ok(self
+            .get(&format!("/session/{session_id}/children"))?
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn permissions(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        Ok(self
+            .get(&format!("/api/session/{session_id}/permission"))?
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
+    pub fn questions(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        Ok(self
+            .get(&format!("/api/session/{session_id}/question"))?
+            .get("data")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default())
+    }
+
     pub fn prompt(&self, session_id: &str, text: &str) -> Result<(), String> {
         self.post(
             &format!("/api/session/{session_id}/prompt"),
@@ -122,6 +152,56 @@ impl Api {
     pub fn interrupt(&self, session_id: &str) -> Result<(), String> {
         self.post(&format!("/api/session/{session_id}/interrupt"), &json!({}))
             .map(|_| ())
+    }
+
+    pub fn permission_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        reply: &str,
+        message: Option<&str>,
+    ) -> Result<(), String> {
+        let mut body = serde_json::Map::new();
+        body.insert("reply".into(), Value::String(reply.to_string()));
+        if let Some(message) = message {
+            body.insert("message".into(), Value::String(message.to_string()));
+        }
+        self.post(
+            &format!("/api/session/{session_id}/permission/{request_id}/reply"),
+            &Value::Object(body),
+        )
+        .map(|_| ())
+    }
+
+    pub fn question_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answers: &[Vec<String>],
+    ) -> Result<(), String> {
+        self.post(
+            &format!("/api/session/{session_id}/question/{request_id}/reply"),
+            &json!({ "answers": answers }),
+        )
+        .map(|_| ())
+    }
+
+    pub fn question_reject(&self, session_id: &str, request_id: &str) -> Result<(), String> {
+        self.post(
+            &format!("/api/session/{session_id}/question/{request_id}/reject"),
+            &json!({}),
+        )
+        .map(|_| ())
+    }
+
+    pub fn background(&self, session_id: &str) -> Result<bool, String> {
+        Ok(self
+            .post(
+                &format!("/experimental/session/{session_id}/background"),
+                &json!({}),
+            )?
+            .as_bool()
+            .unwrap_or(false))
     }
 
     pub fn switch_agent(&self, session_id: &str, agent: &str) -> Result<(), String> {

@@ -31,10 +31,15 @@ use std::time::{Duration, Instant};
 pub enum Msg {
     Sessions(Vec<Value>),
     Session(Value),
+    ParentSession(String, Value),
+    Children(String, Vec<Value>),
     Messages(String, Vec<Value>),
     Todos(String, Vec<Value>),
     Goal(String, Option<Value>),
     Active(Vec<String>),
+    SessionStatus(Value),
+    Permissions(String, Vec<Value>),
+    Questions(String, Vec<Value>),
     Agents(Vec<Value>),
     Models(Vec<(String, String)>),
     Commands(Vec<DynamicCommand>),
@@ -51,6 +56,24 @@ pub enum Cmd {
     SelectSession(String),
     SwitchAgent(String, String),
     SwitchModel(String, String, String),
+    PermissionReply {
+        session_id: String,
+        request_id: String,
+        reply: String,
+        message: Option<String>,
+    },
+    QuestionReply {
+        session_id: String,
+        request_id: String,
+        answers: Vec<Vec<String>>,
+    },
+    QuestionReject {
+        session_id: String,
+        request_id: String,
+    },
+    Background(String),
+    SelectChild(String),
+    SelectParent(String),
     /// Home-route first prompt: atomically create a session bound to the
     /// selected agent/model and send the first user prompt in a single
     /// worker turn. The UI transitions to Session as soon as the created
@@ -368,10 +391,20 @@ fn line_start_char(input: &str, char_index: usize) -> usize {
 // Apply worker messages
 // ---------------------------------------------------------------------------
 
-fn apply(app: &mut App, message: Msg) {
+pub fn apply(app: &mut App, message: Msg) {
     match message {
         Msg::Sessions(sessions) => app.sessions = sessions,
         Msg::Session(session) => app.adopt_session(&session),
+        Msg::ParentSession(session_id, session) => {
+            if app.parent_session_id.as_deref() == Some(session_id.as_str()) {
+                app.adopt_parent_session(session);
+            }
+        }
+        Msg::Children(session_id, children) => {
+            if app.current_root_session_id().as_deref() == Some(session_id.as_str()) {
+                app.child_sessions = children;
+            }
+        }
         Msg::Messages(session_id, messages) => {
             if app.session_id.as_deref() == Some(session_id.as_str()) {
                 app.messages = messages;
@@ -397,10 +430,22 @@ fn apply(app: &mut App, message: Msg) {
                 .session_id
                 .as_deref()
                 .is_some_and(|id| active.iter().any(|item| item == id));
+            app.active_sessions = active;
             if !busy {
                 app.interrupts = 0;
             }
             app.busy = busy;
+        }
+        Msg::SessionStatus(status) => app.session_status = status,
+        Msg::Permissions(session_id, permissions) => {
+            if app.current_root_session_id().as_deref() == Some(session_id.as_str()) {
+                app.pending_permissions = permissions;
+            }
+        }
+        Msg::Questions(session_id, questions) => {
+            if app.current_root_session_id().as_deref() == Some(session_id.as_str()) {
+                app.pending_questions = questions;
+            }
         }
         Msg::Agents(agents) => app.agents = agents,
         Msg::Models(models) => app.models = models,
@@ -459,6 +504,7 @@ pub fn handle_key(
             KeyCode::Char('l') => app.open_dialog(Dialog::Sessions),
             KeyCode::Char('a') => app.open_dialog(Dialog::Agents),
             KeyCode::Char('m') => app.open_dialog(Dialog::Models),
+            KeyCode::Down => select_first_child(app, worker),
             KeyCode::Char('?') => app.open_dialog(Dialog::Help),
             // Fork goal dialogs.
             KeyCode::Char('g') => {
@@ -480,6 +526,16 @@ pub fn handle_key(
         return;
     }
 
+    if app.dialog == Dialog::None
+        && app.autocomplete.is_none()
+        && handle_session_shortcut(app, code, modifiers, worker)
+    {
+        return;
+    }
+    if app.dialog == Dialog::None && handle_pending_request_key(app, code, modifiers, worker) {
+        return;
+    }
+
     match app.dialog {
         Dialog::None => handle_chat_key(app, code, modifiers, worker),
         Dialog::Help | Dialog::GoalDetails => {
@@ -498,6 +554,163 @@ pub fn handle_key(
         },
         _ => handle_dialog_key(app, code, modifiers, worker),
     }
+}
+
+fn handle_session_shortcut(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    worker: &mpsc::Sender<Cmd>,
+) -> bool {
+    if code == KeyCode::Char('b')
+        && modifiers.contains(KeyModifiers::CONTROL)
+        && !app.foreground_task_child_ids().is_empty()
+    {
+        if let Some(session_id) = app.current_root_session_id() {
+            let _ = worker.send(Cmd::Background(session_id));
+        }
+        return true;
+    }
+    if !modifiers.is_empty() || !app.is_child_session() {
+        return false;
+    }
+    match code {
+        KeyCode::Up => {
+            if let Some(parent_id) = app.parent_session_id.clone() {
+                if let Some(parent) = app.parent_session.clone() {
+                    app.adopt_session(&parent);
+                }
+                let _ = worker.send(Cmd::SelectParent(parent_id));
+            }
+            true
+        }
+        KeyCode::Right => {
+            select_adjacent_child(app, 1, worker);
+            true
+        }
+        KeyCode::Left => {
+            select_adjacent_child(app, -1, worker);
+            true
+        }
+        _ => false,
+    }
+}
+
+fn select_first_child(app: &mut App, worker: &mpsc::Sender<Cmd>) {
+    let Some(child_id) = app.first_child_id() else {
+        app.toast = Some("No child session is available".into());
+        return;
+    };
+    select_child(app, child_id, worker);
+}
+
+fn select_adjacent_child(app: &mut App, direction: isize, worker: &mpsc::Sender<Cmd>) {
+    let Some(child_id) = app.adjacent_child_id(direction) else {
+        return;
+    };
+    select_child(app, child_id, worker);
+}
+
+fn select_child(app: &mut App, child_id: String, worker: &mpsc::Sender<Cmd>) {
+    if let Some(child) = app
+        .child_sessions
+        .iter()
+        .find(|session| session.get("id").and_then(Value::as_str) == Some(child_id.as_str()))
+        .cloned()
+    {
+        app.adopt_session(&child);
+    }
+    let _ = worker.send(Cmd::SelectChild(child_id));
+}
+
+fn handle_pending_request_key(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    worker: &mpsc::Sender<Cmd>,
+) -> bool {
+    if !modifiers.is_empty() {
+        return false;
+    }
+    if let Some(permission) = app.pending_permissions.first() {
+        let Some(session_id) = permission
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let Some(request_id) = permission
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let reply = match code {
+            KeyCode::Char('1') => Some("once"),
+            KeyCode::Char('2') => Some("always"),
+            KeyCode::Char('3') | KeyCode::Esc => Some("reject"),
+            _ => None,
+        };
+        if let Some(reply) = reply {
+            let _ = worker.send(Cmd::PermissionReply {
+                session_id,
+                request_id,
+                reply: reply.into(),
+                message: None,
+            });
+            return true;
+        }
+    }
+    if let Some(question) = app.pending_questions.first() {
+        let Some(session_id) = question
+            .get("sessionID")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        let Some(request_id) = question
+            .get("id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+        else {
+            return false;
+        };
+        if code == KeyCode::Esc {
+            let _ = worker.send(Cmd::QuestionReject {
+                session_id,
+                request_id,
+            });
+            return true;
+        }
+        let KeyCode::Char(ch) = code else {
+            return false;
+        };
+        let Some(index) = ch.to_digit(10).and_then(|value| value.checked_sub(1)) else {
+            return false;
+        };
+        let Some(label) = question
+            .get("questions")
+            .and_then(Value::as_array)
+            .and_then(|questions| questions.first())
+            .and_then(|question| question.get("options"))
+            .and_then(Value::as_array)
+            .and_then(|options| options.get(index as usize))
+            .and_then(|option| option.get("label"))
+            .and_then(Value::as_str)
+        else {
+            return false;
+        };
+        let _ = worker.send(Cmd::QuestionReply {
+            session_id,
+            request_id,
+            answers: vec![vec![label.to_string()]],
+        });
+        return true;
+    }
+    false
 }
 
 pub fn handle_chat_key(
@@ -1040,6 +1253,336 @@ fn commit_model(app: &mut App, selected: usize, worker: &mpsc::Sender<Cmd>) {
 
 /// Worker thread: owns every blocking HTTP call. Polls messages, todos, and
 /// active state (fast while a drain runs) and executes commands.
+pub trait WorkerApi {
+    fn sessions(&self) -> Result<Vec<Value>, String>;
+    fn session(&self, session_id: &str) -> Result<Value, String>;
+    fn create_session_with(
+        &self,
+        directory: &str,
+        agent: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Value, String>;
+    fn messages(&self, session_id: &str) -> Result<Vec<Value>, String>;
+    fn active(&self) -> Result<Vec<String>, String>;
+    fn session_status(&self) -> Result<Value, String>;
+    fn children(&self, session_id: &str) -> Result<Vec<Value>, String>;
+    fn permissions(&self, session_id: &str) -> Result<Vec<Value>, String>;
+    fn questions(&self, session_id: &str) -> Result<Vec<Value>, String>;
+    fn prompt(&self, session_id: &str, text: &str) -> Result<(), String>;
+    fn interrupt(&self, session_id: &str) -> Result<(), String>;
+    fn permission_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        reply: &str,
+        message: Option<&str>,
+    ) -> Result<(), String>;
+    fn question_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answers: &[Vec<String>],
+    ) -> Result<(), String>;
+    fn question_reject(&self, session_id: &str, request_id: &str) -> Result<(), String>;
+    fn background(&self, session_id: &str) -> Result<bool, String>;
+    fn switch_agent(&self, session_id: &str, agent: &str) -> Result<(), String>;
+    fn switch_model(&self, session_id: &str, provider: &str, model: &str) -> Result<(), String>;
+    fn goal(&self, session_id: &str) -> Result<Option<Value>, String>;
+    fn todos(&self, session_id: &str) -> Result<Vec<Value>, String>;
+    fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String>;
+    fn agents(&self) -> Result<Vec<Value>, String>;
+    fn models(&self) -> Result<Vec<(String, String)>, String>;
+    fn commands(&self) -> Result<Vec<DynamicCommand>, String>;
+}
+
+impl WorkerApi for api::Api {
+    fn sessions(&self) -> Result<Vec<Value>, String> {
+        self.sessions()
+    }
+    fn session(&self, session_id: &str) -> Result<Value, String> {
+        self.session(session_id)
+    }
+    fn create_session_with(
+        &self,
+        directory: &str,
+        agent: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Value, String> {
+        self.create_session_with(directory, agent, provider, model)
+    }
+    fn messages(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        self.messages(session_id)
+    }
+    fn active(&self) -> Result<Vec<String>, String> {
+        self.active()
+    }
+    fn session_status(&self) -> Result<Value, String> {
+        self.session_status()
+    }
+    fn children(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        self.children(session_id)
+    }
+    fn permissions(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        self.permissions(session_id)
+    }
+    fn questions(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        self.questions(session_id)
+    }
+    fn prompt(&self, session_id: &str, text: &str) -> Result<(), String> {
+        self.prompt(session_id, text)
+    }
+    fn interrupt(&self, session_id: &str) -> Result<(), String> {
+        self.interrupt(session_id)
+    }
+    fn permission_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        reply: &str,
+        message: Option<&str>,
+    ) -> Result<(), String> {
+        self.permission_reply(session_id, request_id, reply, message)
+    }
+    fn question_reply(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        answers: &[Vec<String>],
+    ) -> Result<(), String> {
+        self.question_reply(session_id, request_id, answers)
+    }
+    fn question_reject(&self, session_id: &str, request_id: &str) -> Result<(), String> {
+        self.question_reject(session_id, request_id)
+    }
+    fn background(&self, session_id: &str) -> Result<bool, String> {
+        self.background(session_id)
+    }
+    fn switch_agent(&self, session_id: &str, agent: &str) -> Result<(), String> {
+        self.switch_agent(session_id, agent)
+    }
+    fn switch_model(&self, session_id: &str, provider: &str, model: &str) -> Result<(), String> {
+        self.switch_model(session_id, provider, model)
+    }
+    fn goal(&self, session_id: &str) -> Result<Option<Value>, String> {
+        self.goal(session_id)
+    }
+    fn todos(&self, session_id: &str) -> Result<Vec<Value>, String> {
+        self.todos(session_id)
+    }
+    fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String> {
+        self.set_external_permission(session_id, allow)
+    }
+    fn agents(&self) -> Result<Vec<Value>, String> {
+        self.agents()
+    }
+    fn models(&self) -> Result<Vec<(String, String)>, String> {
+        self.models()
+    }
+    fn commands(&self) -> Result<Vec<DynamicCommand>, String> {
+        self.commands()
+    }
+}
+
+#[derive(Default)]
+pub struct WorkerState {
+    pub session_id: Option<String>,
+    pub parent_id: Option<String>,
+    pub busy: bool,
+}
+
+fn session_parent_id(session: &Value) -> Option<String> {
+    session
+        .get("parentID")
+        .or_else(|| session.get("parent_id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+pub fn handle_worker_cmd<A: WorkerApi>(
+    api: &A,
+    state: &mut WorkerState,
+    to_ui: &mpsc::Sender<Msg>,
+    cmd: Cmd,
+) {
+    match cmd {
+        Cmd::Prompt(id, text) => {
+            state.session_id = Some(id.clone());
+            state.busy = true;
+            if let Err(error) = api.prompt(&id, &text) {
+                let _ = to_ui.send(Msg::Toast(format!("prompt failed: {error}")));
+            }
+        }
+        Cmd::Interrupt(id) => {
+            if let Err(error) = api.interrupt(&id) {
+                let _ = to_ui.send(Msg::Toast(format!("interrupt failed: {error}")));
+            }
+        }
+        Cmd::PermissionReply {
+            session_id,
+            request_id,
+            reply,
+            message,
+        } => {
+            if let Err(error) =
+                api.permission_reply(&session_id, &request_id, &reply, message.as_deref())
+            {
+                let _ = to_ui.send(Msg::Toast(format!("permission reply failed: {error}")));
+            }
+        }
+        Cmd::QuestionReply {
+            session_id,
+            request_id,
+            answers,
+        } => {
+            if let Err(error) = api.question_reply(&session_id, &request_id, &answers) {
+                let _ = to_ui.send(Msg::Toast(format!("question reply failed: {error}")));
+            }
+        }
+        Cmd::QuestionReject {
+            session_id,
+            request_id,
+        } => {
+            if let Err(error) = api.question_reject(&session_id, &request_id) {
+                let _ = to_ui.send(Msg::Toast(format!("question reject failed: {error}")));
+            }
+        }
+        Cmd::Background(id) => match api.background(&id) {
+            Ok(true) => {
+                let _ = to_ui.send(Msg::Toast("Backgrounded running subagents".into()));
+            }
+            Ok(false) => {
+                let _ = to_ui.send(Msg::Toast("No running subagents to background".into()));
+            }
+            Err(error) => {
+                let _ = to_ui.send(Msg::Toast(format!("background failed: {error}")));
+            }
+        },
+        Cmd::CreateAndPrompt {
+            directory,
+            agent,
+            provider,
+            model,
+            text,
+        } => match api.create_session_with(&directory, &agent, &provider, &model) {
+            Ok(session) => {
+                let created = session
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                state.session_id.clone_from(&created);
+                state.parent_id = session_parent_id(&session);
+                let _ = to_ui.send(Msg::Session(session));
+                if let Some(created_id) = created {
+                    state.busy = true;
+                    if let Err(error) = api.prompt(&created_id, &text) {
+                        let _ = to_ui.send(Msg::Toast(format!("prompt failed: {error}")));
+                    }
+                }
+            }
+            Err(error) => {
+                let _ = to_ui.send(Msg::Toast(format!("create failed: {error}")));
+            }
+        },
+        Cmd::LoadLists => {
+            if let Ok(agents) = api.agents() {
+                let _ = to_ui.send(Msg::Agents(agents));
+            }
+            if let Ok(models) = api.models() {
+                let _ = to_ui.send(Msg::Models(models));
+            }
+            if let Ok(commands) = api.commands() {
+                let _ = to_ui.send(Msg::Commands(commands));
+            }
+        }
+        Cmd::SelectSession(id) | Cmd::SelectChild(id) | Cmd::SelectParent(id) => {
+            state.session_id = Some(id.clone());
+            state.busy = false;
+            if let Ok(session) = api.session(&id) {
+                state.parent_id = session_parent_id(&session);
+                let _ = to_ui.send(Msg::Session(session));
+            }
+        }
+        Cmd::SwitchAgent(id, agent) => {
+            if let Err(error) = api.switch_agent(&id, &agent) {
+                let _ = to_ui.send(Msg::Toast(format!("agent switch failed: {error}")));
+            }
+        }
+        Cmd::SwitchModel(id, provider, model) => {
+            if let Err(error) = api.switch_model(&id, &provider, &model) {
+                let _ = to_ui.send(Msg::Toast(format!("model switch failed: {error}")));
+            }
+        }
+        Cmd::ToggleExternal(id, allow) => {
+            let message = match api.set_external_permission(&id, allow) {
+                Ok(()) if allow => "Always allowing out-of-workspace access for this session",
+                Ok(()) => "Out-of-workspace access will ask for permission",
+                Err(_) => "Failed to update out-of-workspace permission",
+            };
+            let _ = to_ui.send(Msg::Toast(message.to_string()));
+        }
+        Cmd::Refresh => {}
+    }
+}
+
+fn poll_worker<A: WorkerApi>(api: &A, state: &mut WorkerState, to_ui: &mpsc::Sender<Msg>) {
+    if let Ok(sessions) = api.sessions() {
+        let _ = to_ui.send(Msg::Sessions(sessions));
+    }
+    if let Ok(active) = api.active() {
+        state.busy = state
+            .session_id
+            .as_deref()
+            .is_some_and(|id| active.iter().any(|item| item == id));
+        let _ = to_ui.send(Msg::Active(active));
+    }
+    if let Ok(status) = api.session_status() {
+        let _ = to_ui.send(Msg::SessionStatus(status));
+    }
+    let Some(id) = &state.session_id else {
+        return;
+    };
+    if let Ok(messages) = api.messages(id) {
+        let _ = to_ui.send(Msg::Messages(id.clone(), messages));
+    }
+    if let Ok(todos) = api.todos(id) {
+        let _ = to_ui.send(Msg::Todos(id.clone(), todos));
+    }
+    if let Ok(goal) = api.goal(id) {
+        let _ = to_ui.send(Msg::Goal(id.clone(), goal));
+    }
+    let root_id = state.parent_id.as_ref().unwrap_or(id).clone();
+    if let Some(parent_id) = &state.parent_id {
+        if let Ok(parent) = api.session(parent_id) {
+            let _ = to_ui.send(Msg::ParentSession(parent_id.clone(), parent));
+        }
+    }
+    let children = api.children(&root_id).unwrap_or_default();
+    let child_ids: Vec<String> = children
+        .iter()
+        .filter_map(|session| {
+            session
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let _ = to_ui.send(Msg::Children(root_id.clone(), children));
+    let mut ids = vec![root_id.clone()];
+    ids.extend(child_ids);
+    let permissions = ids
+        .iter()
+        .flat_map(|id| api.permissions(id).unwrap_or_default())
+        .collect();
+    let questions = ids
+        .iter()
+        .flat_map(|id| api.questions(id).unwrap_or_default())
+        .collect();
+    let _ = to_ui.send(Msg::Permissions(root_id.clone(), permissions));
+    let _ = to_ui.send(Msg::Questions(root_id, questions));
+}
+
 fn worker(
     base: String,
     authorization: Option<String>,
@@ -1052,123 +1595,35 @@ fn worker(
         base,
         authorization,
     };
-    let mut session_id: Option<String> = None;
-    let mut busy = false;
+    let mut state = WorkerState::default();
 
     // `--session <id>` explicitly adopts. Default launch stays on Home and
     // does not adopt or create anything until the user does.
     if let Some(id) = session_flag {
         if let Ok(session) = api.session(&id) {
             if !session.is_null() {
-                session_id = session
+                state.session_id = session
                     .get("id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                state.parent_id = session_parent_id(&session);
                 let _ = to_ui.send(Msg::Session(session));
             }
         }
     }
 
     loop {
-        let timeout = if busy {
+        let timeout = if state.busy {
             Duration::from_millis(200)
         } else {
             Duration::from_millis(900)
         };
         match from_ui.recv_timeout(timeout) {
-            Ok(Cmd::Prompt(id, text)) => {
-                session_id = Some(id.clone());
-                busy = true;
-                if let Err(error) = api.prompt(&id, &text) {
-                    let _ = to_ui.send(Msg::Toast(format!("prompt failed: {error}")));
-                }
-            }
-            Ok(Cmd::Interrupt(id)) => {
-                if let Err(error) = api.interrupt(&id) {
-                    let _ = to_ui.send(Msg::Toast(format!("interrupt failed: {error}")));
-                }
-            }
-            Ok(Cmd::CreateAndPrompt {
-                directory,
-                agent,
-                provider,
-                model,
-                text,
-            }) => match api.create_session_with(&directory, &agent, &provider, &model) {
-                Ok(session) => {
-                    let created: Option<String> = session
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .map(|value| value.to_string());
-                    session_id.clone_from(&created);
-                    let _ = to_ui.send(Msg::Session(session));
-                    if let Some(created_id) = created {
-                        busy = true;
-                        if let Err(error) = api.prompt(&created_id, &text) {
-                            let _ = to_ui.send(Msg::Toast(format!("prompt failed: {error}")));
-                        }
-                    }
-                }
-                Err(error) => {
-                    let _ = to_ui.send(Msg::Toast(format!("create failed: {error}")));
-                }
-            },
-            Ok(Cmd::LoadLists) => {
-                if let Ok(agents) = api.agents() {
-                    let _ = to_ui.send(Msg::Agents(agents));
-                }
-                if let Ok(models) = api.models() {
-                    let _ = to_ui.send(Msg::Models(models));
-                }
-                if let Ok(commands) = api.commands() {
-                    let _ = to_ui.send(Msg::Commands(commands));
-                }
-            }
-            Ok(Cmd::SelectSession(id)) => {
-                session_id = Some(id);
-                busy = false;
-            }
-            Ok(Cmd::SwitchAgent(id, agent)) => {
-                if let Err(error) = api.switch_agent(&id, &agent) {
-                    let _ = to_ui.send(Msg::Toast(format!("agent switch failed: {error}")));
-                }
-            }
-            Ok(Cmd::SwitchModel(id, provider, model)) => {
-                if let Err(error) = api.switch_model(&id, &provider, &model) {
-                    let _ = to_ui.send(Msg::Toast(format!("model switch failed: {error}")));
-                }
-            }
-            Ok(Cmd::ToggleExternal(id, allow)) => {
-                let message = match api.set_external_permission(&id, allow) {
-                    Ok(()) if allow => "Always allowing out-of-workspace access for this session",
-                    Ok(()) => "Out-of-workspace access will ask for permission",
-                    Err(_) => "Failed to update out-of-workspace permission",
-                };
-                let _ = to_ui.send(Msg::Toast(message.to_string()));
-            }
-            Ok(Cmd::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Ok(cmd) => handle_worker_cmd(&api, &mut state, &to_ui, cmd),
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return,
         }
 
-        if let Ok(sessions) = api.sessions() {
-            let _ = to_ui.send(Msg::Sessions(sessions));
-        }
-        if let Ok(active) = api.active() {
-            busy = session_id
-                .as_deref()
-                .is_some_and(|id| active.iter().any(|item| item == id));
-            let _ = to_ui.send(Msg::Active(active));
-        }
-        if let Some(id) = &session_id {
-            if let Ok(messages) = api.messages(id) {
-                let _ = to_ui.send(Msg::Messages(id.clone(), messages));
-            }
-            if let Ok(todos) = api.todos(id) {
-                let _ = to_ui.send(Msg::Todos(id.clone(), todos));
-            }
-            if let Ok(goal) = api.goal(id) {
-                let _ = to_ui.send(Msg::Goal(id.clone(), goal));
-            }
-        }
+        poll_worker(&api, &mut state, &to_ui);
     }
 }

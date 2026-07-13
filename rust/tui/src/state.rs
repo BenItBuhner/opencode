@@ -3,6 +3,7 @@
 //! DialogSelect filtering, and the prompt editor.
 
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::time::{Duration, Instant};
 
 #[derive(PartialEq, Clone, Copy, Debug)]
@@ -280,6 +281,8 @@ pub struct App {
     pub should_quit: bool,
 
     pub session_id: Option<String>,
+    pub parent_session_id: Option<String>,
+    pub parent_session: Option<Value>,
     pub session_title: String,
     pub agent: String,
     pub agent_index: usize,
@@ -298,6 +301,13 @@ pub struct App {
     pub cursor: usize,
 
     pub sessions: Vec<Value>,
+    pub child_sessions: Vec<Value>,
+    pub session_status: Value,
+    pub active_sessions: Vec<String>,
+    pub pending_permissions: Vec<Value>,
+    pub pending_questions: Vec<Value>,
+    pub expanded_blocks: BTreeSet<String>,
+    pub task_child_index: usize,
     pub agents: Vec<Value>,
     pub models: Vec<(String, String)>,
     pub todos: Vec<Value>,
@@ -349,6 +359,8 @@ impl App {
             leader: None,
             should_quit: false,
             session_id: None,
+            parent_session_id: None,
+            parent_session: None,
             session_title: String::new(),
             agent: "build".into(),
             agent_index: 0,
@@ -363,6 +375,13 @@ impl App {
             input: String::new(),
             cursor: 0,
             sessions: vec![],
+            child_sessions: vec![],
+            session_status: Value::Null,
+            active_sessions: vec![],
+            pending_permissions: vec![],
+            pending_questions: vec![],
+            expanded_blocks: BTreeSet::new(),
+            task_child_index: 0,
             agents: vec![],
             models: vec![],
             todos: vec![],
@@ -402,9 +421,14 @@ impl App {
     pub fn go_home(&mut self) {
         self.route = Route::Home;
         self.session_id = None;
+        self.parent_session_id = None;
+        self.parent_session = None;
         self.session_title.clear();
         self.messages.clear();
         self.todos.clear();
+        self.child_sessions.clear();
+        self.pending_permissions.clear();
+        self.pending_questions.clear();
         self.scroll = 0;
         self.interrupts = 0;
         self.goal = None;
@@ -420,6 +444,14 @@ impl App {
             .get("id")
             .and_then(Value::as_str)
             .map(str::to_string);
+        self.parent_session_id = session
+            .get("parentID")
+            .or_else(|| session.get("parent_id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        if self.parent_session_id.is_none() {
+            self.parent_session = None;
+        }
         self.session_title = session
             .get("title")
             .and_then(Value::as_str)
@@ -443,6 +475,85 @@ impl App {
         self.goal = None;
         self.retained_goal = None;
         self.route = Route::Session;
+    }
+
+    pub fn adopt_parent_session(&mut self, session: Value) {
+        self.parent_session = Some(session);
+    }
+
+    pub fn current_root_session_id(&self) -> Option<String> {
+        self.parent_session_id
+            .clone()
+            .or_else(|| self.session_id.clone())
+    }
+
+    pub fn is_child_session(&self) -> bool {
+        self.parent_session_id.is_some()
+    }
+
+    pub fn first_child_id(&self) -> Option<String> {
+        self.sorted_child_ids().first().cloned()
+    }
+
+    pub fn adjacent_child_id(&self, direction: isize) -> Option<String> {
+        let children = self.sorted_child_ids();
+        if children.is_empty() {
+            return None;
+        }
+        let current = self.session_id.as_deref()?;
+        let index = children.iter().position(|id| id == current)?;
+        let next = (index as isize + direction).rem_euclid(children.len() as isize);
+        children.get(next as usize).cloned()
+    }
+
+    fn sorted_child_ids(&self) -> Vec<String> {
+        let mut children: Vec<String> = self
+            .child_sessions
+            .iter()
+            .filter_map(|session| {
+                session
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect();
+        children.sort();
+        children
+    }
+
+    pub fn foreground_task_child_ids(&self) -> Vec<String> {
+        self.messages
+            .iter()
+            .flat_map(message_parts)
+            .filter(|part| {
+                let tool = part
+                    .get("tool")
+                    .or_else(|| part.get("name"))
+                    .and_then(Value::as_str);
+                let status = part
+                    .get("state")
+                    .and_then(|state| state.get("status"))
+                    .and_then(Value::as_str);
+                let background = part
+                    .get("state")
+                    .and_then(|state| state.get("metadata"))
+                    .and_then(|metadata| metadata.get("background"))
+                    .and_then(Value::as_bool);
+                tool == Some("task") && status == Some("running") && background != Some(true)
+            })
+            .filter_map(|part| {
+                part.get("state")
+                    .and_then(|state| state.get("metadata"))
+                    .and_then(|metadata| {
+                        metadata
+                            .get("sessionID")
+                            .or_else(|| metadata.get("sessionId"))
+                            .or_else(|| metadata.get("session_id"))
+                    })
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect()
     }
 
     /// agent_cycle (tab): rotate through the primary agent cycle order.
@@ -709,6 +820,17 @@ impl App {
         }
         Some(entry)
     }
+}
+
+fn message_parts(message: &Value) -> Vec<&Value> {
+    if let Some(parts) = message.get("parts").and_then(Value::as_array) {
+        return parts.iter().collect();
+    }
+    message
+        .get("content")
+        .and_then(Value::as_array)
+        .map(|parts| parts.iter().collect())
+        .unwrap_or_default()
 }
 
 /// Build the merged, ranked autocomplete entries for `filter`. Built-in
