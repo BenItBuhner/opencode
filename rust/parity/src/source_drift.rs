@@ -90,6 +90,7 @@ fn rust_routes() -> BTreeSet<(String, String)> {
             method
                 .captures_iter(&capture[2])
                 .map(move |method| (method[1].to_string(), path.clone()))
+                .collect::<Vec<_>>()
         })
         .collect()
 }
