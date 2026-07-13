@@ -109,7 +109,8 @@ fn connected(config: &Value) -> BTreeMap<String, Value> {
 fn opencode_provider(catalog: &BTreeMap<String, Value>) -> Option<Value> {
     let mut provider = catalog.get("opencode")?.clone();
     let models = OPENCODE_FREE_MODELS
-        .into_iter()
+        .iter()
+        .copied()
         .filter_map(|id| {
             provider
                 .get("models")
