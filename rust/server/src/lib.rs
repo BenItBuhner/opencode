@@ -744,12 +744,13 @@ fn official_agents(worktree: &str) -> Vec<Value> {
         let id = agent
             .get("id")
             .and_then(Value::as_str)
-            .unwrap_or_default();
-        if let Some(system) = runner::agent_system(id) {
+            .unwrap_or_default()
+            .to_string();
+        if let Some(system) = runner::agent_system(&id) {
             agent["system"] = Value::String(system.into());
         }
         agent["permissions"] = Value::Array(
-            runner::permission::agent_rules(id)
+            runner::permission::agent_rules(&id)
                 .into_iter()
                 .map(|rule| {
                     json!({
@@ -1345,7 +1346,7 @@ async fn api_skill_list(
     data.extend(
         skills
             .as_array()
-            .map(|items| items.iter().map(official_skill).collect())
+            .map(|items| items.iter().map(official_skill).collect::<Vec<_>>())
             .unwrap_or_default(),
     );
     Json(location_response(
