@@ -206,9 +206,6 @@ fn draw_session(frame: &mut Frame, app: &mut App) {
     if let Some(sidebar) = sidebar {
         draw_sidebar(frame, app, sidebar);
     }
-    if let Some(toast) = &app.toast {
-        draw_toast(frame, toast, area);
-    }
 }
 
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
@@ -1437,38 +1434,4 @@ pub fn goal_elapsed(goal: &Value) -> Option<String> {
         60..=3599 => format!("{}m {}s", seconds / 60, seconds % 60),
         _ => format!("{}h {}m", seconds / 3600, seconds % 3600 / 60),
     })
-}
-
-fn draw_toast(frame: &mut Frame, toast: &str, screen: Rect) {
-    let width = (toast.chars().count() as u16 + 6)
-        .min(60)
-        .min(screen.width.saturating_sub(6));
-    let area = Rect::new(
-        screen.x + screen.width.saturating_sub(width + 2),
-        screen.y + 2,
-        width,
-        1,
-    );
-    frame.render_widget(Clear, area);
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                "┃ ",
-                Style::default()
-                    .fg(theme::WARNING)
-                    .bg(theme::BACKGROUND_PANEL),
-            ),
-            Span::styled(
-                toast.to_string(),
-                Style::default().fg(theme::TEXT).bg(theme::BACKGROUND_PANEL),
-            ),
-            Span::styled(
-                " ┃",
-                Style::default()
-                    .fg(theme::WARNING)
-                    .bg(theme::BACKGROUND_PANEL),
-            ),
-        ])),
-        area,
-    );
 }

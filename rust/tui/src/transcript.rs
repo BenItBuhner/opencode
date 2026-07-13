@@ -804,7 +804,7 @@ fn push_task(
         let duration = part_duration(part);
         body.push('\n');
         if toolcount == 0 {
-            body.push_str(&format!("↳ {}", duration.trim_start_matches(" · ")));
+            body.push_str(&format!("↳ Completed{duration}"));
         } else {
             body.push_str(&format!(
                 "↳ {toolcount} toolcall{}{duration}",

@@ -1086,17 +1086,7 @@ export function toPublicInfo(provider: Info): Info {
 }
 
 export function toSDKModel(model: Model) {
-  return {
-    ...model,
-    reasoning_options: model.reasoning_options?.map((option) =>
-      option.type === "effort"
-        ? {
-            ...option,
-            values: option.values.filter((value): value is string => value !== null),
-          }
-        : option,
-    ),
-  }
+  return model
 }
 
 function toPluginInfo(provider: Info) {
