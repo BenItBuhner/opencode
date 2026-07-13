@@ -909,7 +909,7 @@ fn object() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::{official_models, official_providers, sort_models};
+    use super::{official_models, official_providers, sort_models, OPENCODE_FREE_MODELS};
     use serde_json::{json, Map};
     use std::sync::{Mutex, OnceLock};
 
