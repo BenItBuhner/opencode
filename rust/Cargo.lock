@@ -944,6 +944,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "opencode-parity"
+version = "0.1.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "ureq",
+]
+
+[[package]]
 name = "opencode-server"
 version = "0.1.0"
 dependencies = [
