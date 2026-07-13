@@ -21,3 +21,5 @@ crossterm = "0.28"
 serde_json = { version = "1", features = ["float_roundtrip", "preserve_order"] }
 ureq = "2"
 base64 = "0.22"
+unicode-width = "0.2.0"
+unicode-segmentation = "1.13.3"

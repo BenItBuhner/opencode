@@ -15,8 +15,10 @@
 pub mod api;
 mod logo;
 pub mod state;
-mod theme;
+pub mod theme;
+pub mod transcript;
 pub mod ui;
+pub mod wrap;
 
 use crossterm::event::{
     Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,

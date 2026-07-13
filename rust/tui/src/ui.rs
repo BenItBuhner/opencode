@@ -212,50 +212,17 @@ fn draw_session(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_transcript(frame: &mut Frame, app: &App, area: Rect) {
-    let mut lines: Vec<Line> = vec![Line::default()];
-    let last_assistant = app
-        .messages
-        .iter()
-        .rposition(|message| message.get("type").and_then(Value::as_str) == Some("assistant"));
-    for (index, message) in app.messages.iter().enumerate() {
-        message_lines(
-            app,
-            message,
-            &mut lines,
-            index == 0,
-            Some(index) == last_assistant,
-        );
-    }
-    if app.busy {
-        lines.push(Line::default());
-        lines.push(Line::from(vec![
-            Span::styled(
-                block_spinner(app.frame),
-                Style::default().fg(app.agent_color()),
-            ),
-            Span::styled("  ", Style::default()),
-            Span::styled(
-                if app.interrupts > 0 {
-                    "esc again to interrupt"
-                } else {
-                    "esc interrupt"
-                },
-                Style::default().fg(if app.interrupts > 0 {
-                    theme::PRIMARY
-                } else {
-                    theme::TEXT_MUTED
-                }),
-            ),
-        ]));
-    }
+    let mut lines: Vec<Line<'static>> = vec![];
+    crate::transcript::render(app, area.width, &mut lines);
+    // Scroll math runs on the *visual* row count so shift+PageUp behaves
+    // the way it does upstream regardless of how many wrapped rows each
+    // logical message occupies.
     let total = lines.len() as u16;
     let offset = total.saturating_sub(area.height).saturating_sub(app.scroll);
-    frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .scroll((offset, 0)),
-        area,
-    );
+    // The transcript is prewrapped by `transcript::render`, so we deliberately
+    // disable ratatui's `Wrap`: every element in `lines` is already a single
+    // terminal row with the gutter/padding/background applied.
+    frame.render_widget(Paragraph::new(lines).scroll((offset, 0)), area);
 }
 
 /// The prompt-row Knight Rider block spinner (ui/spinner.ts "blocks").
@@ -273,312 +240,12 @@ fn block_spinner(frame: usize) -> String {
         .collect()
 }
 
-fn message_lines(
-    app: &App,
-    message: &Value,
-    lines: &mut Vec<Line>,
-    first: bool,
-    is_last_assistant: bool,
-) {
-    match message.get("type").and_then(Value::as_str).unwrap_or("") {
-        "user" => {
-            if !first {
-                lines.push(Line::default());
-            }
-            // User block: `┃` gutter in agent color, panel background.
-            let gutter = Style::default().fg(app.agent_color());
-            let body = Style::default().fg(theme::TEXT).bg(theme::BACKGROUND_PANEL);
-            let text = message
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            lines.push(Line::from(vec![
-                Span::styled("┃", gutter),
-                Span::styled("  ", body),
-            ]));
-            for row in text.split('\n') {
-                lines.push(Line::from(vec![
-                    Span::styled("┃", gutter),
-                    Span::styled(format!("  {row}"), body),
-                ]));
-            }
-            lines.push(Line::from(vec![
-                Span::styled("┃", gutter),
-                Span::styled("  ", body),
-            ]));
-        }
-        "assistant" => {
-            for part in message
-                .get("content")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default()
-            {
-                match part.get("type").and_then(Value::as_str).unwrap_or("") {
-                    "reasoning" => {
-                        let text = part.get("text").and_then(Value::as_str).unwrap_or_default();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        lines.push(Line::default());
-                        let title: String = text
-                            .lines()
-                            .next()
-                            .unwrap_or_default()
-                            .chars()
-                            .take(80)
-                            .collect();
-                        let duration = part_duration(&part);
-                        lines.push(Line::from(Span::styled(
-                            format!("   Thought: {title}{duration}"),
-                            Style::default().fg(theme::thinking()),
-                        )));
-                    }
-                    "text" => {
-                        let text = part.get("text").and_then(Value::as_str).unwrap_or_default();
-                        if text.is_empty() {
-                            continue;
-                        }
-                        lines.push(Line::default());
-                        for row in text.split('\n') {
-                            lines.push(Line::from(Span::styled(
-                                format!("   {row}"),
-                                Style::default().fg(theme::TEXT),
-                            )));
-                        }
-                    }
-                    "tool" => tool_lines(&part, lines),
-                    _ => {}
-                }
-            }
-            // Metadata footer for the final assistant message:
-            // ▣ {Agent} · {model} · {duration}
-            if is_last_assistant
-                && message
-                    .get("time")
-                    .and_then(|t| t.get("completed"))
-                    .is_some()
-            {
-                let model = message
-                    .get("model")
-                    .and_then(|model| model.get("id"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("?");
-                let agent = message
-                    .get("agent")
-                    .and_then(Value::as_str)
-                    .unwrap_or("build");
-                let duration = message_duration(message);
-                lines.push(Line::default());
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("   ▣ {}", titlecase(agent)),
-                        Style::default().fg(theme::agent_color(agent, app.agent_index)),
-                    ),
-                    Span::styled(
-                        format!(" · {model}{duration}"),
-                        Style::default().fg(theme::TEXT_MUTED),
-                    ),
-                ]));
-            }
-        }
-        "agent-switched" => {
-            let agent = message.get("agent").and_then(Value::as_str).unwrap_or("?");
-            lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                format!("   ▣ Switched to {} agent", titlecase(agent)),
-                Style::default().fg(theme::agent_color(agent, app.agent_index)),
-            )));
-        }
-        "model-switched" => {
-            let model = message
-                .get("model")
-                .map(|model| {
-                    format!(
-                        "{}/{}",
-                        model
-                            .get("providerID")
-                            .and_then(Value::as_str)
-                            .unwrap_or("?"),
-                        model.get("id").and_then(Value::as_str).unwrap_or("?")
-                    )
-                })
-                .unwrap_or_default();
-            lines.push(Line::default());
-            lines.push(Line::from(Span::styled(
-                format!("   ▣ Switched to {model}"),
-                Style::default().fg(theme::TEXT_MUTED),
-            )));
-        }
-        _ => {}
-    }
-}
-
-/// Inline tool rows: 2-char icon + title, per the TS tool registry.
-fn tool_lines(part: &Value, lines: &mut Vec<Line>) {
-    let name = part.get("name").and_then(Value::as_str).unwrap_or("tool");
-    let state = part.get("state").cloned().unwrap_or(Value::Null);
-    let status = state
-        .get("status")
-        .and_then(Value::as_str)
-        .unwrap_or("pending");
-    let input = state.get("input").cloned().unwrap_or(Value::Null);
-    let text = |key: &str| {
-        input
-            .get(key)
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string()
-    };
-    let matches = || {
-        state
-            .get("structured")
-            .and_then(Value::as_array)
-            .map(|items| items.len())
-            .unwrap_or(0)
-    };
-
-    // Todowrite renders as a block: `┃  # Todos` + checkbox items.
-    if name == "todowrite" {
-        lines.push(Line::default());
-        let border = Style::default().fg(theme::BORDER);
-        let panel = Style::default()
-            .fg(theme::TEXT_MUTED)
-            .bg(theme::BACKGROUND_PANEL);
-        lines.push(Line::from(vec![
-            Span::styled("┃", border),
-            Span::styled("  # Todos", panel),
-        ]));
-        for todo in input
-            .get("todos")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let todo_status = todo
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("pending");
-            let mark = match todo_status {
-                "completed" => "✓",
-                "in_progress" => "•",
-                _ => " ",
-            };
-            let color = if todo_status == "in_progress" {
-                theme::WARNING
-            } else {
-                theme::TEXT_MUTED
-            };
-            lines.push(Line::from(vec![
-                Span::styled("┃", border),
-                Span::styled(
-                    format!(
-                        "  [{mark}] {}",
-                        todo.get("content")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default()
-                    ),
-                    Style::default().fg(color).bg(theme::BACKGROUND_PANEL),
-                ),
-            ]));
-        }
-        return;
-    }
-
-    let (icon, title) = match name {
-        "bash" => ("$", text("command")),
-        "read" => ("→", format!("Read {}", text("path"))),
-        "write" => ("←", format!("Write {}", text("path"))),
-        "edit" => ("←", format!("Edit {}", text("path"))),
-        "glob" => (
-            "✱",
-            format!(
-                "Glob \"{}\" ({} match{})",
-                text("pattern"),
-                matches(),
-                if matches() == 1 { "" } else { "es" }
-            ),
-        ),
-        "grep" => (
-            "✱",
-            format!(
-                "Grep \"{}\" ({} match{})",
-                text("pattern"),
-                matches(),
-                if matches() == 1 { "" } else { "es" }
-            ),
-        ),
-        "webfetch" => ("%", format!("WebFetch {}", text("url"))),
-        "skill" => ("→", format!("Skill \"{}\"", text("name"))),
-        _ => ("⚙", name.to_string()),
-    };
-    let (icon_style, title_style) = match status {
-        "error" => (
-            Style::default().fg(theme::ERROR),
-            Style::default().fg(theme::ERROR),
-        ),
-        "completed" => (
-            Style::default().fg(theme::TEXT_MUTED),
-            Style::default().fg(theme::TEXT_MUTED),
-        ),
-        _ => (
-            Style::default().fg(theme::TEXT),
-            Style::default().fg(theme::TEXT),
-        ),
-    };
-    lines.push(Line::from(vec![
-        Span::raw("   "),
-        Span::styled(format!("{icon} "), icon_style),
-        Span::styled(title, title_style),
-    ]));
-    if status == "error" {
-        let message = state
-            .get("error")
-            .and_then(|error| error.get("message"))
-            .and_then(Value::as_str)
-            .unwrap_or("failed");
-        lines.push(Line::from(Span::styled(
-            format!("     {message}"),
-            Style::default().fg(theme::ERROR),
-        )));
-    }
-}
-
-fn part_duration(part: &Value) -> String {
-    let time = part.get("time").cloned().unwrap_or(Value::Null);
-    match (
-        time.get("created").and_then(Value::as_i64),
-        time.get("completed").and_then(Value::as_i64),
-    ) {
-        (Some(created), Some(completed)) if completed > created => {
-            format!(" · {}", duration_label(completed - created))
-        }
-        _ => String::new(),
-    }
-}
-
-fn message_duration(message: &Value) -> String {
-    let time = message.get("time").cloned().unwrap_or(Value::Null);
-    match (
-        time.get("created").and_then(Value::as_i64),
-        time.get("completed").and_then(Value::as_i64),
-    ) {
-        (Some(created), Some(completed)) if completed > created => {
-            format!(" · {}", duration_label(completed - created))
-        }
-        _ => String::new(),
-    }
-}
-
-fn duration_label(millis: i64) -> String {
-    if millis < 1000 {
-        return format!("{millis}ms");
-    }
-    if millis < 60_000 {
-        return format!("{:.1}s", millis as f64 / 1000.0);
-    }
-    format!("{}m {}s", millis / 60_000, millis % 60_000 / 1000)
-}
+// The transcript renderer (crate::transcript) now owns all message/tool
+// rendering; the width-aware version there emits prewrapped visual rows
+// with the gutter, 2-column padding, panel background, and right-edge fill
+// re-applied on every row so long text no longer breaks the block chrome.
+// The helpers below (`titlecase`) remain because the prompt editor and the
+// DialogSelect layout still call into them.
 
 fn titlecase(value: &str) -> String {
     let mut chars = value.chars();
@@ -913,49 +580,12 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         area.width.saturating_sub(4),
         area.height.saturating_sub(2),
     );
-    let mut lines = vec![Line::from(Span::styled(
-        app.session_title.clone(),
-        Style::default()
-            .fg(theme::TEXT)
-            .bg(theme::BACKGROUND_PANEL)
-            .add_modifier(Modifier::BOLD),
-    ))];
-    if !app.todos.is_empty() {
-        lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            "Todos",
-            Style::default()
-                .fg(theme::ACCENT)
-                .bg(theme::BACKGROUND_PANEL)
-                .add_modifier(Modifier::BOLD),
-        )));
-        for todo in &app.todos {
-            let status = todo
-                .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("pending");
-            let mark = match status {
-                "completed" => "✓",
-                "in_progress" => "•",
-                _ => " ",
-            };
-            let color = if status == "in_progress" {
-                theme::WARNING
-            } else {
-                theme::TEXT_MUTED
-            };
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "[{mark}] {}",
-                    todo.get("content")
-                        .and_then(Value::as_str)
-                        .unwrap_or_default()
-                ),
-                Style::default().fg(color).bg(theme::BACKGROUND_PANEL),
-            )));
-        }
-    }
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    // Prewrap the sidebar body to the inner width so long titles / todos
+    // wrap onto extra visual rows with the panel background preserved on
+    // every row (ratatui `Wrap` would lose the trailing background fill).
+    let mut lines: Vec<Line<'static>> = vec![];
+    crate::transcript::render_sidebar_body(app, inner.width, &mut lines);
+    frame.render_widget(Paragraph::new(lines), inner);
 
     // Sidebar footer: `• OpenCode {version}`.
     let footer = Rect::new(
