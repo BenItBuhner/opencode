@@ -182,7 +182,7 @@ fn tools_permissions_theme_and_logo_match() {
             .difference(&rust_tools)
             .cloned()
             .collect::<BTreeSet<_>>(),
-        BTreeSet::from(["websearch".to_string()])
+        BTreeSet::new()
     );
 
     let action = Regex::new(r#"action:\s*"([^"]+)""#).expect("action");
@@ -211,9 +211,9 @@ fn tools_permissions_theme_and_logo_match() {
                 capture[1].to_string(),
                 format!(
                     "#{}{}{}",
-                    &capture[2].to_lowercase(),
-                    &capture[3].to_lowercase(),
-                    &capture[4].to_lowercase()
+                    capture[2].to_lowercase(),
+                    capture[3].to_lowercase(),
+                    capture[4].to_lowercase()
                 ),
             )
         })

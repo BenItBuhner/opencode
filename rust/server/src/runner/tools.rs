@@ -1,5 +1,5 @@
 //! The Rust runner's tool registry: read, glob, grep, bash, edit, write,
-//! apply_patch, todowrite, skill, and webfetch, ported from
+//! apply_patch, todowrite, skill, webfetch, and websearch, ported from
 //! packages/core/src/tool/*.
 //! Definitions mirror the Bun registry's names, descriptions, and output
 //! shapes so durable tool events look the same regardless of which server
@@ -9,8 +9,7 @@
 //! rulesets (runner/permission.rs). `ask` outcomes have no interactive
 //! permission-reply flow in Rust, so they behave like a declined permission:
 //! settle the pending call as interrupted and stop the runner instead of
-//! feeding a synthetic permission failure back to the model. Interactive tools
-//! (question) and provider-backed tools (websearch) remain with the Bun runner.
+//! feeding a synthetic permission failure back to the model.
 
 use crate::runner::background;
 use crate::runner::permission;
@@ -54,6 +53,12 @@ const BASH_DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1_000;
 const BASH_MAX_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 const BASH_MAX_CAPTURE_BYTES: usize = 1024 * 1024;
 const WEBFETCH_MAX_BYTES: usize = 5 * 1024 * 1024;
+const WEBSEARCH_NO_RESULTS: &str = "No search results found. Please try a different query.";
+const WEBSEARCH_EXA_URL: &str = "https://mcp.exa.ai/mcp";
+const WEBSEARCH_PARALLEL_URL: &str = "https://search.parallel.ai/mcp";
+const WEBSEARCH_MAX_NUM_RESULTS: u64 = 20;
+const WEBSEARCH_MAX_CONTEXT_CHARACTERS: u64 = 50_000;
+const WEBSEARCH_MAX_RESPONSE_BYTES: usize = 256 * 1024;
 
 /// Tool definitions the agent can actually use: the registry filtered by
 /// wholly-denied permission rules, like ToolRegistry.materialize.
@@ -315,10 +320,30 @@ pub fn definitions() -> Vec<Value> {
                 }
             }
         }),
+        json!({
+            "type": "function",
+            "function": {
+                "name": "websearch",
+                "description": format!("Search the web using the session's local web search provider. Use this for current information beyond knowledge cutoff.\n\nThis is a provider-independent local tool backed by Exa or Parallel. Provider-hosted web search tools are separate and execute at the model provider.\n\nOptional controls support result count, live crawling ('fallback' or 'preferred'), search type ('auto', 'fast', or 'deep'), and maximum context characters.\n\nThe current year is {}. Use this year when searching for recent information or current events.", current_year()),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Websearch query" },
+                        "numResults": { "type": "integer", "minimum": 1, "maximum": WEBSEARCH_MAX_NUM_RESULTS, "description": format!("Number of search results to return (default: 8, maximum: {WEBSEARCH_MAX_NUM_RESULTS})") },
+                        "livecrawl": { "type": "string", "enum": ["fallback", "preferred"], "description": "Live crawl mode - 'fallback': use live crawling as backup if cached unavailable, 'preferred': prioritize live crawling (default: 'fallback')" },
+                        "type": { "type": "string", "enum": ["auto", "fast", "deep"], "description": "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search" },
+                        "contextMaxCharacters": { "type": "integer", "minimum": 1, "maximum": WEBSEARCH_MAX_CONTEXT_CHARACTERS, "description": format!("Maximum characters for context string optimized for models (default: 10000, maximum: {WEBSEARCH_MAX_CONTEXT_CHARACTERS})") }
+                    },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        }),
     ]
 }
 
 pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
+    let provider = (name == "websearch").then(|| select_websearch_provider(env.session_id));
     let resources = permission_resources(env, name, input);
     let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
     let action = permission_action(name);
@@ -359,8 +384,8 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
                         session_id: env.session_id.to_string(),
                         action: action.to_string(),
                         resources: resources.clone(),
-                        save: Some(resources.clone()),
-                        metadata: None,
+                        save: Some(permission_save(name, &resources)),
+                        metadata: permission_metadata(name, input, provider),
                         source,
                         agent: Some(env.agent.to_string()),
                     },
@@ -427,6 +452,7 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
         "todowrite" => todowrite(env, input),
         "skill" => skill(env.worktree, input),
         "webfetch" => webfetch(input),
+        "websearch" => websearch(env, input, provider.unwrap_or(WebSearchProvider::Exa)),
         "question" => question(env, input),
         other => failure(format!("Unknown tool: {other}")),
     }
@@ -475,9 +501,33 @@ fn permission_resources(env: &ToolEnv, name: &str, input: &Value) -> Vec<String>
         "task" => vec![text("subagent_type")],
         "skill" => vec![text("name")],
         "webfetch" => vec![text("url")],
+        "websearch" => vec![text("query")],
         "question" => vec!["*".to_string()],
         _ => vec!["*".to_string()],
     }
+}
+
+fn permission_save(name: &str, resources: &[String]) -> Vec<String> {
+    if name == "websearch" {
+        return vec!["*".to_string()];
+    }
+    resources.to_vec()
+}
+
+fn permission_metadata(
+    name: &str,
+    input: &Value,
+    provider: Option<WebSearchProvider>,
+) -> Option<Value> {
+    if name != "websearch" {
+        return None;
+    }
+    let mut metadata = input.as_object().cloned().unwrap_or_default();
+    metadata.insert(
+        "provider".into(),
+        Value::String(provider.unwrap_or(WebSearchProvider::Exa).as_str().into()),
+    );
+    Some(Value::Object(metadata))
 }
 
 fn denied_message(name: &str, input: &Value) -> String {
@@ -497,6 +547,7 @@ fn denied_message(name: &str, input: &Value) -> String {
         "todowrite" => "Unable to update todos".to_string(),
         "skill" => format!("Unable to load skill {}", text("name")),
         "webfetch" => format!("Unable to fetch {}", text("url")),
+        "websearch" => format!("Unable to search the web for {}", text("query")),
         "question" => "Unable to ask question".to_string(),
         other => format!("Unable to run {other}"),
     }
@@ -2568,6 +2619,308 @@ fn webfetch(input: &Value) -> Settlement {
 }
 
 // ---------------------------------------------------------------------------
+// websearch
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WebSearchProvider {
+    Exa,
+    Parallel,
+}
+
+impl WebSearchProvider {
+    fn as_str(self) -> &'static str {
+        match self {
+            WebSearchProvider::Exa => "exa",
+            WebSearchProvider::Parallel => "parallel",
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct WebSearchFlags {
+    enable_exa: bool,
+    enable_parallel: bool,
+}
+
+fn websearch(env: &ToolEnv, input: &Value, provider: WebSearchProvider) -> Settlement {
+    let Some(query) = input.get("query").and_then(Value::as_str) else {
+        return failure("Invalid tool input: query is required".into());
+    };
+    let result = match provider {
+        WebSearchProvider::Exa => websearch_exa(input, query),
+        WebSearchProvider::Parallel => websearch_parallel(query, env.session_id),
+    };
+    let text = match result {
+        Ok(Some(text)) => text,
+        Ok(None) => WEBSEARCH_NO_RESULTS.to_string(),
+        Err(_) => return failure(format!("Unable to search the web for {query}")),
+    };
+    Settlement {
+        structured: json!({
+            "provider": provider.as_str(),
+            "text": text,
+        }),
+        content: vec![json!({ "type": "text", "text": text })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn websearch_exa(input: &Value, query: &str) -> Result<Option<String>, String> {
+    let num_results =
+        optional_positive_integer(input, "numResults", WEBSEARCH_MAX_NUM_RESULTS)?.unwrap_or(8);
+    let livecrawl =
+        optional_enum(input, "livecrawl", &["fallback", "preferred"])?.unwrap_or("fallback");
+    let search_type = optional_enum(input, "type", &["auto", "fast", "deep"])?.unwrap_or("auto");
+    let context_max_characters = optional_positive_integer(
+        input,
+        "contextMaxCharacters",
+        WEBSEARCH_MAX_CONTEXT_CHARACTERS,
+    )?;
+    let mut arguments = Map::new();
+    arguments.insert("query".into(), Value::String(query.to_string()));
+    arguments.insert("type".into(), Value::String(search_type.to_string()));
+    arguments.insert("numResults".into(), Value::Number(num_results.into()));
+    arguments.insert("livecrawl".into(), Value::String(livecrawl.to_string()));
+    if let Some(value) = context_max_characters {
+        arguments.insert("contextMaxCharacters".into(), Value::Number(value.into()));
+    }
+    call_websearch_mcp(
+        &websearch_exa_url(std::env::var("EXA_API_KEY").ok()),
+        "web_search_exa",
+        Value::Object(arguments),
+        &[],
+    )
+}
+
+fn websearch_parallel(query: &str, session_id: &str) -> Result<Option<String>, String> {
+    let mut headers = vec![(
+        "User-Agent".to_string(),
+        format!("opencode/{}", installation_version()),
+    )];
+    if let Ok(api_key) = std::env::var("PARALLEL_API_KEY") {
+        headers.push(("Authorization".to_string(), format!("Bearer {api_key}")));
+    }
+    call_websearch_mcp(
+        WEBSEARCH_PARALLEL_URL,
+        "web_search",
+        json!({
+            "objective": query,
+            "search_queries": [query],
+            "session_id": session_id,
+        }),
+        &headers,
+    )
+}
+
+fn call_websearch_mcp(
+    url: &str,
+    tool: &str,
+    arguments: Value,
+    headers: &[(String, String)],
+) -> Result<Option<String>, String> {
+    let body = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+        },
+    })
+    .to_string();
+    let mut request = ureq::post(url)
+        .timeout(Duration::from_secs(25))
+        .set("Accept", "application/json, text/event-stream")
+        .set("Content-Type", "application/json");
+    for (key, value) in headers {
+        request = request.set(key, value);
+    }
+    let response = request
+        .send_string(&body)
+        .map_err(|_| format!("{tool} request failed"))?;
+    let mut body = Vec::new();
+    let mut reader = std::io::Read::take(
+        response.into_reader(),
+        WEBSEARCH_MAX_RESPONSE_BYTES as u64 + 1,
+    );
+    std::io::Read::read_to_end(&mut reader, &mut body)
+        .map_err(|_| format!("{tool} response read failed"))?;
+    if body.len() > WEBSEARCH_MAX_RESPONSE_BYTES {
+        return Err(format!(
+            "{tool} response exceeded {WEBSEARCH_MAX_RESPONSE_BYTES} bytes"
+        ));
+    }
+    parse_websearch_response(&String::from_utf8_lossy(&body)).map_err(|error| error.to_string())
+}
+
+fn parse_websearch_response(body: &str) -> Result<Option<String>, serde_json::Error> {
+    let trimmed = body.trim();
+    if !trimmed.is_empty() {
+        if let Some(text) = parse_websearch_payload(trimmed)? {
+            return Ok(Some(text));
+        }
+    }
+    for line in body.lines() {
+        let Some(payload) = line.strip_prefix("data: ") else {
+            continue;
+        };
+        if let Some(text) = parse_websearch_payload(payload)? {
+            return Ok(Some(text));
+        }
+    }
+    Ok(None)
+}
+
+fn parse_websearch_payload(payload: &str) -> Result<Option<String>, serde_json::Error> {
+    let trimmed = payload.trim();
+    if !trimmed.starts_with('{') {
+        return Ok(None);
+    }
+    let value: Value = serde_json::from_str(trimmed)?;
+    Ok(value
+        .get("result")
+        .and_then(|result| result.get("content"))
+        .and_then(Value::as_array)
+        .and_then(|content| {
+            content.iter().find_map(|item| {
+                item.get("text")
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.is_empty())
+            })
+        })
+        .map(str::to_string))
+}
+
+fn optional_positive_integer(input: &Value, key: &str, max: u64) -> Result<Option<u64>, String> {
+    let Some(value) = input.get(key) else {
+        return Ok(None);
+    };
+    let Some(number) = value.as_u64() else {
+        return Err(format!("{key} must be a positive integer"));
+    };
+    if number == 0 || number > max {
+        return Err(format!("{key} must be between 1 and {max}"));
+    }
+    Ok(Some(number))
+}
+
+fn optional_enum<'a>(
+    input: &'a Value,
+    key: &str,
+    allowed: &[&str],
+) -> Result<Option<&'a str>, String> {
+    let Some(value) = input.get(key) else {
+        return Ok(None);
+    };
+    let Some(text) = value.as_str() else {
+        return Err(format!("{key} must be a string"));
+    };
+    if allowed.contains(&text) {
+        return Ok(Some(text));
+    }
+    Err(format!("{key} is invalid"))
+}
+
+fn select_websearch_provider(session_id: &str) -> WebSearchProvider {
+    let override_provider = match std::env::var("OPENCODE_WEBSEARCH_PROVIDER").as_deref() {
+        Ok("exa") => Some(WebSearchProvider::Exa),
+        Ok("parallel") => Some(WebSearchProvider::Parallel),
+        _ => None,
+    };
+    select_websearch_provider_with(
+        session_id,
+        WebSearchFlags {
+            enable_exa: truthy_env("OPENCODE_EXPERIMENTAL")
+                || truthy_env("OPENCODE_ENABLE_EXA")
+                || truthy_env("OPENCODE_EXPERIMENTAL_EXA"),
+            enable_parallel: truthy_env("OPENCODE_ENABLE_PARALLEL")
+                || truthy_env("OPENCODE_EXPERIMENTAL_PARALLEL"),
+        },
+        override_provider,
+    )
+}
+
+fn select_websearch_provider_with(
+    session_id: &str,
+    flags: WebSearchFlags,
+    override_provider: Option<WebSearchProvider>,
+) -> WebSearchProvider {
+    if let Some(provider) = override_provider {
+        return provider;
+    }
+    if flags.enable_parallel {
+        return WebSearchProvider::Parallel;
+    }
+    if flags.enable_exa {
+        return WebSearchProvider::Exa;
+    }
+    if checksum_u32(session_id).is_multiple_of(2) {
+        return WebSearchProvider::Exa;
+    }
+    WebSearchProvider::Parallel
+}
+
+fn truthy_env(key: &str) -> bool {
+    std::env::var(key)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "true" | "1"))
+        .unwrap_or(false)
+}
+
+fn checksum_u32(content: &str) -> u32 {
+    let mut hash = 0x811c9dc5u32;
+    for unit in content.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(0x01000193);
+    }
+    hash
+}
+
+fn websearch_exa_url(api_key: Option<String>) -> String {
+    let Some(api_key) = api_key.filter(|value| !value.is_empty()) else {
+        return WEBSEARCH_EXA_URL.to_string();
+    };
+    format!("{WEBSEARCH_EXA_URL}?exaApiKey={}", query_encode(&api_key))
+}
+
+fn query_encode(value: &str) -> String {
+    value
+        .as_bytes()
+        .iter()
+        .flat_map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                vec![*byte as char]
+            }
+            _ => format!("%{byte:02X}").chars().collect(),
+        })
+        .collect()
+}
+
+fn installation_version() -> String {
+    std::env::var("OPENCODE_VERSION").unwrap_or_else(|_| opengoal_daemon::VERSION.into())
+}
+
+fn current_year() -> i32 {
+    let days = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| (duration.as_secs() / 86_400) as i64)
+        .unwrap_or_default();
+    civil_year_from_days(days)
+}
+
+fn civil_year_from_days(days: i64) -> i32 {
+    let days = days + 719_468;
+    let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+    let day_of_era = days - era * 146_097;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_prime = (5 * day_of_year + 2) / 153;
+    (year_of_era + era * 400 + (month_prime + 2) / 12) as i32
+}
+
+// ---------------------------------------------------------------------------
 // question
 // ---------------------------------------------------------------------------
 
@@ -3159,6 +3512,85 @@ mod tests {
     }
 
     #[test]
+    fn websearch_permission_uses_query_resource_wildcard_save_and_metadata() {
+        let session_id = "ses_websearchpermissionaaaaaa";
+        let conn = permission_conn(session_id);
+        conn.execute(
+            "UPDATE session SET permission = ? WHERE id = ?",
+            rusqlite::params![
+                json!([{ "permission": "websearch", "pattern": "*", "action": "ask" }]).to_string(),
+                session_id,
+            ],
+        )
+        .unwrap();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        let replier = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    assert_eq!(request.action, "websearch");
+                    assert_eq!(request.resources, vec!["rust websearch".to_string()]);
+                    assert_eq!(request.save, Some(vec!["*".to_string()]));
+                    assert_eq!(
+                        request.metadata.as_ref().unwrap()["query"],
+                        "rust websearch"
+                    );
+                    assert_eq!(request.metadata.as_ref().unwrap()["numResults"], 3);
+                    assert!(matches!(
+                        request.metadata.as_ref().unwrap()["provider"].as_str(),
+                        Some("exa" | "parallel")
+                    ));
+                    assert_eq!(
+                        request.source.as_ref().unwrap(),
+                        &json!({ "type": "tool", "messageID": "msg_ws", "callID": "call_ws" })
+                    );
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_websearch",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Reject(Some("stop before network".into())),
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("no pending websearch permission surfaced within timeout");
+        });
+        let tool_env = ToolEnv {
+            directory: "/workspace/rust",
+            worktree: "/workspace",
+            agent: "build",
+            session_id,
+            project_id: "prj_websearch",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_ws"),
+            call_id: Some("call_ws"),
+        };
+        let settlement = execute(
+            &tool_env,
+            "websearch",
+            &json!({ "query": "rust websearch", "numResults": 3 }),
+        );
+        replier.join().unwrap();
+        assert_eq!(settlement.error.as_deref(), Some("stop before network"));
+    }
+
+    #[test]
     fn question_tool_returns_answered_when_client_replies() {
         let conn = memory_conn();
         let bus = crate::bus::Bus::new();
@@ -3267,6 +3699,75 @@ mod tests {
     }
 
     #[test]
+    fn websearch_provider_selection_matches_typescript_checksum_and_flags() {
+        let none = WebSearchFlags {
+            enable_exa: false,
+            enable_parallel: false,
+        };
+        assert_eq!(
+            select_websearch_provider_with("ses_even", none, None),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            select_websearch_provider_with("ses_odd", none, None),
+            WebSearchProvider::Exa
+        );
+        assert_eq!(
+            select_websearch_provider_with(
+                "ses_odd",
+                WebSearchFlags {
+                    enable_exa: true,
+                    enable_parallel: true,
+                },
+                None,
+            ),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            select_websearch_provider_with(
+                "ses_even",
+                WebSearchFlags {
+                    enable_exa: true,
+                    enable_parallel: false,
+                },
+                None,
+            ),
+            WebSearchProvider::Exa
+        );
+        assert_eq!(
+            select_websearch_provider_with("ses_odd", none, Some(WebSearchProvider::Parallel),),
+            WebSearchProvider::Parallel
+        );
+        assert_eq!(
+            websearch_exa_url(Some("key with space".into())),
+            "https://mcp.exa.ai/mcp?exaApiKey=key%20with%20space"
+        );
+    }
+
+    #[test]
+    fn websearch_parses_direct_and_sse_mcp_responses() {
+        assert_eq!(
+            parse_websearch_response(
+                r#"{"result":{"content":[{"type":"text","text":"direct result"}]}}"#
+            )
+            .unwrap(),
+            Some("direct result".into())
+        );
+        assert_eq!(
+            parse_websearch_response(
+                "event: message\ndata: {\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"sse result\"}]}}\n\n"
+            )
+            .unwrap(),
+            Some("sse result".into())
+        );
+        assert_eq!(
+            parse_websearch_response(r#"{"result":{"content":[{"type":"text","text":""}]}}"#)
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
     fn definitions_include_apply_patch_todo_ids_and_timeout_bounds() {
         let definitions = definitions();
         assert!(definitions
@@ -3301,6 +3802,34 @@ mod tests {
             webfetch["function"]["parameters"]["properties"]["timeout"]["maximum"],
             120
         );
+        let websearch = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "websearch")
+            .unwrap();
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["numResults"]["maximum"],
+            WEBSEARCH_MAX_NUM_RESULTS
+        );
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["numResults"]["minimum"],
+            1
+        );
+        assert_eq!(
+            websearch["function"]["parameters"]["properties"]["contextMaxCharacters"]["maximum"],
+            WEBSEARCH_MAX_CONTEXT_CHARACTERS
+        );
+        assert!(optional_positive_integer(
+            &json!({ "numResults": WEBSEARCH_MAX_NUM_RESULTS + 1 }),
+            "numResults",
+            WEBSEARCH_MAX_NUM_RESULTS
+        )
+        .is_err());
+        assert!(optional_positive_integer(
+            &json!({ "contextMaxCharacters": WEBSEARCH_MAX_CONTEXT_CHARACTERS + 1 }),
+            "contextMaxCharacters",
+            WEBSEARCH_MAX_CONTEXT_CHARACTERS
+        )
+        .is_err());
         let task = definitions
             .iter()
             .find(|tool| tool["function"]["name"] == "task")
