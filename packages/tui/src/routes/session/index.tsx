@@ -1586,6 +1586,11 @@ function CompactionSummary(props: { message: AssistantMessage; parts: Part[] }) 
   )
   const done = createMemo(() => props.message.time.completed !== undefined)
   const failed = createMemo(() => props.message.error && props.message.error.name !== "MessageAbortedError")
+  const failure = createMemo(() => {
+    const data = props.message.error?.data
+    if (typeof data !== "object" || data === null || !("message" in data)) return props.message.error?.name
+    return typeof data.message === "string" ? data.message : props.message.error?.name
+  })
   // Turns summarized vs kept: everything before the compaction trigger gets
   // summarized except the tail (tail_start_id onwards), which stays verbatim.
   const stats = createMemo(() => {
@@ -1646,7 +1651,7 @@ function CompactionSummary(props: { message: AssistantMessage; parts: Part[] }) 
         </text>
       </Show>
       <Show when={failed()}>
-        <text fg={theme.error}>Compaction failed: {props.message.error?.data.message}</text>
+        <text fg={theme.error}>Compaction failed: {failure()}</text>
       </Show>
       <Show when={expanded() && summary()}>
         <box>
