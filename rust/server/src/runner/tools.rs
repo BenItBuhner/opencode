@@ -319,24 +319,18 @@ pub fn definitions() -> Vec<Value> {
 }
 
 pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
-    let session_rules = permission::session_rules(env.conn, env.session_id);
     let resources = permission_resources(env, name, input);
     let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
-    let evaluated = if let Some(registry_bus) = env.bus.zip(env.permissions) {
-        // Full ask/reply flow when the tool is running under the live runner.
-        let (bus, registry) = registry_bus;
-        crate::permission_v2::evaluate_input(
+    let action = permission_action(name);
+    if let Some((bus, registry)) = env.bus.zip(env.permissions) {
+        // Full ask/reply flow when the tool is running under the live runner:
+        // agent + session + saved rules with an interactive Ask.
+        match crate::permission_v2::evaluate_input(
             env.conn,
             env.project_id,
             env.session_id,
             env.agent,
-            permission_action(name),
-            &resource_refs,
-        );
-        match permission::evaluate_with(
-            env.agent,
-            &session_rules,
-            permission_action(name),
+            action,
             &resource_refs,
         ) {
             permission::Effect::Allow => {}
@@ -358,62 +352,57 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
                     project_id: env.project_id,
                     registry,
                 };
-                let ask_result = crate::permission_v2::ask(
+                let outcome = match crate::permission_v2::ask(
                     &ask_env,
                     &crate::permission_v2::AssertInput {
                         id: None,
                         session_id: env.session_id.to_string(),
-                        action: permission_action(name).to_string(),
+                        action: action.to_string(),
                         resources: resources.clone(),
                         save: Some(resources.clone()),
                         metadata: None,
                         source,
                         agent: Some(env.agent.to_string()),
                     },
-                );
-                match ask_result {
-                    Ok(outcome) => match outcome.wait {
-                        None if outcome.effect == "allow" => {}
-                        None => return failure(denied_message(name, input)),
-                        Some(rx) => {
-                            let interrupt_token = env.interrupt.cloned();
-                            let resolution = crate::permission_v2::wait_for(rx, move || {
-                                interrupt_token
-                                    .as_ref()
-                                    .is_some_and(|token| token.is_interrupted())
-                            });
-                            match resolution {
-                                crate::permission_v2::Resolution::Allowed => {}
-                                crate::permission_v2::Resolution::Declined => {
-                                    return failure(denied_message(name, input));
+                ) {
+                    Ok(outcome) => outcome,
+                    Err(_) => return failure(denied_message(name, input)),
+                };
+                match outcome.wait {
+                    None if outcome.effect == "allow" => {}
+                    None => return failure(denied_message(name, input)),
+                    Some(rx) => {
+                        let interrupt_token = env.interrupt.cloned();
+                        match crate::permission_v2::wait_for(rx, move || {
+                            interrupt_token
+                                .as_ref()
+                                .is_some_and(|token| token.is_interrupted())
+                        }) {
+                            crate::permission_v2::Resolution::Allowed => {}
+                            crate::permission_v2::Resolution::Declined => {
+                                if env.interrupt.is_some_and(|token| token.is_interrupted()) {
+                                    return interrupted();
                                 }
-                                crate::permission_v2::Resolution::Corrected(feedback) => {
-                                    return failure(feedback);
-                                }
+                                return failure(denied_message(name, input));
+                            }
+                            crate::permission_v2::Resolution::Corrected(feedback) => {
+                                return failure(feedback);
                             }
                         }
-                    },
-                    Err(_) => return failure(denied_message(name, input)),
+                    }
                 }
             }
         }
-        true
     } else {
         // Legacy path (tool-registry unit tests without a live runner):
         // preserve historical `ask -> interrupt` behavior.
-        match permission::evaluate_with(
-            env.agent,
-            &session_rules,
-            permission_action(name),
-            &resource_refs,
-        ) {
+        let session_rules = permission::session_rules(env.conn, env.session_id);
+        match permission::evaluate_with(env.agent, &session_rules, action, &resource_refs) {
             permission::Effect::Allow => {}
             permission::Effect::Deny => return failure(denied_message(name, input)),
             permission::Effect::Ask => return interrupted(),
         }
-        true
-    };
-    let _ = evaluated;
+    }
     if name.starts_with("goal_") {
         let outcome = crate::runner::goal::execute(env.conn, env.session_id, name, input);
         if let Some(message) = outcome.error {
@@ -2797,6 +2786,26 @@ mod tests {
         conn
     }
 
+    struct TempDirGuard(PathBuf);
+    impl Drop for TempDirGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn mkdir_with_git() -> (PathBuf, TempDirGuard) {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let counter = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!(
+            "rust-permquestion-test-{}-{}",
+            std::process::id(),
+            counter,
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).expect("worktree");
+        (dir.clone(), TempDirGuard(dir))
+    }
+
     fn task_pool() -> (crate::runner::Pool, PathBuf, PathBuf) {
         let root = std::env::temp_dir().join(format!("rust-task-tool-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
@@ -3022,6 +3031,239 @@ mod tests {
             Some("Tool execution interrupted")
         );
         assert!(settlement.content.is_empty());
+    }
+
+    fn permission_conn(session_id: &str) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(
+            "CREATE TABLE session (id text PRIMARY KEY, permission text);
+             CREATE TABLE permission (
+               id text PRIMARY KEY, project_id text NOT NULL,
+               action text NOT NULL, resource text NOT NULL,
+               time_created integer NOT NULL, time_updated integer NOT NULL,
+               UNIQUE(project_id, action, resource));",
+        )
+        .expect("schema");
+        conn.execute("INSERT INTO session (id) VALUES (?)", [session_id])
+            .unwrap();
+        conn
+    }
+
+    #[test]
+    fn permission_ask_awaits_reply_once_and_reads_file() {
+        let (dir, _guard) = mkdir_with_git();
+        std::fs::write(dir.join(".env"), "hello reply once").unwrap();
+        let session_id = "ses_askreplyonceaaaaaaaaaaaaa";
+        let conn = permission_conn(session_id);
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let directory = dir.to_string_lossy().into_owned();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        let replier = std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_x",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Once,
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            panic!("no pending permission surfaced within timeout");
+        });
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id,
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_a"),
+            call_id: Some("call_a"),
+        };
+        let settlement = execute(&tool_env, "read", &json!({ "path": ".env" }));
+        replier.join().unwrap();
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.structured["content"], "hello reply once");
+    }
+
+    #[test]
+    fn permission_ask_reject_message_becomes_corrected_feedback() {
+        let (dir, _guard) = mkdir_with_git();
+        std::fs::write(dir.join(".env"), "hi").unwrap();
+        let session_id = "ses_askrejectaaaaaaaaaaaaaaa";
+        let conn = permission_conn(session_id);
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let directory = dir.to_string_lossy().into_owned();
+        let permissions_for_thread = permissions.clone();
+        let bus_for_thread = bus.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = permissions_for_thread.list().into_iter().next() {
+                    let conn = permission_conn(&request.session_id);
+                    crate::permission_v2::reply(
+                        &crate::permission_v2::Env {
+                            bus: &bus_for_thread,
+                            conn: &conn,
+                            project_id: "prj_x",
+                            registry: &permissions_for_thread,
+                        },
+                        &request.id,
+                        crate::permission_v2::Reply::Reject(Some("please use fs API".to_string())),
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let tool_env = ToolEnv {
+            directory: &directory,
+            worktree: &directory,
+            agent: "build",
+            session_id,
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_r"),
+            call_id: Some("call_r"),
+        };
+        let settlement = execute(&tool_env, "read", &json!({ "path": ".env" }));
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.error.as_deref(), Some("please use fs API"));
+    }
+
+    #[test]
+    fn question_tool_returns_answered_when_client_replies() {
+        let conn = memory_conn();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let tool_env = ToolEnv {
+            directory: "/tmp",
+            worktree: "/tmp",
+            agent: "build",
+            session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: None,
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_q"),
+            call_id: Some("call_q"),
+        };
+        let registry_for_thread = questions.clone();
+        let bus_for_thread = bus.clone();
+        std::thread::spawn(move || {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while std::time::Instant::now() < deadline {
+                if let Some(request) = registry_for_thread.list().into_iter().next() {
+                    crate::question_v2::reply(
+                        &crate::question_v2::Env {
+                            bus: &bus_for_thread,
+                            registry: &registry_for_thread,
+                        },
+                        &request.id,
+                        vec![vec!["Yes".into()]],
+                    )
+                    .unwrap();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        let settlement = execute(
+            &tool_env,
+            "question",
+            &json!({
+                "questions": [{
+                    "question": "Proceed?",
+                    "header": "confirm",
+                    "options": [
+                        { "label": "Yes", "description": "Go" },
+                        { "label": "No", "description": "Stop" },
+                    ],
+                }],
+                "timeout": 5,
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert!(!settlement.interrupt);
+        assert_eq!(settlement.structured["answers"], json!([["Yes"]]));
+    }
+
+    #[test]
+    fn question_tool_interrupt_token_cancels_wait() {
+        let conn = memory_conn();
+        let bus = crate::bus::Bus::new();
+        let permissions = crate::permission_v2::Registry::new();
+        let questions = crate::question_v2::Registry::new();
+        let interrupt = crate::runner::InterruptToken::default();
+        let tool_env = ToolEnv {
+            directory: "/tmp",
+            worktree: "/tmp",
+            agent: "build",
+            session_id: "ses_tooltest000000000000000000",
+            project_id: "prj_x",
+            conn: &conn,
+            pool: None,
+            interrupt: Some(&interrupt),
+            bus: Some(&bus),
+            permissions: Some(&permissions),
+            questions: Some(&questions),
+            message_id: Some("msg_qi"),
+            call_id: Some("call_qi"),
+        };
+        let cancel_handle = interrupt.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            cancel_handle.interrupt();
+        });
+        let settlement = execute(
+            &tool_env,
+            "question",
+            &json!({
+                "questions": [{
+                    "question": "Wait forever?",
+                    "header": "wait",
+                    "options": [],
+                }],
+                "timeout": 30,
+            }),
+        );
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(questions.list().is_empty());
     }
 
     #[test]
