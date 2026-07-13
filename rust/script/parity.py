@@ -95,7 +95,16 @@ for item in sessions:
     check(f"GET /session/{ms}/message", fetch(BUN, f"/session/{ms}/message"), fetch(RUST, f"/session/{ms}/message"))
 
 # 7. Paginated walk: items and cursors must match page by page
-FIXTURE = "ses_paritytest0000000000000001"
+FIXTURE = next(
+    (
+        item["id"]
+        for item in sessions
+        if fetch(BUN, f"/session/{item['id']}/message")
+    ),
+    None,
+)
+if FIXTURE is None:
+    FIXTURE = post(RUST, "/session", {"title": "Parity fixture"})["id"]
 
 def walk(base):
     pages = []

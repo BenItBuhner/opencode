@@ -41,7 +41,20 @@ def post(base, path, payload):
 # ---------------------------------------------------------------------------
 # 1. Byte-level read parity on the v2 surface
 # ---------------------------------------------------------------------------
-FIXTURE = "ses_paritytest0000000000000001"
+fixture_page = json.loads(get(BUN, "/api/session?limit=1")[1])
+if fixture_page.get("data"):
+    FIXTURE = fixture_page["data"][0]["id"]
+else:
+    status, created = post(
+        RUST,
+        "/api/session",
+        {
+            "location": {"directory": "/workspace"},
+            "model": {"id": "big-pickle", "providerID": "opencode"},
+        },
+    )
+    assert status == 200, created
+    FIXTURE = json.loads(created)["data"]["id"]
 for path in [
     "/api/health",
     "/api/session/active",
