@@ -862,7 +862,7 @@ const MAX_STEPS_PROMPT: &str = "CRITICAL - MAXIMUM STEPS REACHED\n\nThe maximum 
 
 /// Built-in agent system prompts from packages/core/src/plugin/agent.ts
 /// (BUILD_SYSTEM / PROMPT_GOAL / PROMPT_EXPLORE); plan carries none.
-/// rust/script/upstream-drift.py verifies these stay in sync with upstream.
+/// `opencode-parity::source_drift` verifies these stay in sync with upstream.
 pub(crate) fn agent_system(agent: &str) -> Option<&'static str> {
     match agent {
         "build" => Some(
