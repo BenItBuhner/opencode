@@ -285,7 +285,8 @@ mod auth {
     use base64::Engine;
 
     pub fn basic_header(username: &str, password: &str) -> String {
-        let token = base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
+        let token =
+            base64::engine::general_purpose::STANDARD.encode(format!("{username}:{password}"));
         format!("Basic {token}")
     }
 
@@ -331,18 +332,17 @@ mod health {
     pub fn is_healthy(url: &str, password: &str) -> bool {
         let response = ureq::get(&format!("{url}/api/health"))
             .timeout(HEALTH_TIMEOUT)
-            .set("Authorization", &auth::basic_header(super::USERNAME, password))
+            .set(
+                "Authorization",
+                &auth::basic_header(super::USERNAME, password),
+            )
             .call();
         match response {
             Ok(response) => {
                 let body = response.into_string().unwrap_or_default();
                 serde_json::from_str::<serde_json::Value>(&body)
                     .ok()
-                    .and_then(|value| {
-                        value
-                            .get("healthy")
-                            .and_then(|healthy| healthy.as_bool())
-                    })
+                    .and_then(|value| value.get("healthy").and_then(|healthy| healthy.as_bool()))
                     .unwrap_or(false)
             }
             Err(_) => false,

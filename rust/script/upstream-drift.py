@@ -30,7 +30,7 @@ import json
 import re
 from pathlib import Path
 
-ROOT = Path("/workspace")
+ROOT = Path(__file__).resolve().parents[2]
 failures = []
 
 
@@ -104,7 +104,6 @@ V2_ENDPOINT_BACKLOG = {
     ("get", "/api/event"),
     ("get", "/api/session/{}/event"),
     ("get", "/api/session/{}/context"),
-    ("get", "/api/session/{}/history"),  # ported; kept for structure example
     ("post", "/api/session/{}/compact"),
     ("post", "/api/session/{}/revert/stage"),
     ("post", "/api/session/{}/revert/clear"),
@@ -139,9 +138,6 @@ V2_ENDPOINT_BACKLOG = {
     ("post", "/experimental/project/{}/copy"),
     ("delete", "/experimental/project/{}/copy"),
     ("post", "/experimental/project/{}/copy/refresh"),
-    ("get", "/api/health"),  # ported; kept as the worked example in review
-    ("get", "/api/session/{}/message"),
-    ("get", "/api/session/{}/message/{}"),
 }
 
 unported = {
@@ -150,10 +146,15 @@ unported = {
     if endpoint not in rust_routes
 }
 new_upstream = sorted(unported - V2_ENDPOINT_BACKLOG)
+stale_backlog = sorted(V2_ENDPOINT_BACKLOG - unported)
 check(
-    "A. no NEW unported v2 endpoints (additions since the last port pass)",
-    not new_upstream,
-    f"new={new_upstream}" if new_upstream else f"tracked backlog={len(unported)}",
+    "A. protocol endpoints are ported or explicitly tracked",
+    not new_upstream and not stale_backlog,
+    (
+        f"new={new_upstream} stale_backlog={stale_backlog}"
+        if new_upstream or stale_backlog
+        else f"tracked backlog={len(unported)}"
+    ),
 )
 
 # ---------------------------------------------------------------------------
