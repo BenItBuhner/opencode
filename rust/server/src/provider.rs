@@ -399,7 +399,7 @@ fn official_model_from_models_dev(
         .and_then(Value::as_str)
         .unwrap_or_default();
     let model_provider = model.get("provider");
-    json!({
+    let mut result = json!({
         "id": id,
         "providerID": provider_id,
         "family": model.get("family").cloned().unwrap_or(Value::Null),
@@ -428,7 +428,14 @@ fn official_model_from_models_dev(
             "input": model.pointer("/limit/input").cloned().unwrap_or(Value::Null),
             "output": model.pointer("/limit/output").cloned().unwrap_or(Value::Number(0.into())),
         },
-    })
+    });
+    if result["limit"]["input"].is_null() {
+        result["limit"]
+            .as_object_mut()
+            .expect("limit object")
+            .remove("input");
+    }
+    result
 }
 
 fn apply_configured_providers(

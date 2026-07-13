@@ -137,6 +137,13 @@ pub fn agent_rules(agent: &str) -> Vec<Rule> {
                 rules.push(rule(action, "*", "allow"));
             }
             rules.push(rule("external_directory", "*", "ask"));
+            let home = std::env::var("HOME").unwrap_or_default();
+            rules.push(rule(
+                "external_directory",
+                &format!("{home}/.local/share/opencode/tool-output/*"),
+                "allow",
+            ));
+            rules.push(rule("external_directory", "/tmp/opencode/*", "allow"));
         }
         "compaction" | "title" | "summary" => {
             rules.push(rule("*", "*", "deny"));

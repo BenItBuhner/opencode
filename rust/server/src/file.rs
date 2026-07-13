@@ -163,7 +163,7 @@ fn subsequence_score(haystack: &str, needle: &str) -> Option<i64> {
     let basename = haystack
         .rsplit('/')
         .next()
-        .and_then(|name| score_subsequence(name, needle));
+        .and_then(|name| score_subsequence(name, needle).map(|score| score - name.len() as i64));
     Some(basename.map_or(full, |score| score.max(full)))
 }
 
