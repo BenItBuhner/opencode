@@ -66,9 +66,20 @@ impl Api {
     }
 
     pub fn create_session(&self, directory: &str) -> Result<Value, String> {
+        self.create_session_with(directory, "opencode", "big-pickle")
+    }
+
+    /// First-prompt session creation: bind the selected provider/model at
+    /// birth so the initial turn runs against the user's Home selections.
+    pub fn create_session_with(
+        &self,
+        directory: &str,
+        provider: &str,
+        model: &str,
+    ) -> Result<Value, String> {
         let body = json!({
             "location": { "directory": directory },
-            "model": { "id": "big-pickle", "providerID": "opencode" },
+            "model": { "id": model, "providerID": provider },
         });
         Ok(self
             .post("/api/session", &body)?
@@ -151,13 +162,14 @@ impl Api {
 
     /// Fork out-of-workspace toggle: PATCH the v1 session permission ruleset.
     pub fn set_external_permission(&self, session_id: &str, allow: bool) -> Result<(), String> {
-        let request = self.apply_auth(ureq::request(
-            "PATCH",
-            &format!("{}/session/{session_id}", self.base),
-        ))
-        .timeout(Duration::from_secs(30))
-        .set("Content-Type", "application/json")
-        .send_string(
+        let request = self
+            .apply_auth(ureq::request(
+                "PATCH",
+                &format!("{}/session/{session_id}", self.base),
+            ))
+            .timeout(Duration::from_secs(30))
+            .set("Content-Type", "application/json")
+            .send_string(
                 &json!({
                     "permission": [{
                         "permission": "external_directory",

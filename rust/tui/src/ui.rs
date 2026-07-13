@@ -5,16 +5,19 @@
 //! border, agent row, connector, status row with the block spinner), and
 //! centered DialogSelect panels with search and `●` markers.
 
-use crate::state::{fuzzy, App, Dialog};
+use crate::state::{
+    fuzzy, App, Autocomplete, Dialog, Geometry, HitTarget, Rectangle, COMMANDS as PALETTE,
+};
 use crate::theme;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 use serde_json::Value;
 
-pub fn draw(frame: &mut Frame, app: &App) {
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.geometry = Geometry::default();
     frame.render_widget(
         Block::default().style(Style::default().bg(theme::BACKGROUND)),
         frame.area(),
@@ -23,6 +26,9 @@ pub fn draw(frame: &mut Frame, app: &App) {
         draw_home(frame, app);
     } else {
         draw_session(frame, app);
+    }
+    if app.autocomplete.is_some() {
+        draw_autocomplete(frame, app);
     }
     match app.dialog {
         Dialog::None => {}
@@ -33,11 +39,20 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
+fn rect_of(area: Rect) -> Rectangle {
+    Rectangle {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: area.height,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Home route: centered logo, prompt, tip, footer
 // ---------------------------------------------------------------------------
 
-fn draw_home(frame: &mut Frame, app: &App) {
+fn draw_home(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     let prompt_width = (area.width * 7 / 10)
         .clamp(40, 75)
@@ -70,9 +85,28 @@ fn draw_home(frame: &mut Frame, app: &App) {
         prompt_width,
         1,
     );
-    let mut spans = vec![Span::styled("● Tip ", Style::default().fg(theme::WARNING))];
-    spans.extend(tip_spans(tip));
+    let is_hovered = app.hover == Some(HitTarget::TipRow);
+    let is_pressed = app.pressed == Some(HitTarget::TipRow);
+    let bg = if is_pressed {
+        theme::BACKGROUND_ELEMENT
+    } else {
+        theme::BACKGROUND
+    };
+    let bold = if is_hovered || is_pressed {
+        Modifier::BOLD
+    } else {
+        Modifier::empty()
+    };
+    let mut spans = vec![Span::styled(
+        "● Tip ",
+        Style::default()
+            .fg(theme::WARNING)
+            .bg(bg)
+            .add_modifier(bold),
+    )];
+    spans.extend(tip_spans(tip, bg));
     frame.render_widget(Paragraph::new(Line::from(spans)), tip_area);
+    app.geometry.tip_row = Some(rect_of(tip_area));
 
     // Home footer: directory left, version right (both muted).
     let footer = Rect::new(
@@ -108,14 +142,14 @@ const TIPS: [&str; 6] = [
     "Press {ctrl+p} to see all available actions and commands",
 ];
 
-fn tip_spans(tip: &str) -> Vec<Span<'static>> {
+fn tip_spans(tip: &str, bg: Color) -> Vec<Span<'static>> {
     let mut spans = vec![];
     let mut rest = tip;
     while let Some(start) = rest.find('{') {
         if !rest[..start].is_empty() {
             spans.push(Span::styled(
                 rest[..start].to_string(),
-                Style::default().fg(theme::TEXT_MUTED),
+                Style::default().fg(theme::TEXT_MUTED).bg(bg),
             ));
         }
         let Some(end) = rest[start..].find('}') else {
@@ -123,14 +157,14 @@ fn tip_spans(tip: &str) -> Vec<Span<'static>> {
         };
         spans.push(Span::styled(
             rest[start + 1..start + end].to_string(),
-            Style::default().fg(theme::TEXT),
+            Style::default().fg(theme::TEXT).bg(bg),
         ));
         rest = &rest[start + end + 1..];
     }
     if !rest.is_empty() {
         spans.push(Span::styled(
             rest.to_string(),
-            Style::default().fg(theme::TEXT_MUTED),
+            Style::default().fg(theme::TEXT_MUTED).bg(bg),
         ));
     }
     spans
@@ -140,7 +174,7 @@ fn tip_spans(tip: &str) -> Vec<Span<'static>> {
 // Session route: transcript + prompt
 // ---------------------------------------------------------------------------
 
-fn draw_session(frame: &mut Frame, app: &App) {
+fn draw_session(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
     // Sidebar (width 42) appears automatically on terminals wider than 120.
     let (main, sidebar) = if area.width > 120 {
@@ -567,11 +601,11 @@ pub fn prompt_height(app: &App) -> u16 {
     editor_height(app) + 5
 }
 
-fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_prompt(frame: &mut Frame, app: &mut App, area: Rect) {
     let editor = editor_height(app);
     let accent = app.agent_color();
     let shell_mode = app.input.starts_with('!');
-    let border_color = if app.leader {
+    let border_color = if app.leader.is_some() {
         theme::BORDER
     } else if shell_mode {
         theme::PRIMARY
@@ -586,10 +620,14 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
         );
     };
 
+    app.geometry.prompt = Some(rect_of(area));
+
     // Prompt box paddingTop=1: an element-background row above the textarea.
     blank_row(frame, Rect::new(area.x, area.y, area.width, 1));
 
     // Textarea rows with left `┃` border and element background.
+    let textarea_rect = Rect::new(area.x + 3, area.y + 1, area.width.saturating_sub(3), editor);
+    app.geometry.textarea = Some(rect_of(textarea_rect));
     for row in 0..editor {
         let rect = Rect::new(area.x, area.y + 1 + row, area.width, 1);
         let content: String = app
@@ -627,29 +665,73 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         titlecase(&app.agent)
     };
+    let agent_hovered = matches!(app.hover, Some(HitTarget::AgentSpan))
+        || matches!(app.pressed, Some(HitTarget::AgentSpan));
+    let model_hovered = matches!(app.hover, Some(HitTarget::ModelSpan))
+        || matches!(app.pressed, Some(HitTarget::ModelSpan));
+    let agent_bg = if matches!(app.pressed, Some(HitTarget::AgentSpan)) {
+        theme::BACKGROUND_PANEL
+    } else {
+        theme::BACKGROUND_ELEMENT
+    };
+    let model_bg = if matches!(app.pressed, Some(HitTarget::ModelSpan)) {
+        theme::BACKGROUND_PANEL
+    } else {
+        theme::BACKGROUND_ELEMENT
+    };
+    let label_text = format!("  {label}");
+    let model_text = format!(" · {} {}", app.model, app.provider);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled("┃", Style::default().fg(border_color)),
             Span::styled(
-                format!("  {label}"),
+                label_text.clone(),
                 Style::default()
                     .fg(theme::tint(
                         theme::BACKGROUND_ELEMENT,
                         if shell_mode { theme::PRIMARY } else { accent },
-                        0.8,
+                        if agent_hovered { 1.0 } else { 0.8 },
                     ))
-                    .bg(theme::BACKGROUND_ELEMENT),
+                    .bg(agent_bg)
+                    .add_modifier(if agent_hovered {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
             ),
             Span::styled(
-                format!(" · {} {}", app.model, app.provider),
+                model_text.clone(),
                 Style::default()
-                    .fg(theme::TEXT_MUTED)
-                    .bg(theme::BACKGROUND_ELEMENT),
+                    .fg(if model_hovered {
+                        theme::TEXT
+                    } else {
+                        theme::TEXT_MUTED
+                    })
+                    .bg(model_bg)
+                    .add_modifier(if model_hovered {
+                        Modifier::BOLD
+                    } else {
+                        Modifier::empty()
+                    }),
             ),
         ]))
         .style(element),
         agent_row,
     );
+    let agent_width = label_text.chars().count() as u16;
+    let model_width = model_text.chars().count() as u16;
+    app.geometry.agent_span = Some(Rectangle {
+        x: agent_row.x + 1,
+        y: agent_row.y,
+        width: agent_width,
+        height: 1,
+    });
+    app.geometry.model_span = Some(Rectangle {
+        x: agent_row.x + 1 + agent_width,
+        y: agent_row.y,
+        width: model_width,
+        height: 1,
+    });
 
     // Connector row: `╹` + `▀` bottom edge of the element background.
     let connector = Rect::new(area.x, area.y + editor + 3, area.width, 1);
@@ -666,7 +748,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
     draw_prompt_status(frame, app, status);
 
     // Terminal cursor inside the textarea (below the padding row).
-    if app.dialog == Dialog::None {
+    if app.dialog == Dialog::None && app.autocomplete.is_none() {
         let before: String = app.input.chars().take(app.cursor).collect();
         let row = before.matches('\n').count() as u16;
         let column = before.split('\n').next_back().unwrap_or("").chars().count() as u16;
@@ -677,7 +759,7 @@ fn draw_prompt(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
+fn draw_prompt_status(frame: &mut Frame, app: &mut App, area: Rect) {
     let left = if app.busy {
         Line::from(vec![
             Span::styled(
@@ -710,7 +792,7 @@ fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
     };
     frame.render_widget(Paragraph::new(left), area);
 
-    let hint = if app.leader {
+    let hint = if app.leader.is_some() {
         Line::from(Span::styled(
             "leader · q quit  n new  l sessions  a agents  m models  ? help",
             Style::default().fg(theme::WARNING),
@@ -729,27 +811,59 @@ fn draw_prompt_status(frame: &mut Frame, app: &App, area: Rect) {
             .unwrap_or("active");
         let filled = (progress as usize * 12) / 100;
         let bar: String = "━".repeat(filled) + &"─".repeat(12 - filled);
+        let elapsed = goal_elapsed(goal);
+        let modifier = if matches!(app.hover, Some(HitTarget::GoalChip))
+            || matches!(app.pressed, Some(HitTarget::GoalChip))
+        {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+        let head = format!(
+            "goal{} ",
+            match status {
+                "paused" => " (paused)",
+                "completed" => " (completed)",
+                _ => "",
+            }
+        );
+        let percent = format!("{progress}% ");
+        let elapsed_text = elapsed.as_deref().map(|item| format!(" {item}"));
+        let mut chip_width = head.chars().count() + percent.chars().count() + bar.chars().count();
+        if let Some(text) = &elapsed_text {
+            chip_width += text.chars().count();
+        }
         let mut spans = vec![
             Span::styled(
-                format!(
-                    "goal{} ",
-                    match status {
-                        "paused" => " (paused)",
-                        "completed" => " (completed)",
-                        _ => "",
-                    }
-                ),
-                Style::default().fg(theme::ACCENT),
+                head,
+                Style::default().fg(theme::ACCENT).add_modifier(modifier),
             ),
-            Span::styled(format!("{progress}% "), Style::default().fg(theme::ACCENT)),
-            Span::styled(bar, Style::default().fg(theme::ACCENT)),
+            Span::styled(
+                percent,
+                Style::default().fg(theme::ACCENT).add_modifier(modifier),
+            ),
+            Span::styled(
+                bar,
+                Style::default().fg(theme::ACCENT).add_modifier(modifier),
+            ),
         ];
-        if let Some(elapsed) = goal_elapsed(goal) {
+        if let Some(text) = elapsed_text {
             spans.push(Span::styled(
-                format!(" {elapsed}"),
-                Style::default().fg(theme::TEXT_MUTED),
+                text,
+                Style::default()
+                    .fg(theme::TEXT_MUTED)
+                    .add_modifier(modifier),
             ));
         }
+        let chip_x = area
+            .x
+            .saturating_add(area.width.saturating_sub(chip_width as u16));
+        app.geometry.goal_chip = Some(Rectangle {
+            x: chip_x,
+            y: area.y,
+            width: chip_width as u16,
+            height: 1,
+        });
         Line::from(spans)
     } else {
         Line::from(vec![
@@ -861,6 +975,153 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 // ---------------------------------------------------------------------------
+// Slash-command autocomplete popover
+// ---------------------------------------------------------------------------
+
+fn draw_autocomplete(frame: &mut Frame, app: &mut App) {
+    let Some(auto) = app.autocomplete.as_ref() else {
+        return;
+    };
+    let Some(prompt) = app.geometry.prompt else {
+        return;
+    };
+    let screen = frame.area();
+    let matches = auto.matches.len();
+    if matches == 0 {
+        return;
+    }
+    let width = 60u16.min(screen.width.saturating_sub(4));
+    // Card height: 1 heading + `matches` rows + 2 preview.
+    let preview_lines = 2u16;
+    let rows = matches as u16;
+    let height = (2 + rows + preview_lines).min(screen.height.saturating_sub(4));
+    let y = prompt.y.saturating_sub(height);
+    let x = prompt.x;
+    let area = Rect::new(x, y, width, height);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
+        area,
+    );
+    let panel = Style::default().bg(theme::BACKGROUND_PANEL);
+    // Header row: "Commands" left; "tab · enter" right hint.
+    let header_row = Rect::new(area.x + 2, area.y, area.width.saturating_sub(4), 1);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Commands",
+            Style::default()
+                .fg(theme::TEXT)
+                .bg(theme::BACKGROUND_PANEL)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .style(panel),
+        header_row,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "tab · enter",
+            Style::default()
+                .fg(theme::TEXT_MUTED)
+                .bg(theme::BACKGROUND_PANEL),
+        ))
+        .alignment(Alignment::Right)
+        .style(panel),
+        header_row,
+    );
+
+    app.geometry.autocomplete = Some(rect_of(area));
+    app.geometry.autocomplete_list_top = area.y + 1;
+    app.geometry.autocomplete_rows = matches;
+
+    // Rows: marker + `/name`, shortcut column right-aligned.
+    for (row, position) in auto.matches.iter().enumerate() {
+        let spec = &PALETTE[*position];
+        let is_selected = row == auto.index;
+        let hovered = matches!(app.hover, Some(HitTarget::Row(hovered_row)) if hovered_row == row);
+        let bg = if is_selected {
+            theme::PRIMARY
+        } else if hovered {
+            theme::BACKGROUND_ELEMENT
+        } else {
+            theme::BACKGROUND_PANEL
+        };
+        let fg = if is_selected {
+            theme::SELECTED_FG
+        } else {
+            theme::TEXT
+        };
+        let marker = if is_selected { " ●" } else { "  " };
+        let title_text = format!(" /{}", spec.name);
+        let shortcut = spec.shortcut;
+        let used = marker.chars().count() + title_text.chars().count() + shortcut.chars().count();
+        let padding = (area.width as usize).saturating_sub(used + 4).max(2);
+        let row_rect = Rect::new(area.x, area.y + 1 + row as u16, area.width, 1);
+        let bold = if is_selected {
+            Modifier::BOLD
+        } else {
+            Modifier::empty()
+        };
+        let row_spans = vec![
+            Span::styled(
+                marker.to_string(),
+                Style::default().fg(fg).bg(bg).add_modifier(bold),
+            ),
+            Span::styled(
+                title_text,
+                Style::default().fg(fg).bg(bg).add_modifier(bold),
+            ),
+            Span::styled(" ".repeat(padding), Style::default().bg(bg)),
+            Span::styled(
+                format!("{shortcut}  "),
+                Style::default()
+                    .fg(if is_selected {
+                        theme::SELECTED_FG
+                    } else {
+                        theme::TEXT_MUTED
+                    })
+                    .bg(bg),
+            ),
+        ];
+        frame.render_widget(Paragraph::new(Line::from(row_spans)), row_rect);
+    }
+
+    // Preview footer: description for the currently-selected match.
+    let selected_spec = PALETTE
+        .get(auto.matches[auto.index.min(matches - 1)])
+        .expect("index bounded above");
+    let preview_rect = Rect::new(
+        area.x + 2,
+        area.y + 1 + rows,
+        area.width.saturating_sub(4),
+        preview_lines,
+    );
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(Span::styled(
+                selected_spec.description.to_string(),
+                Style::default()
+                    .fg(theme::TEXT_MUTED)
+                    .bg(theme::BACKGROUND_PANEL),
+            )),
+            Line::from(Span::styled(
+                format!("{}    press enter to run", selected_spec.shortcut),
+                Style::default()
+                    .fg(theme::TEXT_MUTED)
+                    .bg(theme::BACKGROUND_PANEL)
+                    .add_modifier(Modifier::DIM),
+            )),
+        ])
+        .wrap(Wrap { trim: true })
+        .style(Style::default().bg(theme::BACKGROUND_PANEL)),
+        preview_rect,
+    );
+}
+
+/// Silences an "unused import" lint for the re-export used elsewhere.
+#[allow(dead_code)]
+fn _hold_autocomplete(_: &Autocomplete) {}
+
+// ---------------------------------------------------------------------------
 // DialogSelect: centered panel, search input, categories, ● markers
 // ---------------------------------------------------------------------------
 
@@ -877,14 +1138,14 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
     let filter =
         |title: &str, description: &str| fuzzy(&format!("{title} {description}"), &app.search);
     match app.dialog {
-        Dialog::Commands => COMMANDS
+        Dialog::Commands => PALETTE
             .iter()
-            .filter(|(title, description, _)| filter(title, description))
-            .map(|(title, description, footer)| DialogOption {
+            .filter(|spec| filter(spec.title, spec.description))
+            .map(|spec| DialogOption {
                 category: None,
-                title: (*title).to_string(),
-                description: (*description).to_string(),
-                footer: (*footer).to_string(),
+                title: spec.title.to_string(),
+                description: spec.description.to_string(),
+                footer: spec.shortcut.to_string(),
                 current: false,
             })
             .collect(),
@@ -971,43 +1232,6 @@ pub fn dialog_options(app: &App) -> Vec<DialogOption> {
     }
 }
 
-pub const COMMANDS: [(&str, &str, &str); 10] = [
-    (
-        "New session",
-        "Start a fresh conversation session",
-        "ctrl+x n",
-    ),
-    (
-        "Goal details",
-        "Show the durable session goal and status",
-        "ctrl+x g",
-    ),
-    (
-        "Goal summaries",
-        "Browse recorded goal state summaries",
-        "ctrl+x s",
-    ),
-    (
-        "Manage goal",
-        "goal: set, edit, pause, resume, complete, status, clear",
-        "/goal",
-    ),
-    (
-        "Toggle out-of-workspace access",
-        "Allow or ask before accessing external files",
-        "",
-    ),
-    ("Switch session", "List and continue sessions", "ctrl+x l"),
-    ("Switch agent", "Choose the active agent", "ctrl+x a"),
-    (
-        "Switch model",
-        "See and switch between available AI models",
-        "ctrl+x m",
-    ),
-    ("Help", "Show keybindings", "ctrl+x ?"),
-    ("Exit the application", "", "ctrl+c"),
-];
-
 /// Dialog panel geometry, shared by the renderer and the mouse handler.
 pub fn dialog_rect(screen: Rect, dialog: Dialog) -> Rect {
     let width = match dialog {
@@ -1032,7 +1256,12 @@ pub fn dialog_row_at(app: &App, area: Rect, row: u16) -> Option<usize> {
     if row < list_top {
         return None;
     }
-    let clicked = (row - list_top) as usize;
+    dialog_row_at_offset(app, (row - list_top) as usize)
+}
+
+/// Maps a zero-based rendered row offset (into the dialog list body) back to
+/// the underlying option index. Shared with the mouse hit-test.
+pub fn dialog_row_at_offset(app: &App, offset: usize) -> Option<usize> {
     let options = dialog_options(app);
     let mut line = 0usize;
     let mut last_category: Option<String> = None;
@@ -1043,7 +1272,7 @@ pub fn dialog_row_at(app: &App, area: Rect, row: u16) -> Option<usize> {
             }
             last_category = option.category.clone();
         }
-        if line == clicked {
+        if line == offset {
             return Some(index);
         }
         line += 1;
@@ -1061,7 +1290,7 @@ fn dialog_title(dialog: Dialog) -> &'static str {
     }
 }
 
-fn draw_dialog_select(frame: &mut Frame, app: &App) {
+fn draw_dialog_select(frame: &mut Frame, app: &mut App) {
     let screen = frame.area();
     let options = dialog_options(app);
     let area = dialog_rect(screen, app.dialog);
@@ -1070,6 +1299,8 @@ fn draw_dialog_select(frame: &mut Frame, app: &App) {
         Block::default().style(Style::default().bg(theme::BACKGROUND_PANEL)),
         area,
     );
+    app.geometry.dialog_area = Some(rect_of(area));
+    app.geometry.dialog_list_top = area.y + 4;
 
     let panel = Style::default().bg(theme::BACKGROUND_PANEL);
     // Title row: bold title left, "esc" right.
@@ -1145,8 +1376,12 @@ fn draw_dialog_select(frame: &mut Frame, app: &App) {
         if active {
             selected_line = lines.len();
         }
+        let hovered =
+            matches!(app.hover, Some(HitTarget::Row(hovered)) if hovered == index) && !active;
         let (fg, muted, bg) = if active {
             (theme::SELECTED_FG, theme::SELECTED_FG, theme::PRIMARY)
+        } else if hovered {
+            (theme::TEXT, theme::TEXT_MUTED, theme::BACKGROUND_ELEMENT)
         } else {
             (theme::TEXT, theme::TEXT_MUTED, theme::BACKGROUND_PANEL)
         };
@@ -1202,12 +1437,20 @@ fn draw_help(frame: &mut Frame, _app: &App) {
     let screen = frame.area();
     let width = 60u16.min(screen.width.saturating_sub(2));
     let bindings = [
-        ("enter", "send prompt"),
+        ("enter", "send prompt / execute autocomplete"),
         ("alt+enter", "insert newline"),
         ("esc", "interrupt session / close dialog"),
         ("pageup / pagedown", "scroll messages"),
         ("ctrl+p", "command palette"),
-        ("ctrl+x n", "new session"),
+        ("ctrl+a / ctrl+e", "beginning / end of line"),
+        ("ctrl+b / ctrl+f", "move left / right"),
+        ("ctrl+u / ctrl+k", "delete to start / end"),
+        ("ctrl+w", "delete word back"),
+        ("alt+b / alt+f", "word left / right"),
+        ("ctrl+d / delete", "delete forward"),
+        ("up / down", "prompt history / scroll"),
+        ("tab", "autocomplete / cycle agent"),
+        ("ctrl+x n", "new session (home)"),
         ("ctrl+x l", "switch session"),
         ("ctrl+x a", "select agent"),
         ("ctrl+x m", "select model"),
