@@ -61,6 +61,7 @@ struct App {
     questions: question_v2::Registry,
 }
 
+#[derive(Debug)]
 struct Failure(StatusCode, String);
 
 impl IntoResponse for Failure {
@@ -3324,10 +3325,17 @@ async fn bind_listener(
 #[cfg(test)]
 mod tests {
     use super::{
-        bus, chrono_iso, config, location_response, parse_frontmatter, relative_path,
-        validate_non_negative, validate_order, validate_positive_limit, ApiLocationQuery, App,
+        api_permission_request_list, api_permission_saved_list, api_permission_saved_remove,
+        api_question_request_list, api_session_permission_create, api_session_permission_get,
+        api_session_permission_reply, api_session_question_list, api_session_question_reject,
+        api_session_question_reply, bus, chrono_iso, config, location_response, parse_frontmatter,
+        permission_v2, question_v2, relative_path, validate_non_negative, validate_order,
+        validate_positive_limit, ApiLocationQuery, ApiPermissionCreatePayload,
+        ApiPermissionReplyPayload, ApiPermissionSavedQuery, ApiQuestionReplyPayload, App,
     };
-    use axum::http::HeaderMap;
+    use axum::extract::{Path, Query, State};
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::Json;
     use r2d2_sqlite::SqliteConnectionManager;
     use serde_json::{json, Value};
 
@@ -3410,5 +3418,491 @@ mod tests {
         assert!(validate_positive_limit(Some(101), 50, 100, "limit").is_err());
         assert!(validate_order(Some("asc")).is_ok());
         assert!(validate_order(Some("sideways")).is_err());
+    }
+
+    // ---------------------------------------------------------------------
+    // Permission + Question API v2 HTTP parity tests
+    // ---------------------------------------------------------------------
+
+    /// Minimum session schema mirroring the columns referenced by
+    /// `v2::COLUMNS`. Enough for `v2::get()` used by the permission/question
+    /// session-scoped handlers to succeed.
+    fn v2_permission_schema(conn: &rusqlite::Connection) {
+        conn.execute_batch(
+            "CREATE TABLE session (
+                id text PRIMARY KEY,
+                parent_id text,
+                project_id text NOT NULL,
+                agent text,
+                model text,
+                cost real NOT NULL DEFAULT 0,
+                tokens_input integer NOT NULL DEFAULT 0,
+                tokens_output integer NOT NULL DEFAULT 0,
+                tokens_reasoning integer NOT NULL DEFAULT 0,
+                tokens_cache_read integer NOT NULL DEFAULT 0,
+                tokens_cache_write integer NOT NULL DEFAULT 0,
+                time_created integer NOT NULL DEFAULT 0,
+                time_updated integer NOT NULL DEFAULT 0,
+                time_archived integer,
+                title text NOT NULL DEFAULT '',
+                directory text NOT NULL DEFAULT '/tmp',
+                workspace_id text,
+                path text,
+                revert text,
+                permission text
+             );
+             CREATE TABLE permission (
+                id text PRIMARY KEY,
+                project_id text NOT NULL,
+                action text NOT NULL,
+                resource text NOT NULL,
+                time_created integer NOT NULL,
+                time_updated integer NOT NULL,
+                UNIQUE(project_id, action, resource)
+             );",
+        )
+        .unwrap();
+    }
+
+    fn insert_session(conn: &rusqlite::Connection, id: &str) {
+        conn.execute(
+            "INSERT INTO session (id, project_id) VALUES (?, 'prj_x')",
+            [id],
+        )
+        .unwrap();
+    }
+
+    fn test_app() -> App {
+        let bus = bus::Bus::new();
+        let pool = r2d2::Pool::builder()
+            .max_size(1)
+            .build(SqliteConnectionManager::memory())
+            .expect("pool");
+        v2_permission_schema(&pool.get().unwrap());
+        App {
+            pool,
+            bus: bus.clone(),
+            project_id: "prj_x".into(),
+            directory: "/tmp/project".into(),
+            worktree: "/tmp/project".into(),
+            path: String::new(),
+            version: "test".into(),
+            port: 4096,
+            paths: config::Paths {
+                home: "/tmp/home".into(),
+                config: "/tmp/config".into(),
+                state: "/tmp/state".into(),
+                cache: "/tmp/cache".into(),
+            },
+            pty: crate::pty::Registry::new(bus),
+            pty_tickets: crate::pty::TicketRegistry::default(),
+            permissions: permission_v2::Registry::new(),
+            questions: question_v2::Registry::new(),
+        }
+    }
+
+    async fn read_json(response: axum::response::Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .expect("body");
+        let value = if body.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&body).expect("json")
+        };
+        (status, value)
+    }
+
+    fn location_query() -> Query<ApiLocationQuery> {
+        Query(ApiLocationQuery {
+            location_directory: None,
+            location_workspace: None,
+        })
+    }
+
+    #[tokio::test]
+    async fn permission_request_list_wraps_location_response_with_pending_items() {
+        let app = test_app();
+        insert_session(&app.pool.get().unwrap(), "ses_permlist000000000000000000");
+        // Nothing pending yet.
+        let (status, value) = read_json(
+            api_permission_request_list(State(app.clone()), HeaderMap::new(), location_query())
+                .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"], json!([]));
+
+        // Insert one pending via the internal ask path.
+        let (status, created) = read_json(
+            api_session_permission_create(
+                State(app.clone()),
+                Path("ses_permlist000000000000000000".into()),
+                Json(ApiPermissionCreatePayload {
+                    id: Some("per_askedaaaaaaaaaaaaaaaaaa".into()),
+                    action: "read".into(),
+                    resources: vec![".env".into()],
+                    save: Some(vec![".env".into()]),
+                    metadata: None,
+                    source: None,
+                    agent: Some("build".into()),
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(created["data"]["effect"], "ask");
+        assert_eq!(created["data"]["id"], "per_askedaaaaaaaaaaaaaaaaaa");
+
+        let (status, listed) = read_json(
+            api_permission_request_list(State(app.clone()), HeaderMap::new(), location_query())
+                .await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(listed["data"][0]["id"], "per_askedaaaaaaaaaaaaaaaaaa");
+        assert_eq!(
+            listed["data"][0]["sessionID"],
+            "ses_permlist000000000000000000"
+        );
+        assert_eq!(listed["data"][0]["action"], "read");
+    }
+
+    #[tokio::test]
+    async fn session_permission_create_returns_session_not_found_for_missing_session() {
+        let app = test_app();
+        let (status, value) = read_json(
+            api_session_permission_create(
+                State(app),
+                Path("ses_missingaaaaaaaaaaaaaaaaa".into()),
+                Json(ApiPermissionCreatePayload {
+                    id: None,
+                    action: "read".into(),
+                    resources: vec![".env".into()],
+                    save: None,
+                    metadata: None,
+                    source: None,
+                    agent: Some("build".into()),
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["_tag"], "SessionNotFoundError");
+        assert_eq!(value["sessionID"], "ses_missingaaaaaaaaaaaaaaaaa");
+    }
+
+    #[tokio::test]
+    async fn session_permission_get_enforces_session_ownership_and_returns_tagged_error() {
+        let app = test_app();
+        insert_session(&app.pool.get().unwrap(), "ses_ownerownerownerownerownera");
+        insert_session(&app.pool.get().unwrap(), "ses_othersothersothersothersa");
+        let _ = api_session_permission_create(
+            State(app.clone()),
+            Path("ses_ownerownerownerownerownera".into()),
+            Json(ApiPermissionCreatePayload {
+                id: Some("per_ownedaaaaaaaaaaaaaaaaaa".into()),
+                action: "read".into(),
+                resources: vec![".env".into()],
+                save: None,
+                metadata: None,
+                source: None,
+                agent: Some("build".into()),
+            }),
+        )
+        .await
+        .unwrap();
+
+        // Owner can retrieve.
+        let (status, value) = read_json(
+            api_session_permission_get(
+                State(app.clone()),
+                Path((
+                    "ses_ownerownerownerownerownera".into(),
+                    "per_ownedaaaaaaaaaaaaaaaaaa".into(),
+                )),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"]["id"], "per_ownedaaaaaaaaaaaaaaaaaa");
+
+        // Non-owner sees NotFound tagged the same way.
+        let (status, value) = read_json(
+            api_session_permission_get(
+                State(app),
+                Path((
+                    "ses_othersothersothersothersa".into(),
+                    "per_ownedaaaaaaaaaaaaaaaaaa".into(),
+                )),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["_tag"], "PermissionNotFoundError");
+        assert_eq!(value["requestID"], "per_ownedaaaaaaaaaaaaaaaaaa");
+    }
+
+    #[tokio::test]
+    async fn session_permission_reply_once_settles_pending_and_supports_always_saving() {
+        let app = test_app();
+        insert_session(&app.pool.get().unwrap(), "ses_replyaaaaaaaaaaaaaaaaaaa");
+        // Create -> reply once (204).
+        let _ = api_session_permission_create(
+            State(app.clone()),
+            Path("ses_replyaaaaaaaaaaaaaaaaaaa".into()),
+            Json(ApiPermissionCreatePayload {
+                id: Some("per_reponceaaaaaaaaaaaaaaaa".into()),
+                action: "read".into(),
+                resources: vec![".env".into()],
+                save: None,
+                metadata: None,
+                source: None,
+                agent: Some("build".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        let (status, _) = read_json(
+            api_session_permission_reply(
+                State(app.clone()),
+                Path((
+                    "ses_replyaaaaaaaaaaaaaaaaaaa".into(),
+                    "per_reponceaaaaaaaaaaaaaaaa".into(),
+                )),
+                Json(ApiPermissionReplyPayload {
+                    reply: "once".into(),
+                    message: None,
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(app.permissions.get("per_reponceaaaaaaaaaaaaaaaa").is_none());
+
+        // A second reply for the same ID now returns tagged NotFound.
+        let (status, value) = read_json(
+            api_session_permission_reply(
+                State(app.clone()),
+                Path((
+                    "ses_replyaaaaaaaaaaaaaaaaaaa".into(),
+                    "per_reponceaaaaaaaaaaaaaaaa".into(),
+                )),
+                Json(ApiPermissionReplyPayload {
+                    reply: "once".into(),
+                    message: None,
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["_tag"], "PermissionNotFoundError");
+
+        // "always" with save[] persists to the saved table.
+        let _ = api_session_permission_create(
+            State(app.clone()),
+            Path("ses_replyaaaaaaaaaaaaaaaaaaa".into()),
+            Json(ApiPermissionCreatePayload {
+                id: Some("per_repalwaysaaaaaaaaaaaaa".into()),
+                action: "read".into(),
+                resources: vec!["config/.env".into()],
+                save: Some(vec!["config/.env".into()]),
+                metadata: None,
+                source: None,
+                agent: Some("build".into()),
+            }),
+        )
+        .await
+        .unwrap();
+        let _ = api_session_permission_reply(
+            State(app.clone()),
+            Path((
+                "ses_replyaaaaaaaaaaaaaaaaaaa".into(),
+                "per_repalwaysaaaaaaaaaaaaa".into(),
+            )),
+            Json(ApiPermissionReplyPayload {
+                reply: "always".into(),
+                message: None,
+            }),
+        )
+        .await
+        .unwrap();
+        let saved = permission_v2::saved_list(&app.pool.get().unwrap(), Some("prj_x")).unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].resource, "config/.env");
+        assert_eq!(saved[0].action, "read");
+    }
+
+    #[tokio::test]
+    async fn permission_saved_list_and_remove_round_trip() {
+        let app = test_app();
+        permission_v2::saved_add(&app.pool.get().unwrap(), "prj_x", "read", &[".env"]).unwrap();
+        let (status, listed) = read_json(
+            api_permission_saved_list(
+                State(app.clone()),
+                Query(ApiPermissionSavedQuery { project_id: None }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let items = listed["data"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        let id = items[0]["id"].as_str().unwrap().to_string();
+        assert_eq!(items[0]["projectID"], "prj_x");
+        assert_eq!(items[0]["action"], "read");
+        assert_eq!(items[0]["resource"], ".env");
+
+        let (status, _) = read_json(
+            api_permission_saved_remove(State(app.clone()), Path(id))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert!(
+            permission_v2::saved_list(&app.pool.get().unwrap(), Some("prj_x"))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn session_question_reply_reject_and_ownership_are_enforced() {
+        let app = test_app();
+        insert_session(&app.pool.get().unwrap(), "ses_qownerownerownerowneraaaa");
+        insert_session(&app.pool.get().unwrap(), "ses_qothersothersothersothea");
+
+        // Enqueue directly through the core registry (no ask endpoint exposed).
+        let outcome = question_v2::ask(
+            &question_v2::Env {
+                bus: &app.bus,
+                registry: &app.questions,
+            },
+            &question_v2::AskInput {
+                session_id: "ses_qownerownerownerowneraaaa".into(),
+                questions: vec![question_v2::Info {
+                    question: "Continue?".into(),
+                    header: "confirm".into(),
+                    options: vec![],
+                    multiple: None,
+                    custom: None,
+                }],
+                tool: None,
+                timeout: Some(30),
+            },
+        );
+
+        // Cross-session request retrieval returns tagged NotFound.
+        let (status, value) = read_json(
+            api_session_question_reply(
+                State(app.clone()),
+                Path(("ses_qothersothersothersothea".into(), outcome.id.clone())),
+                Json(ApiQuestionReplyPayload {
+                    answers: vec![vec!["Yes".into()]],
+                }),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(value["_tag"], "QuestionNotFoundError");
+        assert_eq!(value["requestID"], outcome.id);
+
+        // Session list only returns items owned by the session.
+        let (_, listed) = read_json(
+            api_session_question_list(
+                State(app.clone()),
+                Path("ses_qownerownerownerowneraaaa".into()),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(listed["data"][0]["id"], outcome.id);
+        let (_, empty) = read_json(
+            api_session_question_list(
+                State(app.clone()),
+                Path("ses_qothersothersothersothea".into()),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(empty["data"], json!([]));
+
+        // Owner rejects — 204 and the ask fiber sees Rejected.
+        let (status, _) = read_json(
+            api_session_question_reject(
+                State(app.clone()),
+                Path(("ses_qownerownerownerowneraaaa".into(), outcome.id.clone())),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            outcome.wait.recv().unwrap(),
+            question_v2::Resolution::Rejected
+        );
+    }
+
+    #[tokio::test]
+    async fn question_request_list_wraps_location_response() {
+        let app = test_app();
+        insert_session(&app.pool.get().unwrap(), "ses_qlistlistlistlistlistlist");
+        // Empty first.
+        let (status, value) = read_json(
+            api_question_request_list(State(app.clone()), HeaderMap::new(), location_query()).await,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(value["data"], json!([]));
+
+        let outcome = question_v2::ask(
+            &question_v2::Env {
+                bus: &app.bus,
+                registry: &app.questions,
+            },
+            &question_v2::AskInput {
+                session_id: "ses_qlistlistlistlistlistlist".into(),
+                questions: vec![question_v2::Info {
+                    question: "?".into(),
+                    header: "h".into(),
+                    options: vec![],
+                    multiple: None,
+                    custom: None,
+                }],
+                tool: None,
+                timeout: Some(30),
+            },
+        );
+
+        let (_, listed) = read_json(
+            api_question_request_list(State(app.clone()), HeaderMap::new(), location_query()).await,
+        )
+        .await;
+        assert_eq!(listed["data"][0]["id"], outcome.id);
+        assert_eq!(
+            listed["data"][0]["sessionID"],
+            "ses_qlistlistlistlistlistlist"
+        );
+        assert_eq!(listed["data"][0]["questions"][0]["question"], "?");
     }
 }
