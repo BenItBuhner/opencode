@@ -70,7 +70,7 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     )
     const connected = createMemo(() => new Set(providers.connected().map((item) => item.id)))
 
-    const [saved, setSaved] = persisted(
+    const [saved, setSaved, , savedReady] = persisted(
       {
         ...Persist.serverWorkspace(serverSDK().scope, sdk().directory, "model-selection", ["model-selection.v1"]),
         migrate,
@@ -378,11 +378,12 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
       model,
       agent,
       session: {
+        ready: savedReady,
         reset() {
           setStore({ draft: undefined, promoting: undefined })
         },
-        promote(dir: string, session: string) {
-          const next = clone(snapshot())
+        promote(dir: string, session: string, state?: State) {
+          const next = clone(state ?? snapshot())
           if (!next) return
           const key = handoffKey(serverSDK().scope, dir, session)
           handoff.set(key, next)
@@ -412,3 +413,5 @@ export const { use: useLocal, provider: LocalProvider } = createSimpleContext({
     return result
   },
 })
+
+export type ModelSelection = ReturnType<typeof useLocal>["model"]
