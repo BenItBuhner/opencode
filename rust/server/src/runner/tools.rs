@@ -5,10 +5,11 @@
 //! executed the turn.
 //!
 //! Permission-gated: every call is evaluated against the built-in agent
-//! rulesets (runner/permission.rs). `ask` outcomes fail with the same generic
-//! messages Bun's error mapping produces because the Rust server has no
-//! interactive permission-reply flow yet. Interactive tools (question) and
-//! provider-backed tools (websearch) remain with the Bun runner.
+//! rulesets (runner/permission.rs). `ask` outcomes have no interactive
+//! permission-reply flow in Rust, so they behave like a declined permission:
+//! settle the pending call as interrupted and stop the runner instead of
+//! feeding a synthetic permission failure back to the model. Interactive tools
+//! (question) and provider-backed tools (websearch) remain with the Bun runner.
 
 use crate::runner::permission;
 use serde_json::{json, Map, Value};
@@ -18,6 +19,7 @@ pub struct Settlement {
     pub structured: Value,
     pub content: Vec<Value>,
     pub error: Option<String>,
+    pub interrupt: bool,
 }
 
 pub struct ToolEnv<'a> {
@@ -225,11 +227,10 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
     let resource_refs: Vec<&str> = resources.iter().map(String::as_str).collect();
     match permission::evaluate_with(env.agent, &session, permission_action(name), &resource_refs) {
         permission::Effect::Allow => {}
-        // Denied and unapproved calls surface the same generic tool messages
-        // Bun's ToolFailure mapping produces.
-        permission::Effect::Deny | permission::Effect::Ask => {
+        permission::Effect::Deny => {
             return failure(denied_message(name, input));
         }
+        permission::Effect::Ask => return interrupted(),
     }
     if name.starts_with("goal_") {
         let outcome = crate::runner::goal::execute(env.conn, env.session_id, name, input);
@@ -240,6 +241,7 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
             structured: outcome.structured,
             content: vec![json!({ "type": "text", "text": outcome.text })],
             error: None,
+            interrupt: false,
         };
     }
     match name {
@@ -315,6 +317,16 @@ fn failure(message: String) -> Settlement {
         structured: Value::Object(Map::new()),
         content: vec![],
         error: Some(message),
+        interrupt: false,
+    }
+}
+
+fn interrupted() -> Settlement {
+    Settlement {
+        structured: Value::Object(Map::new()),
+        content: vec![],
+        error: Some("Tool execution interrupted".into()),
+        interrupt: true,
     }
 }
 
@@ -323,6 +335,7 @@ fn success_json(structured: Value) -> Settlement {
         structured,
         content: vec![],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -331,6 +344,7 @@ fn success_text(structured: Value, text: String) -> Settlement {
         structured,
         content: vec![json!({ "type": "text", "text": text })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -801,6 +815,7 @@ fn bash(env: &ToolEnv, input: &Value) -> Settlement {
                 json!({ "type": "text", "text": "Command timed out before completion." }),
             ],
             error: None,
+            interrupt: false,
         };
     }
 
@@ -827,6 +842,7 @@ fn bash(env: &ToolEnv, input: &Value) -> Settlement {
             json!({ "type": "text", "text": format!("Command exited with code {code}.") }),
         ],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -900,6 +916,7 @@ fn write(env: &ToolEnv, input: &Value) -> Settlement {
             "text": format!("{} file successfully: {resource}", if existed { "Wrote" } else { "Created" }),
         })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -1010,6 +1027,7 @@ fn edit(env: &ToolEnv, input: &Value) -> Settlement {
         }),
         content: vec![json!({ "type": "text", "text": model_output.join("\n") })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -1169,6 +1187,7 @@ fn todowrite(env: &ToolEnv, input: &Value) -> Settlement {
             "text": serde_json::to_string_pretty(&Value::Array(todos.clone())).expect("serializable"),
         })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -1222,6 +1241,7 @@ fn skill(worktree: &str, input: &Value) -> Settlement {
         structured: json!({ "name": name, "directory": directory, "output": rendered }),
         content: vec![json!({ "type": "text", "text": rendered })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -1289,6 +1309,7 @@ fn webfetch(input: &Value) -> Settlement {
         }),
         content: vec![json!({ "type": "text", "text": output })],
         error: None,
+        interrupt: false,
     }
 }
 
@@ -1536,6 +1557,23 @@ mod tests {
             &json!({ "path": "x.rs", "oldString": "a", "newString": "b" }),
         );
         assert_eq!(settlement.error.as_deref(), Some("Unable to edit x.rs"));
+        assert!(!settlement.interrupt);
+    }
+
+    #[test]
+    fn permission_ask_interrupts_without_model_facing_failure() {
+        let conn = memory_conn();
+        let settlement = execute(
+            &env(&conn, "/workspace/rust"),
+            "read",
+            &json!({ "path": ".env" }),
+        );
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(settlement.content.is_empty());
     }
 
     #[test]

@@ -390,6 +390,29 @@ fn run_turn(
                     name,
                     &input,
                 );
+                if settlement.interrupt {
+                    publisher
+                        .publish(
+                            conn,
+                            "session.next.tool.failed",
+                            1,
+                            &base(&[
+                                (
+                                    "error",
+                                    json!({
+                                        "type": "unknown",
+                                        "message": settlement.error.unwrap_or_else(|| "Tool execution interrupted".into()),
+                                    }),
+                                ),
+                                ("provider", json!({ "executed": false })),
+                            ]),
+                        )
+                        .map_err(|error| error.to_string())?;
+                    return Ok(TurnResult {
+                        needs_continuation: false,
+                        step: current_step,
+                    });
+                }
                 match settlement.error {
                     None => publisher
                         .publish(
@@ -718,3 +741,116 @@ fn agent_system(agent: &str) -> Option<&'static str> {
 const GOAL_SYSTEM: &str = "You are the Goal agent. Your job is to help the user make steady progress toward the active session goal without taking over unrelated work.\n\nCore rules:\n- Treat the session goal as durable state, not as the same thing as the currently selected agent.\n- If no goal is set, ask the user what goal they want to set or use the goal_set tool only when they explicitly provide one.\n- If the goal is paused, do not continue it unless the user explicitly resumes it.\n- If the user switches to another agent or asks for unrelated work, respect that switch and avoid forcing goal-mode behavior into the turn.\n- Use goal_set, goal_pause, goal_resume, goal_summarize_state, and goal_complete to keep the session goal state accurate.\n- Use goal_summarize_state periodically after meaningful progress, after resolving a blocker, before pausing, and before completing the goal if the latest state summary is stale.\n- Do not call goal_summarize_state every turn. Prefer it after a meaningful phase change or every few substantial actions.\n- goal_summarize_state requires a numeric progress estimate from 0 to 100 and a structured markdown summary with exactly size 2 section headers and bullet lists. Include these sections: ## Progress, ## Current State, ## Blockers, and ## Next Steps.\n- Keep progress estimates realistic. Do not report 100 unless you are ready to call goal_complete.\n- When the goal is active, keep going. Do not stop after a progress update or partial answer; take the next concrete action until the goal is completed, paused, or blocked by a question for the user.\n- If the goal is not complete yet, continue working and describe progress only as part of the next action.\n- When the goal is complete, call goal_complete and give a concise final summary.";
 
 const EXPLORE_SYSTEM: &str = "You are a file search specialist. You excel at thoroughly navigating and exploring codebases.\n\nYour strengths:\n- Rapidly finding files using glob patterns\n- Searching code and text with powerful regex patterns\n- Reading and analyzing file contents\n\nGuidelines:\n- Use Glob for broad file pattern matching\n- Use Grep for searching file contents with regex\n- Use Read when you know the specific file path you need to read\n- Adapt your search approach based on the thoroughness level specified by the caller\n- Return file paths as absolute paths in your final response\n- For clear communication, avoid using emojis\n- Do not create any files, or run bash commands that modify the user's system state in any way\n\nComplete the user's search request efficiently and report your findings clearly.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SESSION: &str = "ses_runner000000000000000000000000";
+
+    fn memory_conn() -> Connection {
+        let conn = Connection::open_in_memory().expect("memory db");
+        conn.execute_batch(
+            "CREATE TABLE event_sequence (aggregate_id text PRIMARY KEY, seq integer NOT NULL);
+             CREATE TABLE event (
+               id text PRIMARY KEY, aggregate_id text NOT NULL, seq integer NOT NULL,
+               type text NOT NULL, data text NOT NULL
+             );
+             CREATE TABLE session_input (
+               id text PRIMARY KEY, session_id text NOT NULL, prompt text NOT NULL,
+               delivery text NOT NULL, admitted_seq integer NOT NULL,
+               promoted_seq integer, time_created integer NOT NULL
+             );
+             CREATE TABLE session_message (
+               id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL,
+               seq integer NOT NULL, time_created integer NOT NULL,
+               time_updated integer NOT NULL, data text NOT NULL
+             );",
+        )
+        .expect("schema");
+        conn
+    }
+
+    fn insert_input(conn: &Connection, id: &str, delivery: &str, admitted_seq: i64, text: &str) {
+        conn.execute(
+            "INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, time_created) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+            rusqlite::params![
+                id,
+                SESSION,
+                json!({ "text": text }).to_string(),
+                delivery,
+                admitted_seq,
+                admitted_seq * 10,
+            ],
+        )
+        .expect("input");
+    }
+
+    #[test]
+    fn promotion_records_promoted_sequence() {
+        let mut conn = memory_conn();
+        conn.execute(
+            "INSERT INTO event_sequence (aggregate_id, seq) VALUES (?, ?)",
+            rusqlite::params![SESSION, 0],
+        )
+        .expect("sequence");
+        insert_input(&conn, "msg_steer", "steer", 0, "hello");
+
+        let publisher = publish::Publisher {
+            session_id: SESSION.to_string(),
+        };
+        assert_eq!(promote(&mut conn, &publisher, SESSION, "steer").unwrap(), 1);
+
+        let promoted: i64 = conn
+            .query_row(
+                "SELECT promoted_seq FROM session_input WHERE id = 'msg_steer'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(promoted, 1);
+        let message_seq: i64 = conn
+            .query_row(
+                "SELECT seq FROM session_message WHERE id = 'msg_steer'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(message_seq, promoted);
+    }
+
+    #[test]
+    fn queue_promotion_keeps_future_steers_pending() {
+        let mut conn = memory_conn();
+        conn.execute(
+            "INSERT INTO event_sequence (aggregate_id, seq) VALUES (?, ?)",
+            rusqlite::params![SESSION, 10],
+        )
+        .expect("sequence");
+        insert_input(&conn, "msg_queue", "queue", 1, "queued");
+        insert_input(&conn, "msg_old_steer", "steer", 10, "old steer");
+        insert_input(&conn, "msg_future_steer", "steer", 11, "future steer");
+
+        let publisher = publish::Publisher {
+            session_id: SESSION.to_string(),
+        };
+        assert_eq!(promote(&mut conn, &publisher, SESSION, "queue").unwrap(), 2);
+
+        let promoted: Vec<(String, Option<i64>)> = conn
+            .prepare("SELECT id, promoted_seq FROM session_input ORDER BY admitted_seq ASC")
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            promoted,
+            vec![
+                ("msg_queue".to_string(), Some(11)),
+                ("msg_old_steer".to_string(), Some(12)),
+                ("msg_future_steer".to_string(), None),
+            ]
+        );
+    }
+}
