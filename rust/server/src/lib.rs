@@ -787,7 +787,7 @@ fn official_agents(worktree: &str, directory: &str, config: &Value) -> Vec<Value
         }
         permissions.extend(configured_tool_permissions(config));
         agent["permissions"] = Value::Array(permissions);
-        agent
+        order_agent(agent)
     })
     .chain(
         markdown_agents(worktree)
@@ -882,7 +882,31 @@ fn official_markdown_agent(agent: Value, config: &Value) -> Value {
             }),
     );
     info.insert("permissions".into(), Value::Array(permissions));
-    Value::Object(info)
+    order_agent(Value::Object(info))
+}
+
+fn order_agent(agent: Value) -> Value {
+    let Value::Object(mut source) = agent else {
+        return agent;
+    };
+    let mut ordered = serde_json::Map::new();
+    for key in [
+        "id",
+        "model",
+        "request",
+        "system",
+        "description",
+        "mode",
+        "hidden",
+        "color",
+        "permissions",
+    ] {
+        if let Some(value) = source.shift_remove(key) {
+            ordered.insert(key.into(), value);
+        }
+    }
+    ordered.extend(source);
+    Value::Object(ordered)
 }
 
 fn configured_tool_permissions(config: &Value) -> Vec<Value> {

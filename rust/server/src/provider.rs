@@ -537,14 +537,14 @@ fn official_api(npm: Option<&Value>, api: Option<&Value>, id: Option<&str>) -> V
     if let Some(package) = npm.and_then(Value::as_str) {
         result.insert("type".into(), Value::String("aisdk".into()));
         result.insert("package".into(), Value::String(package.into()));
-        if package == "@ai-sdk/anthropic" {
-            result.insert("settings".into(), object());
-        }
         if let Some(url) = api
             .and_then(Value::as_str)
             .filter(|value| !value.is_empty())
         {
             result.insert("url".into(), Value::String(url.into()));
+        }
+        if package == "@ai-sdk/anthropic" {
+            result.insert("settings".into(), object());
         }
         return Value::Object(result);
     }
