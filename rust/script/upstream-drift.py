@@ -168,10 +168,10 @@ for tool in (ROOT / "packages/core/src/tool").glob("*.ts"):
         ts_tools.add(found.group(1))
 rust_tools_src = read("rust/server/src/runner/tools.rs") + read("rust/server/src/runner/goal.rs")
 rust_tools = set(re.findall(r'"name":\s*"([^"]+)"', rust_tools_src))
-TOOL_BACKLOG = {"question", "websearch", "apply_patch", "applypatch"}
+TOOL_BACKLOG = {"websearch", "apply_patch", "applypatch"}
 missing_tools = ts_tools - rust_tools - TOOL_BACKLOG
 check(
-    "C. core tool registry ported (minus tracked backlog: question/websearch/apply_patch)",
+    "C. core tool registry ported (minus tracked backlog: websearch/apply_patch)",
     not missing_tools,
     f"missing={sorted(missing_tools)}" if missing_tools else f"ported={len(ts_tools & rust_tools)}",
 )
