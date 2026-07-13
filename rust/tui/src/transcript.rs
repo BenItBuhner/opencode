@@ -100,6 +100,16 @@ fn push_message(
 }
 
 fn push_user(app: &App, message: &Value, width: u16, out: &mut Vec<Line<'static>>, first: bool) {
+    let text = message
+        .get("text")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    // Background task completion is model-facing synthetic context. The
+    // upstream TUI filters synthetic user parts, so never dump its XML into
+    // the visible transcript.
+    if text.trim_start().starts_with("<task ") {
+        return;
+    }
     if !first {
         out.push(blank_row(width));
     }
@@ -112,10 +122,6 @@ fn push_user(app: &App, message: &Value, width: u16, out: &mut Vec<Line<'static>
     };
     // Blank pad row above content (background continues under gutter).
     chrome.emit(&[(String::new(), body)], out);
-    let text = message
-        .get("text")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
     for hard_line in text.split('\n') {
         chrome.emit(&[(hard_line.to_string(), body)], out);
     }
@@ -247,8 +253,17 @@ fn push_tool(app: &App, part: &Value, width: u16, out: &mut Vec<Line<'static>>) 
         .and_then(Value::as_str)
         .unwrap_or("pending");
     let input = state.get("input").cloned().unwrap_or(Value::Null);
-    let metadata = state.get("metadata").cloned().unwrap_or(Value::Null);
-    let output = state.get("output").and_then(Value::as_str).unwrap_or("");
+    let structured = state.get("structured").cloned().unwrap_or(Value::Null);
+    let metadata = state
+        .get("metadata")
+        .or_else(|| structured.get("metadata"))
+        .cloned()
+        .unwrap_or(Value::Null);
+    let output = state
+        .get("output")
+        .or_else(|| structured.get("output"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
 
     match tool_display(name) {
         "bash" => push_bash(&input, &metadata, status, width, out),
@@ -703,7 +718,7 @@ fn push_websearch(
 /// footer. We reproduce the three-line body exactly (via `\n` in the body
 /// segment so the wrapper can re-indent continuation lines correctly).
 fn push_task(
-    _app: &App,
+    app: &App,
     input: &Value,
     metadata: &Value,
     part: &Value,
@@ -722,14 +737,22 @@ fn push_task(
         .get("background")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let running = status == "running";
+    let child_id = metadata.get("sessionId").and_then(Value::as_str);
+    let child_status = child_id
+        .and_then(|id| app.session_status.get(id))
+        .and_then(|status| status.get("type"))
+        .and_then(Value::as_str);
+    let running =
+        status == "running" || (background && child_status.is_some_and(|value| value != "idle"));
     let title_style = tool_title_style(status);
 
     if description.is_empty() && status == "pending" {
         push_inline_pending("Delegating...", title_style, width, out);
         return;
     }
-    let icon = if status == "completed" {
+    let icon = if running {
+        "│"
+    } else if status == "completed" {
         "✓"
     } else if status == "error" {
         "✗"
@@ -738,7 +761,7 @@ fn push_task(
     };
     let icon_style = if status == "error" {
         Style::default().fg(theme::ERROR)
-    } else if status == "completed" {
+    } else if !running && status == "completed" {
         Style::default().fg(theme::SUCCESS)
     } else {
         Style::default().fg(theme::WARNING)

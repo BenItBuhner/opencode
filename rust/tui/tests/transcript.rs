@@ -380,6 +380,46 @@ fn task_subagent_completed_shows_toolcount_and_duration() {
     );
 }
 
+#[test]
+fn live_background_task_shape_uses_structured_metadata_and_hides_completion_xml() {
+    let task = json!({
+        "type": "tool",
+        "name": "task",
+        "state": {
+            "status": "completed",
+            "input": {
+                "description": "Inspect workspace members",
+                "subagent_type": "explore",
+                "background": true,
+            },
+            "structured": {
+                "title": "Inspect workspace members",
+                "metadata": {
+                    "sessionId": "ses_child",
+                    "background": true,
+                    "jobId": "ses_child",
+                },
+                "output": "<task state=\"running\">background</task>",
+            },
+        },
+        "time": { "created": 0, "completed": 20 },
+    });
+    let mut app = App::new("/tmp".into());
+    app.session_status = json!({ "ses_child": { "type": "running" } });
+    app.messages.push(assistant_tool(task));
+    app.messages.push(user_message(
+        "<task id=\"ses_child\" state=\"completed\"><task_result>hidden</task_result></task>",
+    ));
+    let buffer = render_into(80, 12, &app);
+    let combined: String = (0..buffer.area.height)
+        .map(|row| row_string(&buffer, row))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(combined.contains("Explore Task (background) — Inspect workspace members"));
+    assert!(!combined.contains("<task"));
+    assert!(!combined.contains("task_result"));
+}
+
 // ---------------------------------------------------------------------------
 // Sidebar todos wrap without losing the panel background
 // ---------------------------------------------------------------------------
