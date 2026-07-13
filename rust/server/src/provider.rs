@@ -217,13 +217,19 @@ fn configured_model(
 }
 
 fn catalog() -> BTreeMap<String, Value> {
+    models_dev_catalog()
+        .into_iter()
+        .map(|(id, provider)| (id, from_models_dev_provider(&provider)))
+        .collect()
+}
+
+fn models_dev_catalog() -> BTreeMap<String, Value> {
     std::fs::read_to_string(models_path())
         .ok()
         .and_then(|text| serde_json::from_str::<Value>(&text).ok())
         .and_then(|value| value.as_object().cloned())
         .unwrap_or_default()
         .into_iter()
-        .map(|(id, provider)| (id, from_models_dev_provider(&provider)))
         .collect()
 }
 
@@ -234,6 +240,427 @@ fn models_path() -> String {
             .to_string_lossy()
             .into_owned()
     })
+}
+
+pub fn official_providers(config: &Value) -> Vec<Value> {
+    official_catalog(config)
+        .into_values()
+        .map(|record| record.provider)
+        .collect()
+}
+
+pub fn official_provider(config: &Value, provider_id: &str) -> Option<Value> {
+    official_catalog(config)
+        .remove(provider_id)
+        .map(|record| record.provider)
+}
+
+pub fn official_models(config: &Value) -> Vec<Value> {
+    let mut items = official_catalog(config)
+        .into_values()
+        .flat_map(|record| {
+            record
+                .models
+                .into_values()
+                .map(move |model| project_model(model, &record.provider))
+        })
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| {
+        right
+            .pointer("/time/released")
+            .and_then(Value::as_i64)
+            .unwrap_or(0)
+            .cmp(
+                &left
+                    .pointer("/time/released")
+                    .and_then(Value::as_i64)
+                    .unwrap_or(0),
+            )
+    });
+    items
+}
+
+struct OfficialRecord {
+    provider: Value,
+    models: BTreeMap<String, Value>,
+}
+
+fn official_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
+    let disabled = string_set(config.get("disabled_providers"));
+    let enabled = optional_string_set(config.get("enabled_providers"));
+    let mut result = models_dev_catalog()
+        .into_iter()
+        .filter(|(id, _)| {
+            enabled.as_ref().is_none_or(|items| items.contains(id)) && !disabled.contains(id)
+        })
+        .map(|(id, provider)| {
+            let mut record = official_record_from_models_dev(&provider);
+            if id == "opencode" && std::env::var("OPENCODE_API_KEY").is_err() {
+                let keep = [
+                    "mimo-v2.5-free",
+                    "nemotron-3-ultra-free",
+                    "deepseek-v4-flash-free",
+                    "north-mini-code-free",
+                    "big-pickle",
+                ];
+                record
+                    .models
+                    .retain(|model_id, _| keep.contains(&model_id.as_str()));
+                record.provider["request"]["body"]["apiKey"] = Value::String("public".into());
+            }
+            (id, record)
+        })
+        .collect::<BTreeMap<_, _>>();
+    apply_configured_providers(&mut result, config.get("providers"));
+    apply_configured_providers(&mut result, config.get("provider"));
+    result
+}
+
+fn official_record_from_models_dev(provider: &Value) -> OfficialRecord {
+    let provider_id = provider
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    OfficialRecord {
+        provider: json!({
+            "id": provider_id,
+            "name": provider.get("name").and_then(Value::as_str).unwrap_or(provider_id),
+            "api": official_api(provider.get("npm"), provider.get("api"), None),
+            "request": { "headers": {}, "body": {} },
+        }),
+        models: provider
+            .get("models")
+            .and_then(Value::as_object)
+            .map(|items| {
+                items
+                    .iter()
+                    .flat_map(|(key, model)| official_model_entries(provider, key, model))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn official_model_entries(provider: &Value, key: &str, model: &Value) -> Vec<(String, Value)> {
+    let base_id = model.get("id").and_then(Value::as_str).unwrap_or(key);
+    let mut items = vec![(
+        key.to_string(),
+        official_model_from_models_dev(
+            provider,
+            model,
+            base_id,
+            model.get("name").and_then(Value::as_str).unwrap_or(key),
+            model.get("cost"),
+            None,
+        ),
+    )];
+    if let Some(modes) = model
+        .get("experimental")
+        .and_then(|item| item.get("modes"))
+        .and_then(Value::as_object)
+    {
+        items.extend(modes.iter().map(|(mode, opts)| {
+            let id = format!("{base_id}-{mode}");
+            (
+                id.clone(),
+                official_model_from_models_dev(
+                    provider,
+                    model,
+                    &id,
+                    &format!(
+                        "{} {}{}",
+                        model.get("name").and_then(Value::as_str).unwrap_or(key),
+                        mode.chars().next().unwrap_or_default().to_ascii_uppercase(),
+                        mode.get(1..).unwrap_or_default()
+                    ),
+                    opts.get("cost").or_else(|| model.get("cost")),
+                    opts.get("provider"),
+                ),
+            )
+        }));
+    }
+    items
+}
+
+fn official_model_from_models_dev(
+    provider: &Value,
+    model: &Value,
+    id: &str,
+    name: &str,
+    cost: Option<&Value>,
+    request: Option<&Value>,
+) -> Value {
+    let provider_id = provider
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let model_provider = model.get("provider");
+    json!({
+        "id": id,
+        "providerID": provider_id,
+        "family": model.get("family").cloned().unwrap_or(Value::Null),
+        "name": name,
+        "api": official_api(
+            model_provider.and_then(|item| item.get("npm")).or_else(|| provider.get("npm")),
+            model_provider.and_then(|item| item.get("api")).or_else(|| provider.get("api")),
+            Some(model.get("id").and_then(Value::as_str).unwrap_or(id)),
+        ),
+        "capabilities": {
+            "tools": model.get("tool_call").and_then(Value::as_bool).unwrap_or(true),
+            "input": model.pointer("/modalities/input").cloned().unwrap_or_else(|| Value::Array(vec![])),
+            "output": model.pointer("/modalities/output").cloned().unwrap_or_else(|| Value::Array(vec![])),
+        },
+        "request": {
+            "headers": request.and_then(|item| item.get("headers")).cloned().unwrap_or_else(object),
+            "body": request.and_then(|item| item.get("body")).map(camelize_object).unwrap_or_else(object),
+        },
+        "variants": [],
+        "time": { "released": model.get("release_date").and_then(Value::as_str).map(released).unwrap_or(0) },
+        "cost": official_cost(cost),
+        "status": model.get("status").and_then(Value::as_str).unwrap_or("active"),
+        "enabled": true,
+        "limit": {
+            "context": model.pointer("/limit/context").cloned().unwrap_or(Value::Number(0.into())),
+            "input": model.pointer("/limit/input").cloned().unwrap_or(Value::Null),
+            "output": model.pointer("/limit/output").cloned().unwrap_or(Value::Number(0.into())),
+        },
+    })
+}
+
+fn apply_configured_providers(
+    records: &mut BTreeMap<String, OfficialRecord>,
+    value: Option<&Value>,
+) {
+    let Some(providers) = value.and_then(Value::as_object) else {
+        return;
+    };
+    for (provider_id, provider) in providers {
+        let record = records
+            .entry(provider_id.clone())
+            .or_insert_with(|| empty_official_record(provider_id));
+        if let Some(name) = provider.get("name").and_then(Value::as_str) {
+            record.provider["name"] = Value::String(name.into());
+        }
+        if let Some(api) = provider.get("api").filter(|value| value.is_object()) {
+            record.provider["api"] = api.clone();
+        }
+        if let Some(request) = provider.get("request") {
+            merge_request(&mut record.provider["request"], request);
+        }
+        if let Some(models) = provider.get("models").and_then(Value::as_object) {
+            for (model_id, model) in models {
+                let current = record
+                    .models
+                    .entry(model_id.clone())
+                    .or_insert_with(|| empty_official_model(provider_id, model_id));
+                apply_configured_model(current, model);
+            }
+        }
+    }
+}
+
+fn apply_configured_model(target: &mut Value, model: &Value) {
+    for field in ["family", "name", "capabilities", "variants"] {
+        if let Some(value) = model.get(field) {
+            target[field] = value.clone();
+        }
+    }
+    if let Some(api) = model.get("api").filter(|value| value.is_object()) {
+        target["api"] = crate::config::merge(target["api"].clone(), api.clone());
+    }
+    if let Some(request) = model.get("request") {
+        merge_request(&mut target["request"], request);
+        if let Some(variant) = request.get("variant") {
+            target["request"]["variant"] = variant.clone();
+        }
+    }
+    if let Some(cost) = model.get("cost") {
+        target["cost"] = if cost.is_array() {
+            cost.clone()
+        } else {
+            Value::Array(vec![cost.clone()])
+        };
+    }
+    if let Some(disabled) = model.get("disabled").and_then(Value::as_bool) {
+        target["enabled"] = Value::Bool(!disabled);
+    }
+    if let Some(limit) = model.get("limit") {
+        target["limit"] = crate::config::merge(target["limit"].clone(), limit.clone());
+    }
+}
+
+fn empty_official_record(provider_id: &str) -> OfficialRecord {
+    OfficialRecord {
+        provider: json!({
+            "id": provider_id,
+            "name": provider_id,
+            "api": { "type": "native", "settings": {} },
+            "request": { "headers": {}, "body": {} },
+        }),
+        models: BTreeMap::new(),
+    }
+}
+
+fn empty_official_model(provider_id: &str, model_id: &str) -> Value {
+    json!({
+        "id": model_id,
+        "providerID": provider_id,
+        "name": model_id,
+        "api": { "id": model_id, "type": "native", "settings": {} },
+        "capabilities": { "tools": false, "input": [], "output": [] },
+        "request": { "headers": {}, "body": {} },
+        "variants": [],
+        "time": { "released": 0 },
+        "cost": [],
+        "status": "active",
+        "enabled": true,
+        "limit": { "context": 0, "output": 0 },
+    })
+}
+
+fn official_api(npm: Option<&Value>, api: Option<&Value>, id: Option<&str>) -> Value {
+    let mut result = Map::new();
+    if let Some(id) = id {
+        result.insert("id".into(), Value::String(id.into()));
+    }
+    if let Some(package) = npm.and_then(Value::as_str) {
+        result.insert("type".into(), Value::String("aisdk".into()));
+        result.insert("package".into(), Value::String(package.into()));
+        if let Some(url) = api
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+        {
+            result.insert("url".into(), Value::String(url.into()));
+        }
+        return Value::Object(result);
+    }
+    result.insert("type".into(), Value::String("native".into()));
+    if let Some(url) = api
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+    {
+        result.insert("url".into(), Value::String(url.into()));
+    }
+    result.insert("settings".into(), object());
+    Value::Object(result)
+}
+
+fn official_cost(cost: Option<&Value>) -> Value {
+    let cost = cost.unwrap_or(&Value::Null);
+    let base = json!({
+        "input": cost.get("input").cloned().unwrap_or(Value::Number(0.into())),
+        "output": cost.get("output").cloned().unwrap_or(Value::Number(0.into())),
+        "cache": {
+            "read": cost.get("cache_read").cloned().unwrap_or(Value::Number(0.into())),
+            "write": cost.get("cache_write").cloned().unwrap_or(Value::Number(0.into())),
+        },
+    });
+    let tiers = cost
+        .get("tiers")
+        .and_then(Value::as_array)
+        .map(|items| items.iter().map(official_cost_tier).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let over = cost
+        .get("context_over_200k")
+        .map(|item| official_cost_tier_with_context(item, 200_000));
+    Value::Array(std::iter::once(base).chain(tiers).chain(over).collect())
+}
+
+fn official_cost_tier(item: &Value) -> Value {
+    json!({
+        "tier": item.get("tier").cloned().unwrap_or(Value::Null),
+        "input": item.get("input").cloned().unwrap_or(Value::Number(0.into())),
+        "output": item.get("output").cloned().unwrap_or(Value::Number(0.into())),
+        "cache": {
+            "read": item.get("cache_read").cloned().unwrap_or(Value::Number(0.into())),
+            "write": item.get("cache_write").cloned().unwrap_or(Value::Number(0.into())),
+        },
+    })
+}
+
+fn official_cost_tier_with_context(item: &Value, size: i64) -> Value {
+    json!({
+        "tier": { "type": "context", "size": size },
+        "input": item.get("input").cloned().unwrap_or(Value::Number(0.into())),
+        "output": item.get("output").cloned().unwrap_or(Value::Number(0.into())),
+        "cache": {
+            "read": item.get("cache_read").cloned().unwrap_or(Value::Number(0.into())),
+            "write": item.get("cache_write").cloned().unwrap_or(Value::Number(0.into())),
+        },
+    })
+}
+
+fn project_model(model: Value, provider: &Value) -> Value {
+    let api = match (model.get("api"), provider.get("api")) {
+        (Some(model_api), Some(provider_api))
+            if model_api.get("type").and_then(Value::as_str) == Some("native")
+                && model_api.get("url").is_none()
+                && model_api
+                    .get("settings")
+                    .and_then(Value::as_object)
+                    .is_some_and(Map::is_empty) =>
+        {
+            let mut next = provider_api.clone();
+            next["id"] = model_api.get("id").cloned().unwrap_or(Value::Null);
+            next
+        }
+        (Some(model_api), Some(provider_api))
+            if model_api.get("type").and_then(Value::as_str) == Some("aisdk")
+                && provider_api.get("type").and_then(Value::as_str) == Some("aisdk")
+                && model_api.get("url").is_none() =>
+        {
+            let mut next = model_api.clone();
+            if let Some(url) = provider_api.get("url") {
+                next["url"] = url.clone();
+            }
+            next
+        }
+        (Some(model_api), _) => model_api.clone(),
+        _ => Value::Null,
+    };
+    let variant = model.pointer("/request/variant").cloned();
+    let mut projected = model;
+    projected["api"] = api;
+    projected["request"] = json!({
+        "headers": crate::config::merge(
+            provider.pointer("/request/headers").cloned().unwrap_or_else(object),
+            projected.pointer("/request/headers").cloned().unwrap_or_else(object),
+        ),
+        "body": crate::config::merge(
+            provider.pointer("/request/body").cloned().unwrap_or_else(object),
+            projected.pointer("/request/body").cloned().unwrap_or_else(object),
+        ),
+    });
+    if let Some(variant) = variant {
+        projected["request"]["variant"] = variant;
+    }
+    projected
+}
+
+fn merge_request(target: &mut Value, source: &Value) {
+    if let Some(headers) = source.get("headers") {
+        target["headers"] = crate::config::merge(target["headers"].clone(), headers.clone());
+    }
+    if let Some(body) = source.get("body") {
+        target["body"] = crate::config::merge(target["body"].clone(), body.clone());
+    }
+}
+
+fn released(date: &str) -> i64 {
+    let parts = date
+        .split('-')
+        .filter_map(|part| part.parse::<i64>().ok())
+        .collect::<Vec<_>>();
+    if parts.len() != 3 {
+        return 0;
+    }
+    let year = parts[0] - (parts[1] <= 2) as i64;
+    let era = year.div_euclid(400);
+    let yoe = year - era * 400;
+    let month = parts[1] + if parts[1] > 2 { -3 } else { 9 };
+    let doy = (153 * month + 2) / 5 + parts[2] - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    (era * 146_097 + doe - 719_468) * 86_400_000
 }
 
 fn from_models_dev_provider(provider: &Value) -> Value {
@@ -487,8 +914,9 @@ fn object() -> Value {
 
 #[cfg(test)]
 mod tests {
-    use super::sort_models;
+    use super::{official_models, official_providers, sort_models};
     use serde_json::{json, Map};
+    use std::sync::{Mutex, OnceLock};
 
     #[test]
     fn defaults_follow_provider_priority() {
@@ -499,5 +927,87 @@ mod tests {
         }))
         .expect("models");
         assert_eq!(sort_models(&models)[0], "gpt-5-chat-latest");
+    }
+
+    #[test]
+    fn official_catalog_projects_current_protocol_shapes() {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        let _guard = LOCK.get_or_init(|| Mutex::new(())).lock().expect("lock");
+        let root = std::env::temp_dir().join(format!(
+            "opencode-provider-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::write(
+            root.join("models.json"),
+            serde_json::to_string(&json!({
+                "acme": {
+                    "id": "acme",
+                    "name": "Acme",
+                    "npm": "@ai-sdk/acme",
+                    "api": "https://api.acme.test",
+                    "env": [],
+                    "models": {
+                        "foo": {
+                            "id": "foo-api",
+                            "name": "Foo",
+                            "family": "foo",
+                            "release_date": "2024-01-02",
+                            "attachment": false,
+                            "reasoning": false,
+                            "temperature": true,
+                            "tool_call": true,
+                            "modalities": { "input": ["text"], "output": ["text"] },
+                            "cost": {
+                                "input": 1.0,
+                                "output": 2.0,
+                                "cache_read": 0.1,
+                                "cache_write": 0.2
+                            },
+                            "limit": { "context": 1000, "output": 100 }
+                        }
+                    }
+                }
+            }))
+            .expect("json"),
+        )
+        .expect("write");
+        std::env::set_var("OPENCODE_MODELS_PATH", root.join("models.json"));
+
+        let config = json!({
+            "providers": {
+                "acme": {
+                    "request": {
+                        "headers": { "x-test": "yes" },
+                        "body": { "baseURL": "https://override.test" }
+                    },
+                    "models": {
+                        "foo": {
+                            "request": { "body": { "temperature": 0.2 } }
+                        }
+                    }
+                }
+            }
+        });
+        let providers = official_providers(&config);
+        let models = official_models(&config);
+
+        assert_eq!(providers[0]["id"], "acme");
+        assert_eq!(providers[0]["api"]["type"], "aisdk");
+        assert_eq!(providers[0]["api"]["package"], "@ai-sdk/acme");
+        assert_eq!(models[0]["providerID"], "acme");
+        assert_eq!(models[0]["api"]["id"], "foo-api");
+        assert_eq!(models[0]["capabilities"]["tools"], true);
+        assert_eq!(models[0]["capabilities"]["input"], json!(["text"]));
+        assert_eq!(models[0]["request"]["headers"]["x-test"], "yes");
+        assert_eq!(models[0]["request"]["body"]["temperature"], 0.2);
+        assert!(models[0]["time"]["released"].as_i64().unwrap_or_default() > 0);
+        assert_eq!(models[0]["cost"][0]["cache"]["read"], 0.1);
+
+        std::env::remove_var("OPENCODE_MODELS_PATH");
+        let _ = std::fs::remove_dir_all(root);
     }
 }

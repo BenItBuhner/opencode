@@ -139,6 +139,23 @@ pub fn find_file(
         .collect())
 }
 
+pub fn entry_find(
+    directory: &str,
+    query: &str,
+    kind: Option<&str>,
+    limit: usize,
+) -> std::io::Result<Vec<Value>> {
+    Ok(find_file(directory, query, kind, limit)?
+        .into_iter()
+        .map(|path| {
+            json!({
+                "path": path,
+                "type": if path.ends_with('/') { "directory" } else { "file" },
+            })
+        })
+        .collect())
+}
+
 /// Simple fzf-style scorer: consecutive matches and basename hits score
 /// higher; returns None when the query is not a subsequence.
 fn subsequence_score(haystack: &str, needle: &str) -> Option<i64> {
@@ -212,6 +229,43 @@ pub fn list(
             })
         })
         .collect())
+}
+
+pub fn entry_list(directory: &str, relative: Option<&str>) -> std::io::Result<Vec<Value>> {
+    let target = resolve_existing_within(directory, relative.unwrap_or("."))?;
+    if !target.is_dir() {
+        return Err(std::io::Error::other("Path is not a directory"));
+    }
+    let mut entries: Vec<Value> = std::fs::read_dir(&target)?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            let kind = entry.file_type().ok()?;
+            if !kind.is_file() && !kind.is_dir() {
+                return None;
+            }
+            let relative = Path::new(relative.unwrap_or(".")).join(entry.file_name());
+            let path = normalize_relative(&relative);
+            Some(json!({
+                "path": format!("{}{}", path, if kind.is_dir() { "/" } else { "" }),
+                "type": if kind.is_dir() { "directory" } else { "file" },
+            }))
+        })
+        .collect();
+    entries.sort_by(|a, b| {
+        match (
+            a.get("type").and_then(Value::as_str),
+            b.get("type").and_then(Value::as_str),
+        ) {
+            (Some("directory"), Some("file")) => std::cmp::Ordering::Less,
+            (Some("file"), Some("directory")) => std::cmp::Ordering::Greater,
+            _ => a
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .cmp(b.get("path").and_then(Value::as_str).unwrap_or_default()),
+        }
+    });
+    Ok(entries)
 }
 
 /// Approximation of String#localeCompare for file names: case-insensitive
@@ -291,6 +345,15 @@ pub fn content(directory: &str, relative: &str) -> std::io::Result<Content> {
     })
 }
 
+pub fn read_bytes(directory: &str, relative: &str) -> std::io::Result<(Vec<u8>, String)> {
+    let file = resolve_existing_within(directory, relative)?;
+    if !file.is_file() {
+        return Err(std::io::Error::other("Path is not a file"));
+    }
+    let mime = mime_type(&file);
+    Ok((std::fs::read(file)?, mime))
+}
+
 fn resolve_within(directory: &str, relative: &str) -> std::io::Result<PathBuf> {
     let mut resolved = PathBuf::from(directory);
     for component in Path::new(relative).components() {
@@ -308,6 +371,26 @@ fn resolve_within(directory: &str, relative: &str) -> std::io::Result<PathBuf> {
         return Err(std::io::Error::other("Path escapes the location"));
     }
     Ok(resolved)
+}
+
+fn resolve_existing_within(directory: &str, relative: &str) -> std::io::Result<PathBuf> {
+    let root = std::fs::canonicalize(directory)?;
+    let target = resolve_within(directory, relative)?;
+    let real = std::fs::canonicalize(target)?;
+    if !real.starts_with(&root) {
+        return Err(std::io::Error::other("Path escapes the location"));
+    }
+    Ok(real)
+}
+
+fn normalize_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 fn base64_encode(bytes: &[u8]) -> String {
@@ -375,6 +458,32 @@ mod tests {
         assert!(resolve_within("/tmp/base", "../etc/passwd").is_err());
         assert!(resolve_within("/tmp/base", "ok/../../etc").is_err());
         assert!(resolve_within("/tmp/base", "src/./main.rs").is_ok());
+    }
+
+    #[test]
+    fn official_reads_reject_symlink_escape() {
+        let root = std::env::temp_dir().join(format!(
+            "opencode-file-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let outside = root.with_extension("outside");
+        std::fs::create_dir_all(&root).expect("root");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("secret.txt"), "secret").expect("secret");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside, root.join("link")).expect("symlink");
+
+        #[cfg(unix)]
+        {
+            assert!(read_bytes(root.to_str().expect("utf8"), "link/secret.txt").is_err());
+            assert!(entry_list(root.to_str().expect("utf8"), Some("link")).is_err());
+        }
+
+        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&outside);
     }
 
     #[test]

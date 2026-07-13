@@ -47,21 +47,55 @@ def read(path):
 # ---------------------------------------------------------------------------
 # A. Protocol endpoints vs Rust router
 # ---------------------------------------------------------------------------
-endpoint_re = re.compile(r'HttpApiEndpoint\.(get|post|patch|del|delete)\(\s*"[^"]+",\s*"([^"]+)"')
+endpoint_re = re.compile(
+    r'HttpApiEndpoint\.(get|post|patch|put|del|delete)\(\s*"[^"]+",\s*([^,\n]+)'
+)
 ts_endpoints = set()
-for group in (ROOT / "packages/protocol/src/groups").glob("*.ts"):
-    for method, path in endpoint_re.findall(group.read_text()):
-        # Express-style :params -> axum-style {params}; normalize names since
-        # the Rust router picks its own placeholder identifiers.
-        normalized = re.sub(r":\w+", "{}", path)
-        normalized = re.sub(r"/\*$", "/{}", normalized)
-        ts_endpoints.add((("delete" if method == "del" else method), normalized))
 
-rust_main = read("rust/server/src/main.rs")
+
+def normalize_path(path):
+    path = re.sub(r":\w+", "{}", path)
+    path = re.sub(r"\{\*\w+\}", "{}", path)
+    path = re.sub(r"\{\w+\}", "{}", path)
+    return re.sub(r"/\*$", "/{}", path)
+
+
+def ts_constants(source):
+    return {
+        name: value
+        for name, value in re.findall(r'const\s+(\w+)\s*=\s*"([^"]+)"', source)
+    }
+
+
+def resolve_ts_path(expr, constants):
+    expr = expr.strip()
+    if expr.startswith('"'):
+        return re.match(r'"([^"]+)"', expr).group(1)
+    if expr in constants:
+        return constants[expr]
+    template = re.match(r"`([^`]+)`", expr)
+    if template:
+        value = template.group(1)
+        for name, replacement in constants.items():
+            value = value.replace("${" + name + "}", replacement)
+        if "${" not in value:
+            return value
+    return None
+
+
+for group in (ROOT / "packages/protocol/src/groups").glob("*.ts"):
+    source = group.read_text()
+    constants = ts_constants(source)
+    for method, expr in endpoint_re.findall(source):
+        path = resolve_ts_path(expr, constants)
+        if path:
+            ts_endpoints.add((("delete" if method == "del" else method), normalize_path(path)))
+
+rust_main = read("rust/server/src/lib.rs")
 rust_routes = set()
 for path, handlers in re.findall(r'\.route\(\s*"([^"]+)",\s*((?:[^()]|\([^()]*\))*)\)', rust_main):
-    normalized = re.sub(r"\{\w+\}", "{}", path)
-    for method in re.findall(r"\b(get|post|patch|delete)\(", handlers):
+    normalized = normalize_path(path)
+    for method in re.findall(r"\b(get|post|patch|put|delete)\(", handlers):
         rust_routes.add((method, normalized))
 
 # The intentionally-unported v2 surface (each entry needs an explicit decision
@@ -89,17 +123,10 @@ V2_ENDPOINT_BACKLOG = {
     ("get", "/api/pty"),
     ("post", "/api/pty"),
     ("get", "/api/pty/{}"),
+    ("put", "/api/pty/{}"),
     ("delete", "/api/pty/{}"),
     ("post", "/api/pty/{}/connect-token"),
     ("get", "/api/pty/{}/connect"),
-    ("get", "/api/fs/read/{}"),
-    ("get", "/api/fs/list"),
-    ("get", "/api/fs/find"),
-    ("get", "/api/model"),
-    ("get", "/api/provider"),
-    ("get", "/api/provider/{}"),
-    ("get", "/api/reference"),
-    ("get", "/api/location"),
     ("get", "/api/integration"),
     ("get", "/api/integration/{}"),
     ("post", "/api/integration/{}/connect/key"),
@@ -109,9 +136,9 @@ V2_ENDPOINT_BACKLOG = {
     ("delete", "/api/integration/attempt/{}"),
     ("patch", "/api/credential/{}"),
     ("delete", "/api/credential/{}"),
-    ("get", "/api/command"),
-    ("get", "/api/agent"),
-    ("get", "/api/skill"),
+    ("post", "/experimental/project/{}/copy"),
+    ("delete", "/experimental/project/{}/copy"),
+    ("post", "/experimental/project/{}/copy/refresh"),
     ("get", "/api/health"),  # ported; kept as the worked example in review
     ("get", "/api/session/{}/message"),
     ("get", "/api/session/{}/message/{}"),

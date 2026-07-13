@@ -23,11 +23,7 @@ impl ServerAuth {
     }
 }
 
-pub async fn middleware(
-    State(auth): State<ServerAuth>,
-    request: Request,
-    next: Next,
-) -> Response {
+pub async fn middleware(State(auth): State<ServerAuth>, request: Request, next: Next) -> Response {
     if !auth.enabled() {
         return next.run(request).await;
     }

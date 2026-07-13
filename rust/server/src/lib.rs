@@ -27,7 +27,7 @@ mod v2;
 mod vcs;
 
 use axum::extract::{Path, Query, State};
-use axum::http::{header, StatusCode};
+use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -691,6 +691,123 @@ async fn skill_list(State(app): State<App>) -> Json<Value> {
     Json(Value::Array(markdown_skills(&app.worktree)))
 }
 
+fn official_agents(worktree: &str) -> Vec<Value> {
+    [
+        json!({
+            "id": "build",
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "mode": "primary",
+            "hidden": false,
+            "request": { "headers": {}, "body": {} },
+            "permissions": [],
+        }),
+        json!({
+            "id": "plan",
+            "description": "Plan mode. Disallows all edit tools.",
+            "mode": "primary",
+            "hidden": false,
+            "color": "warning",
+            "request": { "headers": {}, "body": {} },
+            "permissions": [],
+        }),
+        json!({
+            "id": "goal",
+            "description": "Goal mode. Works against a durable session goal that can be paused, edited, resumed, or completed.",
+            "mode": "primary",
+            "hidden": false,
+            "color": "accent",
+            "request": { "headers": {}, "body": {} },
+            "permissions": [],
+        }),
+        json!({
+            "id": "general",
+            "description": "General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.",
+            "mode": "subagent",
+            "hidden": false,
+            "request": { "headers": {}, "body": {} },
+            "permissions": [],
+        }),
+        json!({
+            "id": "explore",
+            "description": "Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. \"src/components/**/*.tsx\"), search code for keywords (eg. \"API endpoints\"), or answer questions about the codebase (eg. \"how do API endpoints work?\"). When calling this agent, specify the desired thoroughness level: \"quick\" for basic searches, \"medium\" for moderate exploration, or \"very thorough\" for comprehensive analysis across multiple locations and naming conventions.",
+            "mode": "subagent",
+            "hidden": false,
+            "request": { "headers": {}, "body": {} },
+            "permissions": [],
+        }),
+        json!({ "id": "compaction", "mode": "primary", "hidden": true, "request": { "headers": {}, "body": {} }, "permissions": [] }),
+        json!({ "id": "title", "mode": "primary", "hidden": true, "request": { "headers": {}, "body": {} }, "permissions": [] }),
+        json!({ "id": "summary", "mode": "primary", "hidden": true, "request": { "headers": {}, "body": {} }, "permissions": [] }),
+    ]
+    .into_iter()
+    .chain(markdown_agents(worktree).into_iter().map(official_markdown_agent))
+    .collect()
+}
+
+fn official_markdown_agent(agent: Value) -> Value {
+    let mut info = serde_json::Map::new();
+    info.insert(
+        "id".into(),
+        agent
+            .get("name")
+            .cloned()
+            .unwrap_or_else(|| Value::String(String::new())),
+    );
+    if let Some(description) = agent.get("description").filter(|value| !value.is_null()) {
+        info.insert("description".into(), description.clone());
+    }
+    info.insert(
+        "mode".into(),
+        agent
+            .get("mode")
+            .cloned()
+            .unwrap_or_else(|| Value::String("all".into())),
+    );
+    info.insert(
+        "hidden".into(),
+        agent
+            .get("hidden")
+            .cloned()
+            .filter(|value| !value.is_null())
+            .unwrap_or(Value::Bool(false)),
+    );
+    if let Some(prompt) = agent.get("prompt").filter(|value| !value.is_null()) {
+        info.insert("system".into(), prompt.clone());
+    }
+    info.insert("request".into(), json!({ "headers": {}, "body": {} }));
+    info.insert("permissions".into(), Value::Array(vec![]));
+    Value::Object(info)
+}
+
+fn official_command(command: &Value) -> Value {
+    let mut info = serde_json::Map::new();
+    for field in [
+        "name",
+        "template",
+        "description",
+        "agent",
+        "model",
+        "subtask",
+    ] {
+        if let Some(value) = command.get(field).filter(|value| !value.is_null()) {
+            info.insert(field.into(), value.clone());
+        }
+    }
+    info.entry("template")
+        .or_insert_with(|| Value::String(String::new()));
+    Value::Object(info)
+}
+
+fn official_skill(skill: &Value) -> Value {
+    let mut info = serde_json::Map::new();
+    for field in ["name", "description", "slash", "location", "content"] {
+        if let Some(value) = skill.get(field).filter(|value| !value.is_null()) {
+            info.insert(field.into(), value.clone());
+        }
+    }
+    Value::Object(info)
+}
+
 async fn empty_array() -> Json<Value> {
     Json(Value::Array(vec![]))
 }
@@ -956,6 +1073,106 @@ fn v2_invalid_cursor(message: &str) -> Response {
         .into_response()
 }
 
+#[derive(Deserialize, Default)]
+struct ApiLocationQuery {
+    #[serde(rename = "location[directory]")]
+    location_directory: Option<String>,
+    #[serde(rename = "location[workspace]")]
+    location_workspace: Option<String>,
+}
+
+fn location_directory(app: &App, headers: &HeaderMap, query: &ApiLocationQuery) -> String {
+    query
+        .location_directory
+        .clone()
+        .or_else(|| {
+            headers
+                .get("x-opencode-directory")
+                .and_then(|value| value.to_str().ok())
+                .map(decode_uri_component)
+        })
+        .unwrap_or_else(|| app.directory.clone())
+}
+
+fn location_info(app: &App, headers: &HeaderMap, query: &ApiLocationQuery) -> Value {
+    let directory = location_directory(app, headers, query);
+    let project = if directory == app.directory {
+        ResolvedLocationProject {
+            id: app.project_id.clone(),
+            directory: app.worktree.clone(),
+        }
+    } else {
+        resolve_location_project(&directory)
+    };
+    let mut info = serde_json::Map::new();
+    info.insert("directory".into(), Value::String(directory));
+    if let Some(workspace_id) = query.location_workspace.clone().or_else(|| {
+        headers
+            .get("x-opencode-workspace")
+            .and_then(|value| value.to_str().ok())
+            .map(ToString::to_string)
+    }) {
+        info.insert("workspaceID".into(), Value::String(workspace_id));
+    }
+    info.insert(
+        "project".into(),
+        json!({ "id": project.id, "directory": project.directory }),
+    );
+    Value::Object(info)
+}
+
+fn location_response(
+    app: &App,
+    headers: &HeaderMap,
+    query: &ApiLocationQuery,
+    data: Value,
+) -> Value {
+    json!({ "location": location_info(app, headers, query), "data": data })
+}
+
+fn scoped_app(app: &App, headers: &HeaderMap, query: &ApiLocationQuery) -> App {
+    let directory = location_directory(app, headers, query);
+    let project = resolve_location_project(&directory);
+    let path = directory
+        .strip_prefix(project.directory.trim_end_matches('/'))
+        .map(|rest| rest.trim_start_matches('/').to_string())
+        .unwrap_or_default();
+    App {
+        directory,
+        worktree: project.directory,
+        project_id: project.id,
+        path,
+        ..app.clone()
+    }
+}
+
+fn decode_uri_component(input: &str) -> String {
+    let bytes = input.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' && index + 2 < bytes.len() {
+            if let (Some(high), Some(low)) = (hex(bytes[index + 1]), hex(bytes[index + 2])) {
+                output.push(high * 16 + low);
+                index += 3;
+                continue;
+            }
+        }
+        output.push(bytes[index]);
+        index += 1;
+    }
+    String::from_utf8(output).unwrap_or_else(|_| input.to_string())
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 async fn api_health() -> Json<Value> {
     Json(json!({ "healthy": true }))
 }
@@ -966,6 +1183,216 @@ async fn api_session_active() -> Json<Value> {
         data.insert(session_id, json!({ "type": "running" }));
     }
     Json(json!({ "data": data }))
+}
+
+async fn api_location_get(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    Json(location_info(&app, &headers, &query))
+}
+
+async fn api_agent_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(official_agents(
+            &scoped_app(&app, &headers, &query).worktree,
+        )),
+    ))
+}
+
+async fn api_command_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    let Json(commands) = command_list(State(scoped_app(&app, &headers, &query))).await;
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(
+            commands
+                .as_array()
+                .map(|items| items.iter().map(official_command).collect())
+                .unwrap_or_default(),
+        ),
+    ))
+}
+
+async fn api_skill_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    let Json(skills) = skill_list(State(scoped_app(&app, &headers, &query))).await;
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(
+            skills
+                .as_array()
+                .map(|items| items.iter().map(official_skill).collect())
+                .unwrap_or_default(),
+        ),
+    ))
+}
+
+async fn api_reference_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(vec![]),
+    ))
+}
+
+async fn api_model_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    let scoped = scoped_app(&app, &headers, &query);
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(provider::official_models(&config::instance(
+            &scoped.directory,
+            &scoped.worktree,
+        ))),
+    ))
+}
+
+async fn api_provider_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Json<Value> {
+    let scoped = scoped_app(&app, &headers, &query);
+    Json(location_response(
+        &app,
+        &headers,
+        &query,
+        Value::Array(provider::official_providers(&config::instance(
+            &scoped.directory,
+            &scoped.worktree,
+        ))),
+    ))
+}
+
+async fn api_provider_get(
+    State(app): State<App>,
+    Path(provider_id): Path<String>,
+    headers: HeaderMap,
+    Query(query): Query<ApiLocationQuery>,
+) -> Response {
+    let scoped = scoped_app(&app, &headers, &query);
+    match provider::official_provider(
+        &config::instance(&scoped.directory, &scoped.worktree),
+        &provider_id,
+    ) {
+        Some(provider) => Json(location_response(&app, &headers, &query, provider)).into_response(),
+        None => (
+            StatusCode::NOT_FOUND,
+            Json(json!({
+                "_tag": "ProviderNotFoundError",
+                "providerID": provider_id,
+                "message": format!("Provider not found: {provider_id}"),
+            })),
+        )
+            .into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct ApiFsListQuery {
+    #[serde(flatten)]
+    location: ApiLocationQuery,
+    path: Option<String>,
+}
+
+async fn api_fs_list(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiFsListQuery>,
+) -> Result<Json<Value>, Failure> {
+    Ok(Json(location_response(
+        &app,
+        &headers,
+        &query.location,
+        Value::Array(
+            file::entry_list(
+                &location_directory(&app, &headers, &query.location),
+                query.path.as_deref(),
+            )
+            .map_err(|error| Failure(StatusCode::BAD_REQUEST, error.to_string()))?,
+        ),
+    )))
+}
+
+#[derive(Deserialize)]
+struct ApiFsFindQuery {
+    #[serde(flatten)]
+    location: ApiLocationQuery,
+    query: String,
+    #[serde(rename = "type")]
+    kind: Option<String>,
+    limit: Option<usize>,
+}
+
+async fn api_fs_find(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Query(query): Query<ApiFsFindQuery>,
+) -> Result<Json<Value>, Failure> {
+    Ok(Json(location_response(
+        &app,
+        &headers,
+        &query.location,
+        Value::Array(
+            file::entry_find(
+                &location_directory(&app, &headers, &query.location),
+                &query.query,
+                query.kind.as_deref(),
+                query.limit.unwrap_or(50),
+            )
+            .map_err(|error| Failure(StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?,
+        ),
+    )))
+}
+
+async fn api_fs_read(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Path(path): Path<String>,
+    Query(query): Query<ApiLocationQuery>,
+) -> Result<Response, Failure> {
+    let (content, mime) = file::read_bytes(
+        &location_directory(&app, &headers, &query),
+        path.trim_start_matches('/'),
+    )
+    .map_err(|error| {
+        let status = if error.kind() == std::io::ErrorKind::NotFound {
+            StatusCode::NOT_FOUND
+        } else {
+            StatusCode::BAD_REQUEST
+        };
+        Failure(status, error.to_string())
+    })?;
+    Ok(([(header::CONTENT_TYPE, mime)], content).into_response())
 }
 
 #[derive(Deserialize)]
@@ -1109,6 +1536,62 @@ fn normalize_remote(origin: &str) -> Option<String> {
         .map(|(_, host)| host)
         .unwrap_or(captures.0);
     parts(host, captures.1)
+}
+
+struct ResolvedLocationProject {
+    id: String,
+    directory: String,
+}
+
+fn resolve_location_project(directory: &str) -> ResolvedLocationProject {
+    use sha1::{Digest, Sha1};
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(directory)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_string())
+            .filter(|value| !value.is_empty())
+    };
+    let Some(worktree) = git(&["rev-parse", "--show-toplevel"]) else {
+        return ResolvedLocationProject {
+            id: "global".into(),
+            directory: "/".into(),
+        };
+    };
+    let remote_id = git(&["remote", "get-url", "origin"])
+        .and_then(|origin| normalize_remote(&origin))
+        .map(|normalized| {
+            let mut hasher = Sha1::new();
+            hasher.update(format!("git-remote:{normalized}").as_bytes());
+            hasher
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        });
+    let cached = git(&["rev-parse", "--git-common-dir"]).and_then(|common| {
+        std::fs::read_to_string(
+            std::path::Path::new(directory)
+                .join(common)
+                .join("opencode"),
+        )
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    });
+    let root = git(&["rev-list", "--max-parents=0", "HEAD"])
+        .map(|list| list.lines().next().unwrap_or_default().to_string());
+    ResolvedLocationProject {
+        id: remote_id
+            .or(cached)
+            .or(root)
+            .unwrap_or_else(|| "global".into()),
+        directory: worktree,
+    }
 }
 
 async fn api_session_create(
@@ -1517,7 +2000,6 @@ impl ServeOptions {
 }
 
 pub async fn run(options: ServeOptions) -> Result<(), String> {
-
     let manager = SqliteConnectionManager::file(&options.db).with_init(|conn| {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         conn.pragma_update(None, "busy_timeout", 5000)?;
@@ -1540,7 +2022,9 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .unwrap_or_default();
 
     let password = if options.register {
-        Some(opengoal_daemon::load_or_create_password(options.password.as_deref())?)
+        Some(opengoal_daemon::load_or_create_password(
+            options.password.as_deref(),
+        )?)
     } else {
         options
             .password
@@ -1635,6 +2119,17 @@ pub async fn run(options: ServeOptions) -> Result<(), String> {
         .route("/file/content", get(file_content))
         .route("/file/status", get(file_status))
         .route("/api/health", get(api_health))
+        .route("/api/location", get(api_location_get))
+        .route("/api/agent", get(api_agent_list))
+        .route("/api/command", get(api_command_list))
+        .route("/api/skill", get(api_skill_list))
+        .route("/api/reference", get(api_reference_list))
+        .route("/api/model", get(api_model_list))
+        .route("/api/provider", get(api_provider_list))
+        .route("/api/provider/{provider_id}", get(api_provider_get))
+        .route("/api/fs/list", get(api_fs_list))
+        .route("/api/fs/find", get(api_fs_find))
+        .route("/api/fs/read/{*path}", get(api_fs_read))
         .route(
             "/api/session",
             get(api_session_list).post(api_session_create),
@@ -1713,12 +2208,55 @@ async fn bind_listener(
 
 #[cfg(test)]
 mod tests {
-    use super::chrono_iso;
+    use super::{bus, chrono_iso, config, location_response, ApiLocationQuery, App};
+    use axum::http::HeaderMap;
+    use r2d2_sqlite::SqliteConnectionManager;
+    use serde_json::{json, Value};
 
     #[test]
     fn iso_matches_date_to_iso_string() {
         assert_eq!(chrono_iso(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(chrono_iso(1_751_659_200_123), "2025-07-04T20:00:00.123Z");
         assert_eq!(chrono_iso(1_783_197_020_091), "2026-07-04T20:30:20.091Z");
+    }
+
+    #[test]
+    fn location_response_wraps_current_protocol_shape() {
+        let app = App {
+            pool: r2d2::Pool::builder()
+                .max_size(1)
+                .build(SqliteConnectionManager::memory())
+                .expect("pool"),
+            bus: bus::Bus::new(),
+            project_id: "project-id".into(),
+            directory: "/tmp/project".into(),
+            worktree: "/tmp/project".into(),
+            path: String::new(),
+            version: "test".into(),
+            port: 4096,
+            paths: config::Paths {
+                home: "/tmp/home".into(),
+                config: "/tmp/config".into(),
+                state: "/tmp/state".into(),
+                cache: "/tmp/cache".into(),
+            },
+        };
+        let query = ApiLocationQuery {
+            location_directory: None,
+            location_workspace: Some("workspace-id".into()),
+        };
+        let wrapped = location_response(&app, &HeaderMap::new(), &query, json!([{"id": "build"}]));
+
+        assert_eq!(wrapped["data"], json!([{"id": "build"}]));
+        assert_eq!(wrapped["location"]["directory"], "/tmp/project");
+        assert_eq!(wrapped["location"]["workspaceID"], "workspace-id");
+        assert_eq!(
+            wrapped["location"]["project"],
+            json!({
+                "id": "project-id",
+                "directory": "/tmp/project",
+            })
+        );
+        assert!(matches!(wrapped, Value::Object(_)));
     }
 }
