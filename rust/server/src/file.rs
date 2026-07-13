@@ -159,6 +159,15 @@ pub fn entry_find(
 /// Simple fzf-style scorer: consecutive matches and basename hits score
 /// higher; returns None when the query is not a subsequence.
 fn subsequence_score(haystack: &str, needle: &str) -> Option<i64> {
+    let full = score_subsequence(haystack, needle)?;
+    let basename = haystack
+        .rsplit('/')
+        .next()
+        .and_then(|name| score_subsequence(name, needle));
+    Some(basename.map_or(full, |score| score.max(full)))
+}
+
+fn score_subsequence(haystack: &str, needle: &str) -> Option<i64> {
     if needle.is_empty() {
         return Some(0);
     }
@@ -458,6 +467,14 @@ mod tests {
         assert!(resolve_within("/tmp/base", "../etc/passwd").is_err());
         assert!(resolve_within("/tmp/base", "ok/../../etc").is_err());
         assert!(resolve_within("/tmp/base", "src/./main.rs").is_ok());
+    }
+
+    #[test]
+    fn fuzzy_ranking_prefers_exact_basename_matches() {
+        assert!(
+            subsequence_score("src/agent/prompt/goal.txt", "goal")
+                > subsequence_score("src/bus/global.ts", "goal")
+        );
     }
 
     #[test]

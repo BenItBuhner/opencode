@@ -691,7 +691,7 @@ async fn skill_list(State(app): State<App>) -> Json<Value> {
     Json(Value::Array(markdown_skills(&app.worktree)))
 }
 
-fn official_agents(worktree: &str) -> Vec<Value> {
+fn official_agents(worktree: &str, directory: &str, config: &Value) -> Vec<Value> {
     [
         json!({
             "id": "build",
@@ -749,25 +749,82 @@ fn official_agents(worktree: &str) -> Vec<Value> {
         if let Some(system) = runner::agent_system(&id) {
             agent["system"] = Value::String(system.into());
         }
-        agent["permissions"] = Value::Array(
-            runner::permission::agent_rules(&id)
-                .into_iter()
-                .map(|rule| {
-                    json!({
-                        "action": rule.action,
-                        "resource": rule.resource,
-                        "effect": rule.effect,
-                    })
+        let mut permissions = runner::permission::agent_rules(&id)
+            .into_iter()
+            .map(|rule| {
+                json!({
+                    "action": rule.action,
+                    "resource": rule.resource,
+                    "effect": rule.effect,
                 })
-                .collect(),
-        );
+            })
+            .collect::<Vec<_>>();
+        if id == "plan" {
+            let plans = format!("{}/.local/share/opencode/plans", app_home());
+            let edit = permissions
+                .iter()
+                .position(|rule| {
+                    rule.get("action").and_then(Value::as_str) == Some("edit")
+                        && rule.get("resource").and_then(Value::as_str) == Some("*")
+                })
+                .unwrap_or(permissions.len());
+            permissions.insert(
+                edit,
+                json!({
+                    "action": "external_directory",
+                    "resource": format!("{plans}/*"),
+                    "effect": "allow",
+                }),
+            );
+            permissions.insert(
+                edit + 3,
+                json!({
+                    "action": "edit",
+                    "resource": format!("{}/*.md", relative_path(directory, &plans)),
+                    "effect": "allow",
+                }),
+            );
+        }
+        permissions.extend(configured_tool_permissions(config));
+        agent["permissions"] = Value::Array(permissions);
         agent
     })
-    .chain(markdown_agents(worktree).into_iter().map(official_markdown_agent))
+    .chain(
+        markdown_agents(worktree)
+            .into_iter()
+            .map(|agent| official_markdown_agent(agent, config)),
+    )
     .collect()
 }
 
-fn official_markdown_agent(agent: Value) -> Value {
+fn app_home() -> String {
+    std::env::var("OPENCODE_TEST_HOME")
+        .or_else(|_| std::env::var("HOME"))
+        .unwrap_or_default()
+}
+
+fn relative_path(base: &str, target: &str) -> String {
+    let base = std::path::Path::new(base).components().collect::<Vec<_>>();
+    let target = std::path::Path::new(target)
+        .components()
+        .collect::<Vec<_>>();
+    let common = base
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    std::iter::repeat_n("..", base.len().saturating_sub(common))
+        .map(str::to_string)
+        .chain(
+            target[common..]
+                .iter()
+                .map(|part| part.as_os_str().to_string_lossy().into_owned()),
+        )
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn official_markdown_agent(agent: Value, config: &Value) -> Value {
     let mut info = serde_json::Map::new();
     info.insert(
         "id".into(),
@@ -797,9 +854,51 @@ fn official_markdown_agent(agent: Value) -> Value {
     if let Some(prompt) = agent.get("prompt").filter(|value| !value.is_null()) {
         info.insert("system".into(), prompt.clone());
     }
+    if let Some(model) = agent.get("model").and_then(Value::as_str) {
+        if let Some((provider_id, id)) = model.split_once('/') {
+            info.insert(
+                "model".into(),
+                json!({ "id": id, "providerID": provider_id }),
+            );
+        }
+    }
+    if let Some(color) = agent.get("color").filter(|value| !value.is_null()) {
+        info.insert("color".into(), color.clone());
+    }
     info.insert("request".into(), json!({ "headers": {}, "body": {} }));
-    info.insert("permissions".into(), Value::Array(vec![]));
+    let mut permissions = configured_tool_permissions(config);
+    permissions.extend(
+        agent
+            .get("tools")
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|tools| tools.iter())
+            .filter_map(|(action, enabled)| {
+                Some(json!({
+                    "action": action,
+                    "resource": "*",
+                    "effect": if enabled.as_bool()? { "allow" } else { "deny" },
+                }))
+            }),
+    );
+    info.insert("permissions".into(), Value::Array(permissions));
     Value::Object(info)
+}
+
+fn configured_tool_permissions(config: &Value) -> Vec<Value> {
+    config
+        .get("tools")
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|tools| tools.iter())
+        .filter_map(|(action, enabled)| {
+            Some(json!({
+                "action": action,
+                "resource": "*",
+                "effect": if enabled.as_bool()? { "allow" } else { "deny" },
+            }))
+        })
+        .collect()
 }
 
 fn official_command(command: &Value) -> Value {
@@ -813,7 +912,16 @@ fn official_command(command: &Value) -> Value {
         "subtask",
     ] {
         if let Some(value) = command.get(field).filter(|value| !value.is_null()) {
-            info.insert(field.into(), value.clone());
+            let value = if field == "model" {
+                value
+                    .as_str()
+                    .and_then(|model| model.split_once('/'))
+                    .map(|(provider_id, id)| json!({ "id": id, "providerID": provider_id }))
+                    .unwrap_or_else(|| value.clone())
+            } else {
+                value.clone()
+            };
+            info.insert(field.into(), value);
         }
     }
     info.entry("template")
@@ -926,6 +1034,9 @@ fn markdown_agents(worktree: &str) -> Vec<Value> {
                 "mode": parsed.frontmatter.get("mode").cloned().unwrap_or(Value::String("all".into())),
                 "native": false,
                 "hidden": parsed.frontmatter.get("hidden").cloned().unwrap_or(Value::Null),
+                "model": parsed.frontmatter.get("model").cloned().unwrap_or(Value::Null),
+                "color": parsed.frontmatter.get("color").cloned().unwrap_or(Value::Null),
+                "tools": parsed.frontmatter.get("tools").cloned().unwrap_or(Value::Null),
                 "prompt": parsed.content.trim(),
                 "permission": [],
                 "options": {},
@@ -1001,23 +1112,48 @@ fn parse_markdown(path: &std::path::Path) -> Option<Markdown> {
     let rest = &text[4..];
     let (frontmatter, content) = rest.split_once("\n---\n")?;
     Some(Markdown {
-        frontmatter: frontmatter
-            .lines()
-            .filter_map(|line| line.split_once(':'))
-            .map(|(key, value)| {
-                let value = value.trim().trim_matches('"').trim_matches('\'');
-                (
-                    key.trim().to_string(),
-                    match value {
-                        "true" => Value::Bool(true),
-                        "false" => Value::Bool(false),
-                        _ => Value::String(value.to_string()),
-                    },
-                )
-            })
-            .collect(),
+        frontmatter: parse_frontmatter(frontmatter),
         content: content.to_string(),
     })
+}
+
+fn parse_frontmatter(frontmatter: &str) -> serde_json::Map<String, Value> {
+    let mut result = serde_json::Map::new();
+    let mut section: Option<String> = None;
+    for line in frontmatter.lines() {
+        let nested = line.starts_with(' ') || line.starts_with('\t');
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"').trim_matches('\'');
+        let value = value.trim().trim_matches('"').trim_matches('\'');
+        if nested {
+            if let Some(object) = section
+                .as_ref()
+                .and_then(|section| result.get_mut(section))
+                .and_then(Value::as_object_mut)
+            {
+                object.insert(key.to_string(), frontmatter_value(value));
+            }
+            continue;
+        }
+        if value.is_empty() {
+            result.insert(key.to_string(), Value::Object(serde_json::Map::new()));
+            section = Some(key.to_string());
+            continue;
+        }
+        result.insert(key.to_string(), frontmatter_value(value));
+        section = None;
+    }
+    result
+}
+
+fn frontmatter_value(value: &str) -> Value {
+    match value {
+        "true" => Value::Bool(true),
+        "false" => Value::Bool(false),
+        _ => Value::String(value.to_string()),
+    }
 }
 
 fn command_hints(template: &str) -> Vec<Value> {
@@ -1272,12 +1408,15 @@ async fn api_agent_list(
     headers: HeaderMap,
     Query(query): Query<ApiLocationQuery>,
 ) -> Json<Value> {
+    let scoped = scoped_app(&app, &headers, &query);
     Json(location_response(
         &app,
         &headers,
         &query,
         Value::Array(official_agents(
-            &scoped_app(&app, &headers, &query).worktree,
+            &scoped.worktree,
+            &scoped.directory,
+            &config::instance(&scoped.directory, &scoped.worktree),
         )),
     ))
 }
@@ -1287,7 +1426,8 @@ async fn api_command_list(
     headers: HeaderMap,
     Query(query): Query<ApiLocationQuery>,
 ) -> Json<Value> {
-    let Json(commands) = command_list(State(scoped_app(&app, &headers, &query))).await;
+    let scoped = scoped_app(&app, &headers, &query);
+    let Json(commands) = command_list(State(scoped.clone())).await;
     let commands = commands
         .as_array()
         .map(|items| {
@@ -1305,6 +1445,7 @@ async fn api_command_list(
                                 include_str!(
                                     "../../../packages/core/src/plugin/command/initialize.txt"
                                 )
+                                .replace("${path}", &scoped.worktree)
                                 .into(),
                             );
                         }
@@ -2322,7 +2463,10 @@ async fn bind_listener(
 
 #[cfg(test)]
 mod tests {
-    use super::{bus, chrono_iso, config, location_response, ApiLocationQuery, App};
+    use super::{
+        bus, chrono_iso, config, location_response, parse_frontmatter, relative_path,
+        ApiLocationQuery, App,
+    };
     use axum::http::HeaderMap;
     use r2d2_sqlite::SqliteConnectionManager;
     use serde_json::{json, Value};
@@ -2332,6 +2476,24 @@ mod tests {
         assert_eq!(chrono_iso(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(chrono_iso(1_751_659_200_123), "2025-07-04T20:00:00.123Z");
         assert_eq!(chrono_iso(1_783_197_020_091), "2026-07-04T20:30:20.091Z");
+    }
+
+    #[test]
+    fn frontmatter_preserves_nested_tool_rules() {
+        let parsed = parse_frontmatter(
+            "mode: primary\nhidden: true\ntools:\n  \"*\": false\n  \"github-pr-search\": true",
+        );
+        assert_eq!(parsed["mode"], "primary");
+        assert_eq!(parsed["hidden"], true);
+        assert_eq!(parsed["tools"]["*"], false);
+        assert_eq!(parsed["tools"]["github-pr-search"], true);
+        assert_eq!(
+            relative_path(
+                "/workspace/packages/opencode",
+                "/home/ubuntu/.local/share/opencode/plans"
+            ),
+            "../../../home/ubuntu/.local/share/opencode/plans"
+        );
     }
 
     #[test]

@@ -306,6 +306,10 @@ fn official_catalog(config: &Value) -> BTreeMap<String, OfficialRecord> {
         .map(|(id, provider)| {
             let mut record = official_record_from_models_dev(&provider);
             if id == "opencode" && std::env::var("OPENCODE_API_KEY").is_err() {
+                record.models.retain(|model_id, _| {
+                    model_id.ends_with("-free")
+                        || matches!(model_id.as_str(), "big-pickle" | "grok-code")
+                });
                 record.provider["request"]["body"]["apiKey"] = Value::String("public".into());
             }
             (id, record)
