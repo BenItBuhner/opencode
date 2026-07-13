@@ -50,6 +50,8 @@ pub enum HitTarget {
     ModelSpan,
     /// The goal chip in the right-aligned status row.
     GoalChip,
+    /// The progress-bar portion of the goal chip opens recorded summaries.
+    GoalBar,
     /// The tip row on the home route (cycles when clicked).
     TipRow,
 }
@@ -64,6 +66,7 @@ pub struct Geometry {
     pub agent_span: Option<Rectangle>,
     pub model_span: Option<Rectangle>,
     pub goal_chip: Option<Rectangle>,
+    pub goal_bar: Option<Rectangle>,
     pub tip_row: Option<Rectangle>,
     /// Dialog panel body (title + search + list). Empty when no dialog is
     /// open.
@@ -134,11 +137,39 @@ pub const COMMANDS: &[CommandSpec] = &[
         takes_args: false,
     },
     CommandSpec {
+        name: "commands",
+        title: "Commands",
+        description: "Browse every available command and shortcut",
+        shortcut: "ctrl+p",
+        takes_args: false,
+    },
+    CommandSpec {
         name: "goal",
         title: "Manage goal",
         description: "set, edit, pause, resume, complete, status, clear",
         shortcut: "/goal",
         takes_args: true,
+    },
+    CommandSpec {
+        name: "goal-details",
+        title: "Goal details",
+        description: "Show the durable session goal and status",
+        shortcut: "ctrl+x g",
+        takes_args: false,
+    },
+    CommandSpec {
+        name: "goal-summaries",
+        title: "Goal summaries",
+        description: "Browse recorded goal state summaries",
+        shortcut: "ctrl+x s",
+        takes_args: false,
+    },
+    CommandSpec {
+        name: "external-access",
+        title: "Toggle out-of-workspace access",
+        description: "Allow or ask before accessing external files",
+        shortcut: "",
+        takes_args: false,
     },
     CommandSpec {
         name: "help",

@@ -812,12 +812,19 @@ fn draw_prompt_status(frame: &mut Frame, app: &mut App, area: Rect) {
         let filled = (progress as usize * 12) / 100;
         let bar: String = "━".repeat(filled) + &"─".repeat(12 - filled);
         let elapsed = goal_elapsed(goal);
-        let modifier = if matches!(app.hover, Some(HitTarget::GoalChip))
+        let chip_modifier = if matches!(app.hover, Some(HitTarget::GoalChip))
             || matches!(app.pressed, Some(HitTarget::GoalChip))
         {
             Modifier::BOLD
         } else {
             Modifier::empty()
+        };
+        let bar_modifier = if matches!(app.hover, Some(HitTarget::GoalBar))
+            || matches!(app.pressed, Some(HitTarget::GoalBar))
+        {
+            Modifier::BOLD | Modifier::UNDERLINED
+        } else {
+            chip_modifier
         };
         let head = format!(
             "goal{} ",
@@ -828,23 +835,31 @@ fn draw_prompt_status(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         );
         let percent = format!("{progress}% ");
+        let head_width = head.chars().count();
+        let percent_width = percent.chars().count();
         let elapsed_text = elapsed.as_deref().map(|item| format!(" {item}"));
-        let mut chip_width = head.chars().count() + percent.chars().count() + bar.chars().count();
+        let mut chip_width = head_width + percent_width + bar.chars().count();
         if let Some(text) = &elapsed_text {
             chip_width += text.chars().count();
         }
         let mut spans = vec![
             Span::styled(
                 head,
-                Style::default().fg(theme::ACCENT).add_modifier(modifier),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(chip_modifier),
             ),
             Span::styled(
                 percent,
-                Style::default().fg(theme::ACCENT).add_modifier(modifier),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(chip_modifier),
             ),
             Span::styled(
                 bar,
-                Style::default().fg(theme::ACCENT).add_modifier(modifier),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(bar_modifier),
             ),
         ];
         if let Some(text) = elapsed_text {
@@ -852,7 +867,7 @@ fn draw_prompt_status(frame: &mut Frame, app: &mut App, area: Rect) {
                 text,
                 Style::default()
                     .fg(theme::TEXT_MUTED)
-                    .add_modifier(modifier),
+                    .add_modifier(chip_modifier),
             ));
         }
         let chip_x = area
@@ -862,6 +877,12 @@ fn draw_prompt_status(frame: &mut Frame, app: &mut App, area: Rect) {
             x: chip_x,
             y: area.y,
             width: chip_width as u16,
+            height: 1,
+        });
+        app.geometry.goal_bar = Some(Rectangle {
+            x: chip_x + head_width as u16 + percent_width as u16,
+            y: area.y,
+            width: 12,
             height: 1,
         });
         Line::from(spans)

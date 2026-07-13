@@ -5,7 +5,9 @@
 
 use crossterm::event::{KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use opencode_tui::state::{App, Dialog, HitTarget, Rectangle, Route, COMMANDS};
-use opencode_tui::{handle_chat_key, handle_key, handle_mouse, hit_test, submit_prompt, Cmd};
+use opencode_tui::{
+    handle_chat_key, handle_dialog_key, handle_key, handle_mouse, hit_test, submit_prompt, Cmd,
+};
 use ratatui::layout::Rect;
 use std::sync::mpsc;
 
@@ -175,6 +177,18 @@ fn autocomplete_enter_on_exact_match_executes_command() {
 }
 
 #[test]
+fn slash_commands_opens_the_palette() {
+    let mut app = App::new("/repo".into());
+    let (sender, receiver) = worker_channel();
+    for ch in "/commands".chars() {
+        app.insert(ch);
+    }
+    handle_chat_key(&mut app, KeyCode::Enter, KeyModifiers::NONE, &sender);
+    assert_eq!(app.dialog, Dialog::Commands);
+    assert!(drain(&receiver).is_empty());
+}
+
+#[test]
 fn ctrl_a_and_ctrl_e_jump_line_bounds() {
     let mut app = App::new("/repo".into());
     let (sender, _receiver) = worker_channel();
@@ -233,6 +247,57 @@ fn ctrl_d_on_empty_input_quits() {
     let (sender, _receiver) = worker_channel();
     handle_chat_key(&mut app, KeyCode::Char('d'), KeyModifiers::CONTROL, &sender);
     assert!(app.should_quit);
+}
+
+#[test]
+fn ctrl_c_clears_a_draft_before_quitting() {
+    let mut app = App::new("/repo".into());
+    let (sender, _receiver) = worker_channel();
+    app.input = "draft".into();
+    app.cursor = app.input.len();
+
+    handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL, &sender);
+    assert!(app.input.is_empty());
+    assert!(!app.should_quit);
+
+    handle_key(&mut app, KeyCode::Char('c'), KeyModifiers::CONTROL, &sender);
+    assert!(app.should_quit);
+}
+
+#[test]
+fn plain_p_and_n_filter_dialogs_while_control_moves_selection() {
+    let mut app = App::new("/repo".into());
+    let (sender, _receiver) = worker_channel();
+    app.open_dialog(Dialog::Commands);
+
+    handle_dialog_key(&mut app, KeyCode::Char('p'), KeyModifiers::NONE, &sender);
+    handle_dialog_key(&mut app, KeyCode::Char('n'), KeyModifiers::NONE, &sender);
+    assert_eq!(app.search, "pn");
+
+    app.search.clear();
+    app.list_index = 0;
+    handle_dialog_key(&mut app, KeyCode::Char('n'), KeyModifiers::CONTROL, &sender);
+    assert_eq!(app.list_index, 1);
+}
+
+#[test]
+fn selecting_a_session_retargets_worker_polling() {
+    let mut app = App::new("/repo".into());
+    let (sender, receiver) = worker_channel();
+    app.sessions.push(serde_json::json!({
+        "id": "ses_selected",
+        "title": "Selected session",
+        "location": { "directory": "/repo" }
+    }));
+    app.open_dialog(Dialog::Sessions);
+
+    handle_dialog_key(&mut app, KeyCode::Enter, KeyModifiers::NONE, &sender);
+
+    assert_eq!(app.session_id.as_deref(), Some("ses_selected"));
+    assert_eq!(
+        drain(&receiver),
+        vec![Cmd::SelectSession("ses_selected".into())]
+    );
 }
 
 #[test]
@@ -379,6 +444,45 @@ fn click_tip_row_cycles_tip_index() {
     };
     handle_mouse(&mut app, up, Rect::new(0, 0, 80, 24), &sender);
     assert_eq!(app.tip_index, before.wrapping_add(1));
+}
+
+#[test]
+fn click_goal_bar_opens_summaries() {
+    let mut app = App::new("/repo".into());
+    let (sender, _receiver) = worker_channel();
+    app.goal = Some(serde_json::json!({
+        "text": "Ship the port",
+        "status": "active",
+        "progress": 50,
+        "summaries": []
+    }));
+    app.geometry.goal_chip = Some(Rectangle {
+        x: 40,
+        y: 22,
+        width: 25,
+        height: 1,
+    });
+    app.geometry.goal_bar = Some(Rectangle {
+        x: 50,
+        y: 22,
+        width: 12,
+        height: 1,
+    });
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: 54,
+        row: 22,
+        modifiers: KeyModifiers::NONE,
+    };
+    handle_mouse(&mut app, down, Rect::new(0, 0, 80, 24), &sender);
+    let up = MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        column: 54,
+        row: 22,
+        modifiers: KeyModifiers::NONE,
+    };
+    handle_mouse(&mut app, up, Rect::new(0, 0, 80, 24), &sender);
+    assert_eq!(app.dialog, Dialog::GoalSummaries);
 }
 
 #[test]

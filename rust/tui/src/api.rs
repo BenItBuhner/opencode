@@ -66,7 +66,7 @@ impl Api {
     }
 
     pub fn create_session(&self, directory: &str) -> Result<Value, String> {
-        self.create_session_with(directory, "opencode", "big-pickle")
+        self.create_session_with(directory, "build", "opencode", "big-pickle")
     }
 
     /// First-prompt session creation: bind the selected provider/model at
@@ -74,11 +74,13 @@ impl Api {
     pub fn create_session_with(
         &self,
         directory: &str,
+        agent: &str,
         provider: &str,
         model: &str,
     ) -> Result<Value, String> {
         let body = json!({
             "location": { "directory": directory },
+            "agent": agent,
             "model": { "id": model, "providerID": provider },
         });
         Ok(self

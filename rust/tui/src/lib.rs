@@ -45,6 +45,7 @@ pub enum Cmd {
     Prompt(String, String),
     Interrupt(String),
     LoadLists,
+    SelectSession(String),
     SwitchAgent(String, String),
     SwitchModel(String, String, String),
     /// Home-route first prompt: atomically create a session bound to the
@@ -203,7 +204,7 @@ pub fn handle_mouse(
                         commit_autocomplete(app, worker);
                     } else if app.dialog != Dialog::None {
                         app.list_index = index;
-                        handle_dialog_key(app, KeyCode::Enter, worker);
+                        handle_dialog_key(app, KeyCode::Enter, KeyModifiers::NONE, worker);
                     }
                 }
                 HitTarget::Prompt { row, col } => {
@@ -218,6 +219,11 @@ pub fn handle_mouse(
                 HitTarget::GoalChip => {
                     if app.display_goal().is_some() {
                         app.open_dialog(Dialog::GoalDetails);
+                    }
+                }
+                HitTarget::GoalBar => {
+                    if app.display_goal().is_some() {
+                        app.open_dialog(Dialog::GoalSummaries);
                     }
                 }
                 HitTarget::TipRow => {
@@ -268,6 +274,11 @@ pub fn hit_test(app: &App, column: u16, row: u16) -> Option<HitTarget> {
     }
     if app.dialog != Dialog::None {
         return None;
+    }
+    if let Some(area) = app.geometry.goal_bar {
+        if area.contains(column, row) {
+            return Some(HitTarget::GoalBar);
+        }
     }
     if let Some(area) = app.geometry.goal_chip {
         if area.contains(column, row) {
@@ -387,8 +398,14 @@ pub fn handle_key(
     modifiers: KeyModifiers,
     worker: &mpsc::Sender<Cmd>,
 ) {
-    // app_exit: ctrl+c always quits.
+    // input_clear: ctrl+c clears a draft before acting as app_exit.
     if code == KeyCode::Char('c') && modifiers.contains(KeyModifiers::CONTROL) {
+        if app.dialog == Dialog::None && !app.input.is_empty() {
+            app.input.clear();
+            app.cursor = 0;
+            app.autocomplete = None;
+            return;
+        }
         app.should_quit = true;
         return;
     }
@@ -451,7 +468,7 @@ pub fn handle_key(
             KeyCode::Down | KeyCode::PageDown => app.scroll = app.scroll.saturating_sub(3),
             _ => {}
         },
-        _ => handle_dialog_key(app, code, worker),
+        _ => handle_dialog_key(app, code, modifiers, worker),
     }
 }
 
@@ -705,11 +722,27 @@ pub fn submit_prompt(app: &mut App, worker: &mpsc::Sender<Cmd>) {
             "sessions" => app.open_dialog(Dialog::Sessions),
             "agents" => app.open_dialog(Dialog::Agents),
             "models" => app.open_dialog(Dialog::Models),
+            "commands" => app.open_dialog(Dialog::Commands),
             "help" => app.open_dialog(Dialog::Help),
             "exit" | "quit" => app.should_quit = true,
             // Fork /goal command: template "$ARGUMENTS" steers the goal
             // agent; set/edit/resume auto-switch to it first.
             "goal" => run_goal_command(app, args, worker),
+            "goal-details" => {
+                if app.display_goal().is_some() {
+                    app.open_dialog(Dialog::GoalDetails);
+                } else {
+                    app.toast = Some("No session goal is currently set.".into());
+                }
+            }
+            "goal-summaries" => {
+                if app.display_goal().is_some() {
+                    app.open_dialog(Dialog::GoalSummaries);
+                } else {
+                    app.toast = Some("No session goal is currently set.".into());
+                }
+            }
+            "external-access" => toggle_external_access(app, worker),
             other => app.toast = Some(format!("Unknown command: /{other}")),
         }
         return;
@@ -765,7 +798,21 @@ fn run_goal_command(app: &mut App, args: &str, worker: &mpsc::Sender<Cmd>) {
     ));
 }
 
-pub fn handle_dialog_key(app: &mut App, code: KeyCode, worker: &mpsc::Sender<Cmd>) {
+fn toggle_external_access(app: &mut App, worker: &mpsc::Sender<Cmd>) {
+    if let Some(session_id) = app.session_id.clone() {
+        app.external_allowed = !app.external_allowed;
+        let _ = worker.send(Cmd::ToggleExternal(session_id, app.external_allowed));
+        return;
+    }
+    app.toast = Some("Open or start a session before changing out-of-workspace permissions".into());
+}
+
+pub fn handle_dialog_key(
+    app: &mut App,
+    code: KeyCode,
+    modifiers: KeyModifiers,
+    worker: &mpsc::Sender<Cmd>,
+) {
     let options = ui::dialog_options(app);
     let move_selection = |app: &mut App, delta: isize| {
         let count = ui::dialog_options(app).len() as isize;
@@ -783,8 +830,8 @@ pub fn handle_dialog_key(app: &mut App, code: KeyCode, worker: &mpsc::Sender<Cmd
         KeyCode::PageDown => move_selection(app, 5),
         KeyCode::Home => app.list_index = 0,
         KeyCode::End => app.list_index = options.len().saturating_sub(1),
-        KeyCode::Char('p') => move_selection(app, -1),
-        KeyCode::Char('n') => move_selection(app, 1),
+        KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => move_selection(app, -1),
+        KeyCode::Char('n') if modifiers.contains(KeyModifiers::CONTROL) => move_selection(app, 1),
         KeyCode::Backspace => {
             app.search.pop();
             app.list_index = 0;
@@ -818,6 +865,7 @@ fn commit_command(app: &mut App, option: Option<&ui::DialogOption>, worker: &mps
         "Switch session" => app.open_dialog(Dialog::Sessions),
         "Switch agent" => app.open_dialog(Dialog::Agents),
         "Switch model" => app.open_dialog(Dialog::Models),
+        "Commands" => app.open_dialog(Dialog::Commands),
         "Help" => app.open_dialog(Dialog::Help),
         "Goal details" => {
             if app.display_goal().is_some() {
@@ -839,14 +887,7 @@ fn commit_command(app: &mut App, option: Option<&ui::DialogOption>, worker: &mps
             app.sync_autocomplete();
         }
         "Toggle out-of-workspace access" => {
-            if let Some(session_id) = app.session_id.clone() {
-                app.external_allowed = !app.external_allowed;
-                let _ = worker.send(Cmd::ToggleExternal(session_id, app.external_allowed));
-            } else {
-                app.toast = Some(
-                    "Open or start a session before changing out-of-workspace permissions".into(),
-                );
-            }
+            toggle_external_access(app, worker);
         }
         _ => app.should_quit = true,
     }
@@ -865,7 +906,9 @@ fn commit_session(app: &mut App, selected: usize, worker: &mpsc::Sender<Cmd>) {
         .collect();
     if let Some(session) = filtered.get(selected).cloned().cloned() {
         app.adopt_session(&session);
-        let _ = worker.send(Cmd::Refresh);
+        if let Some(session_id) = app.session_id.clone() {
+            let _ = worker.send(Cmd::SelectSession(session_id));
+        }
     }
 }
 
@@ -982,7 +1025,7 @@ fn worker(
                 provider,
                 model,
                 text,
-            }) => match api.create_session_with(&directory, &provider, &model) {
+            }) => match api.create_session_with(&directory, &agent, &provider, &model) {
                 Ok(session) => {
                     let created: Option<String> = session
                         .get("id")
@@ -991,9 +1034,6 @@ fn worker(
                     session_id.clone_from(&created);
                     let _ = to_ui.send(Msg::Session(session));
                     if let Some(created_id) = created {
-                        if agent != "build" {
-                            let _ = api.switch_agent(&created_id, &agent);
-                        }
                         busy = true;
                         if let Err(error) = api.prompt(&created_id, &text) {
                             let _ = to_ui.send(Msg::Toast(format!("prompt failed: {error}")));
@@ -1011,6 +1051,10 @@ fn worker(
                 if let Ok(models) = api.models() {
                     let _ = to_ui.send(Msg::Models(models));
                 }
+            }
+            Ok(Cmd::SelectSession(id)) => {
+                session_id = Some(id);
+                busy = false;
             }
             Ok(Cmd::SwitchAgent(id, agent)) => {
                 if let Err(error) = api.switch_agent(&id, &agent) {
