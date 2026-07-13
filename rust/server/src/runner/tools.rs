@@ -1,5 +1,6 @@
 //! The Rust runner's tool registry: read, glob, grep, bash, edit, write,
-//! todowrite, skill, and webfetch, ported from packages/core/src/tool/*.
+//! apply_patch, todowrite, skill, and webfetch, ported from
+//! packages/core/src/tool/*.
 //! Definitions mirror the Bun registry's names, descriptions, and output
 //! shapes so durable tool events look the same regardless of which server
 //! executed the turn.
@@ -12,8 +13,12 @@
 //! (question) and provider-backed tools (websearch) remain with the Bun runner.
 
 use crate::runner::permission;
+use crate::runner::InterruptToken;
 use serde_json::{json, Map, Value};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::process::Child;
 
 pub struct Settlement {
     pub structured: Value,
@@ -28,6 +33,7 @@ pub struct ToolEnv<'a> {
     pub agent: &'a str,
     pub session_id: &'a str,
     pub conn: &'a rusqlite::Connection,
+    pub interrupt: Option<&'a InterruptToken>,
 }
 
 const MAX_READ_LINES: usize = 2_000;
@@ -117,7 +123,7 @@ pub fn definitions() -> Vec<Value> {
                     "properties": {
                         "command": { "type": "string", "description": "Shell command string to execute" },
                         "workdir": { "type": "string", "description": "Working directory. Defaults to the active Location; relative paths resolve from that Location." },
-                        "timeout": { "type": "integer", "description": format!("Timeout in milliseconds. Defaults to {BASH_DEFAULT_TIMEOUT_MS} and may not exceed {BASH_MAX_TIMEOUT_MS}.") }
+                        "timeout": { "type": "integer", "minimum": 1, "maximum": BASH_MAX_TIMEOUT_MS, "description": format!("Timeout in milliseconds. Defaults to {BASH_DEFAULT_TIMEOUT_MS} and may not exceed {BASH_MAX_TIMEOUT_MS}.") }
                     },
                     "required": ["command"],
                     "additionalProperties": false
@@ -161,6 +167,21 @@ pub fn definitions() -> Vec<Value> {
         json!({
             "type": "function",
             "function": {
+                "name": "apply_patch",
+                "description": "Apply one patch containing add, update, and delete file operations. All targets are resolved and approved before target contents are read. Operations apply sequentially; if a later operation fails, earlier operations remain applied and the failure reports them explicitly. Moves and atomic rollback are not supported yet.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "patchText": { "type": "string", "description": "The full patch text describing add, update, and delete operations" }
+                    },
+                    "required": ["patchText"],
+                    "additionalProperties": false
+                }
+            }
+        }),
+        json!({
+            "type": "function",
+            "function": {
                 "name": "todowrite",
                 "description": "Create and maintain a structured task list for the current coding session. Use it to track progress during multi-step work and keep todo statuses current.",
                 "parameters": {
@@ -172,6 +193,7 @@ pub fn definitions() -> Vec<Value> {
                             "items": {
                                 "type": "object",
                                 "properties": {
+                                    "id": { "type": "string", "description": "Stable caller-provided todo identifier" },
                                     "content": { "type": "string" },
                                     "status": { "type": "string", "description": "Current status of the task: pending, in_progress, completed, cancelled" },
                                     "priority": { "type": "string", "description": "Priority of the task: high, medium, low" }
@@ -211,7 +233,7 @@ pub fn definitions() -> Vec<Value> {
                     "properties": {
                         "url": { "type": "string", "description": "The HTTP or HTTPS URL to fetch content from" },
                         "format": { "type": "string", "enum": ["text", "markdown", "html"], "description": "The format to return the content in. Defaults to markdown." },
-                        "timeout": { "type": "number", "description": "Optional timeout in seconds (maximum: 120)" }
+                        "timeout": { "type": "number", "minimum": 1, "maximum": 120, "description": "Optional timeout in seconds (maximum: 120)" }
                     },
                     "required": ["url"],
                     "additionalProperties": false
@@ -251,6 +273,7 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
         "bash" => bash(env, input),
         "edit" => edit(env, input),
         "write" => write(env, input),
+        "apply_patch" => apply_patch(env, input),
         "todowrite" => todowrite(env, input),
         "skill" => skill(env.worktree, input),
         "webfetch" => webfetch(input),
@@ -258,9 +281,9 @@ pub fn execute(env: &ToolEnv, name: &str, input: &Value) -> Settlement {
     }
 }
 
-/// The write tool asserts the `edit` action (Tool.withPermission).
+/// The write and apply_patch tools assert the `edit` action (Tool.withPermission).
 fn permission_action(name: &str) -> &str {
-    if name == "write" {
+    if name == "write" || name == "apply_patch" {
         return "edit";
     }
     name
@@ -285,6 +308,17 @@ fn permission_resources(env: &ToolEnv, name: &str, input: &Value) -> Vec<String>
                 .unwrap_or(path);
             vec![relative]
         }
+        "apply_patch" => parse_patch_text(&text("patchText"))
+            .map(|hunks| {
+                unique_resources(hunks.iter().map(|hunk| {
+                    let path = patch_path(hunk);
+                    Path::new(path)
+                        .strip_prefix(env.directory)
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .unwrap_or_else(|_| path.to_string())
+                }))
+            })
+            .unwrap_or_else(|_| vec!["*".to_string()]),
         "grep" | "glob" => vec![text("pattern")],
         "read" => vec![text("path")],
         "skill" => vec![text("name")],
@@ -302,6 +336,7 @@ fn denied_message(name: &str, input: &Value) -> String {
         "bash" => format!("Unable to execute command: {}", text("command")),
         "edit" => format!("Unable to edit {}", text("path")),
         "write" => format!("Unable to write {}", text("path")),
+        "apply_patch" => "Unable to apply patch".to_string(),
         "read" => format!("Unable to read {}", text("path")),
         "glob" => format!("Unable to find files matching {}", text("pattern")),
         "grep" => format!("Unable to search for {}", text("pattern")),
@@ -749,16 +784,30 @@ fn bash(env: &ToolEnv, input: &Value) -> Settlement {
         .unwrap_or(BASH_DEFAULT_TIMEOUT_MS)
         .min(BASH_MAX_TIMEOUT_MS);
 
-    let mut child = match std::process::Command::new("/bin/sh")
+    let mut process = std::process::Command::new("/bin/sh");
+    process
         .arg("-c")
         .arg(command)
         .current_dir(&canonical)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         // combineOutput: interleave stderr into the same capture stream.
-        .stderr(std::process::Stdio::piped())
-        .spawn()
+        .stderr(std::process::Stdio::piped());
+    #[cfg(unix)]
     {
+        // SAFETY: pre_exec runs after fork and before exec. setpgid is
+        // async-signal-safe and uses only constants, so this isolates the exact
+        // command process group for later interruption without naming processes.
+        unsafe {
+            process.pre_exec(|| {
+                if setpgid(0, 0) == 0 {
+                    return Ok(());
+                }
+                Err(std::io::Error::last_os_error())
+            });
+        }
+    }
+    let mut child = match process.spawn() {
         Ok(child) => child,
         Err(_) => return failure(format!("Unable to execute command: {command}")),
     };
@@ -790,9 +839,14 @@ fn bash(env: &ToolEnv, input: &Value) -> Settlement {
         match child.try_wait() {
             Ok(Some(status)) => break Some(status),
             Ok(None) => {
+                if env.interrupt.is_some_and(InterruptToken::is_interrupted) {
+                    terminate_child(&mut child);
+                    let _ = stdout_thread.join();
+                    let _ = stderr_thread.join();
+                    return interrupted();
+                }
                 if std::time::Instant::now() >= deadline {
-                    let _ = child.kill();
-                    let _ = child.wait();
+                    terminate_child(&mut child);
                     break None;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(25));
@@ -844,6 +898,37 @@ fn bash(env: &ToolEnv, input: &Value) -> Settlement {
         error: None,
         interrupt: false,
     }
+}
+
+#[cfg(unix)]
+unsafe extern "C" {
+    fn setpgid(pid: i32, pgid: i32) -> i32;
+    fn kill(pid: i32, sig: i32) -> i32;
+}
+
+fn terminate_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        let group = -(child.id() as i32);
+        // SIGTERM then SIGKILL the exact process group created for this shell.
+        unsafe {
+            let _ = kill(group, 15);
+        }
+        for _ in 0..30 {
+            if child.try_wait().ok().flatten().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        unsafe {
+            let _ = kill(group, 9);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = child.kill();
+    }
+    let _ = child.wait();
 }
 
 // ---------------------------------------------------------------------------
@@ -1146,6 +1231,555 @@ fn diff_lines(file: &str, old: &str, new: &str) -> (usize, usize, String) {
 }
 
 // ---------------------------------------------------------------------------
+// apply_patch
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+enum PatchHunk {
+    Add {
+        path: String,
+        contents: String,
+    },
+    Delete {
+        path: String,
+    },
+    Update {
+        path: String,
+        move_path: Option<String>,
+        chunks: Vec<UpdateChunk>,
+    },
+}
+
+#[derive(Clone)]
+struct UpdateChunk {
+    old_lines: Vec<String>,
+    new_lines: Vec<String>,
+    change_context: Option<String>,
+    end_of_file: bool,
+}
+
+struct PreparedPatch {
+    hunk: PatchHunk,
+    target: PathBuf,
+    resource: String,
+    source: Vec<u8>,
+    content: String,
+    before: String,
+    after: String,
+}
+
+fn apply_patch(env: &ToolEnv, input: &Value) -> Settlement {
+    let Some(patch_text) = input.get("patchText").and_then(Value::as_str) else {
+        return failure("patchText is required".into());
+    };
+    if patch_text.trim().is_empty() {
+        return failure("patchText is required".into());
+    }
+    let hunks = match parse_patch_text(patch_text) {
+        Ok(hunks) => hunks,
+        Err(message) => return failure(format!("apply_patch verification failed: {message}")),
+    };
+    if hunks.is_empty() {
+        return failure("patch rejected: empty patch".into());
+    }
+    if hunks.iter().any(|hunk| {
+        matches!(
+            hunk,
+            PatchHunk::Update {
+                move_path: Some(_),
+                ..
+            }
+        )
+    }) {
+        return failure("apply_patch moves are not supported yet".into());
+    }
+
+    let mut prepared = vec![];
+    for hunk in hunks {
+        let path = patch_path(&hunk).to_string();
+        let Some((target, resource)) = patch_target(env, &path) else {
+            return failure(format!("Unable to apply patch at {path}"));
+        };
+        match &hunk {
+            PatchHunk::Add { contents, .. } => {
+                let after = ensure_trailing_newline(contents);
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source: vec![],
+                    content: String::new(),
+                    before: String::new(),
+                    after,
+                });
+            }
+            PatchHunk::Delete { .. } => {
+                let Ok(source) = std::fs::read(&target) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let before = decode_utf8_without_bom(&source);
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source,
+                    content: String::new(),
+                    before,
+                    after: String::new(),
+                });
+            }
+            PatchHunk::Update { chunks, .. } => {
+                let Ok(source) = std::fs::read(&target) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let Ok(original) = String::from_utf8(source.clone()) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let Ok(update) = derive_patch_update(&path, chunks, &original) else {
+                    return failure(format!("Unable to apply patch at {path}"));
+                };
+                let before = strip_bom(&original).0.to_string();
+                prepared.push(PreparedPatch {
+                    hunk,
+                    target,
+                    resource,
+                    source,
+                    content: join_bom(&update.content, update.bom),
+                    before,
+                    after: update.content,
+                });
+            }
+        }
+    }
+
+    let files: Vec<Value> = prepared
+        .iter()
+        .map(|change| {
+            let (additions, deletions, patch) =
+                diff_lines(&change.resource, &change.before, &change.after);
+            json!({
+                "file": change.resource,
+                "patch": patch,
+                "status": match &change.hunk {
+                    PatchHunk::Add { .. } => "added",
+                    PatchHunk::Delete { .. } => "deleted",
+                    PatchHunk::Update { .. } => "modified",
+                },
+                "additions": additions,
+                "deletions": deletions,
+            })
+        })
+        .collect();
+
+    let mut applied = vec![];
+    for change in prepared {
+        let path = patch_path(&change.hunk).to_string();
+        let failed = match &change.hunk {
+            PatchHunk::Add { .. } => {
+                if let Some(parent) = change.target.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&change.target)
+                    .and_then(|mut file| {
+                        std::io::Write::write_all(&mut file, change.after.as_bytes())
+                    })
+                    .is_err()
+            }
+            PatchHunk::Delete { .. } => std::fs::remove_file(&change.target).is_err(),
+            PatchHunk::Update { .. } => {
+                std::fs::read(&change.target)
+                    .map(|current| current != change.source)
+                    .unwrap_or(true)
+                    || std::fs::write(&change.target, change.content.as_bytes()).is_err()
+            }
+        };
+        if failed {
+            return failure(patch_failure(&path, &applied));
+        }
+        applied.push(json!({
+            "type": match &change.hunk {
+                PatchHunk::Add { .. } => "add",
+                PatchHunk::Delete { .. } => "delete",
+                PatchHunk::Update { .. } => "update",
+            },
+            "resource": change.resource,
+            "target": change.target.to_string_lossy(),
+        }));
+    }
+
+    let lines: Vec<String> = std::iter::once("Applied patch sequentially:".to_string())
+        .chain(applied.iter().map(|item| {
+            let prefix = match item["type"].as_str().unwrap_or_default() {
+                "add" => "A",
+                "delete" => "D",
+                _ => "M",
+            };
+            format!("{prefix} {}", item["resource"].as_str().unwrap_or_default())
+        }))
+        .collect();
+    Settlement {
+        structured: json!({ "applied": applied, "files": files }),
+        content: vec![json!({ "type": "text", "text": lines.join("\n") })],
+        error: None,
+        interrupt: false,
+    }
+}
+
+fn patch_failure(path: &str, applied: &[Value]) -> String {
+    if applied.is_empty() {
+        return format!("Unable to apply patch at {path}");
+    }
+    let resources: Vec<&str> = applied
+        .iter()
+        .filter_map(|item| item["resource"].as_str())
+        .collect();
+    format!(
+        "Patch partially applied before failing at {path}. Applied: {}",
+        resources.join(", ")
+    )
+}
+
+fn patch_path(hunk: &PatchHunk) -> &str {
+    match hunk {
+        PatchHunk::Add { path, .. }
+        | PatchHunk::Delete { path }
+        | PatchHunk::Update { path, .. } => path,
+    }
+}
+
+fn unique_resources(resources: impl Iterator<Item = String>) -> Vec<String> {
+    resources.fold(Vec::new(), |mut out, resource| {
+        if !out.contains(&resource) {
+            out.push(resource);
+        }
+        out
+    })
+}
+
+fn patch_target(env: &ToolEnv, path: &str) -> Option<(PathBuf, String)> {
+    let joined = if Path::new(path).is_absolute() {
+        PathBuf::from(path)
+    } else {
+        Path::new(env.directory).join(path)
+    };
+    let mut existing = joined.parent()?;
+    while !existing.exists() {
+        existing = existing.parent()?;
+    }
+    let canonical_base = existing.canonicalize().ok()?;
+    let suffix = joined.strip_prefix(existing).ok()?;
+    let canonical = canonical_base.join(suffix);
+    if !canonical.starts_with(worktree_root(env.directory)) && !external_allowed(env, &canonical) {
+        return None;
+    }
+    let resource = canonical
+        .strip_prefix(env.directory)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| canonical.to_string_lossy().into_owned());
+    Some((canonical, resource))
+}
+
+fn parse_patch_text(patch_text: &str) -> Result<Vec<PatchHunk>, String> {
+    let stripped = strip_heredoc(patch_text.trim());
+    let lines: Vec<&str> = stripped.split('\n').collect();
+    let begin = lines
+        .iter()
+        .position(|line| line.trim() == "*** Begin Patch")
+        .ok_or_else(|| "Invalid patch format: missing Begin/End markers".to_string())?;
+    let end = lines
+        .iter()
+        .position(|line| line.trim() == "*** End Patch")
+        .ok_or_else(|| "Invalid patch format: missing Begin/End markers".to_string())?;
+    if begin >= end {
+        return Err("Invalid patch format: missing Begin/End markers".into());
+    }
+    let mut hunks = vec![];
+    let mut index = begin + 1;
+    while index < end {
+        let line = lines[index];
+        if let Some(path) = line.strip_prefix("*** Add File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid add file path".into());
+            }
+            let (contents, next) = parse_add(&lines, index + 1)?;
+            hunks.push(PatchHunk::Add {
+                path: path.to_string(),
+                contents,
+            });
+            index = next;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Delete File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid delete file path".into());
+            }
+            hunks.push(PatchHunk::Delete {
+                path: path.to_string(),
+            });
+            index += 1;
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("*** Update File:") {
+            let path = path.trim();
+            if path.is_empty() {
+                return Err("Invalid update file path".into());
+            }
+            let mut next = index + 1;
+            let move_path = lines
+                .get(next)
+                .and_then(|line| line.strip_prefix("*** Move to:"))
+                .map(str::trim)
+                .map(str::to_string);
+            if move_path.is_some() {
+                next += 1;
+            }
+            let (chunks, next) = parse_update(&lines, next)?;
+            if chunks.is_empty() {
+                return Err(format!(
+                    "Invalid update hunk for {path}: expected at least one @@ chunk"
+                ));
+            }
+            hunks.push(PatchHunk::Update {
+                path: path.to_string(),
+                move_path,
+                chunks,
+            });
+            index = next;
+            continue;
+        }
+        return Err(format!("Invalid patch line: {line}"));
+    }
+    Ok(hunks)
+}
+
+fn parse_add(lines: &[&str], start: usize) -> Result<(String, usize), String> {
+    let mut content = vec![];
+    let mut index = start;
+    while index < lines.len() && !lines[index].starts_with("***") {
+        let Some(line) = lines[index].strip_prefix('+') else {
+            return Err(format!("Invalid add file line: {}", lines[index]));
+        };
+        content.push(line);
+        index += 1;
+    }
+    Ok((content.join("\n"), index))
+}
+
+fn parse_update(lines: &[&str], start: usize) -> Result<(Vec<UpdateChunk>, usize), String> {
+    let mut chunks = vec![];
+    let mut index = start;
+    while index < lines.len() && !lines[index].starts_with("***") {
+        if !lines[index].starts_with("@@") {
+            return Err(format!("Invalid update file line: {}", lines[index]));
+        }
+        let context = lines[index][2..].trim();
+        let mut old_lines = vec![];
+        let mut new_lines = vec![];
+        let mut end_of_file = false;
+        index += 1;
+        while index < lines.len() && !lines[index].starts_with("@@") {
+            let line = lines[index];
+            if line == "*** End of File" {
+                end_of_file = true;
+                index += 1;
+                break;
+            }
+            if line.starts_with("***") {
+                break;
+            }
+            if let Some(rest) = line.strip_prefix(' ') {
+                old_lines.push(rest.to_string());
+                new_lines.push(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix('-') {
+                old_lines.push(rest.to_string());
+            } else if let Some(rest) = line.strip_prefix('+') {
+                new_lines.push(rest.to_string());
+            } else {
+                return Err(format!("Invalid update chunk line: {line}"));
+            }
+            index += 1;
+        }
+        chunks.push(UpdateChunk {
+            old_lines,
+            new_lines,
+            change_context: (!context.is_empty()).then(|| context.to_string()),
+            end_of_file,
+        });
+    }
+    Ok((chunks, index))
+}
+
+struct PatchUpdate {
+    content: String,
+    bom: bool,
+}
+
+fn derive_patch_update(
+    path: &str,
+    chunks: &[UpdateChunk],
+    original: &str,
+) -> Result<PatchUpdate, String> {
+    let (source_text, source_bom) = strip_bom(original);
+    let mut lines: Vec<String> = source_text.split('\n').map(str::to_string).collect();
+    if lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    let replacements = compute_replacements(&lines, path, chunks)?;
+    let mut updated = lines;
+    for (start, remove, insert) in replacements.iter().rev() {
+        updated.splice(*start..(*start + *remove), insert.clone());
+    }
+    if updated.last().is_none_or(|line| !line.is_empty()) {
+        updated.push(String::new());
+    }
+    let joined = updated.join("\n");
+    let (content, content_bom) = strip_bom(&joined);
+    Ok(PatchUpdate {
+        content: content.to_string(),
+        bom: source_bom || content_bom,
+    })
+}
+
+fn compute_replacements(
+    lines: &[String],
+    path: &str,
+    chunks: &[UpdateChunk],
+) -> Result<Vec<(usize, usize, Vec<String>)>, String> {
+    let mut replacements = vec![];
+    let mut line_index = 0;
+    for chunk in chunks {
+        if let Some(context) = &chunk.change_context {
+            let context = seek(lines, std::slice::from_ref(context), line_index, false)
+                .ok_or_else(|| format!("Failed to find context '{context}' in {path}"))?;
+            line_index = context + 1;
+        }
+        if chunk.old_lines.is_empty() {
+            replacements.push((lines.len(), 0, chunk.new_lines.clone()));
+            continue;
+        }
+        let mut old_lines = chunk.old_lines.clone();
+        let mut new_lines = chunk.new_lines.clone();
+        let mut found = seek(lines, &old_lines, line_index, chunk.end_of_file);
+        if found.is_none() && old_lines.last().is_some_and(String::is_empty) {
+            old_lines.pop();
+            if new_lines.last().is_some_and(String::is_empty) {
+                new_lines.pop();
+            }
+            found = seek(lines, &old_lines, line_index, chunk.end_of_file);
+        }
+        let Some(found) = found else {
+            return Err(format!(
+                "Failed to find expected lines in {path}:\n{}",
+                chunk.old_lines.join("\n")
+            ));
+        };
+        replacements.push((found, old_lines.len(), new_lines));
+        line_index = found + old_lines.len();
+    }
+    replacements.sort_by_key(|item| item.0);
+    Ok(replacements)
+}
+
+fn seek(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
+    if pattern.is_empty() {
+        return None;
+    }
+    for compare in [
+        compare_exact as fn(&str, &str) -> bool,
+        compare_rstrip,
+        compare_trim,
+    ] {
+        if eof {
+            let offset = lines.len().checked_sub(pattern.len())?;
+            if offset >= start && matches_at(lines, pattern, offset, compare) {
+                return Some(offset);
+            }
+        }
+        for offset in start..=lines.len().saturating_sub(pattern.len()) {
+            if matches_at(lines, pattern, offset, compare) {
+                return Some(offset);
+            }
+        }
+    }
+    None
+}
+
+fn matches_at(
+    lines: &[String],
+    pattern: &[String],
+    offset: usize,
+    compare: fn(&str, &str) -> bool,
+) -> bool {
+    pattern
+        .iter()
+        .enumerate()
+        .all(|(index, line)| compare(&lines[offset + index], line))
+}
+
+fn compare_exact(left: &str, right: &str) -> bool {
+    left == right
+}
+
+fn compare_rstrip(left: &str, right: &str) -> bool {
+    left.trim_end() == right.trim_end()
+}
+
+fn compare_trim(left: &str, right: &str) -> bool {
+    left.trim() == right.trim()
+}
+
+fn strip_bom(text: &str) -> (&str, bool) {
+    text.strip_prefix('\u{FEFF}')
+        .map(|text| (text, true))
+        .unwrap_or((text, false))
+}
+
+fn join_bom(text: &str, bom: bool) -> String {
+    let stripped = strip_bom(text).0;
+    if bom {
+        return format!("\u{FEFF}{stripped}");
+    }
+    stripped.to_string()
+}
+
+fn decode_utf8_without_bom(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes)
+        .trim_start_matches('\u{FEFF}')
+        .to_string()
+}
+
+fn ensure_trailing_newline(text: &str) -> String {
+    if text.ends_with('\n') || text.is_empty() {
+        return text.to_string();
+    }
+    format!("{text}\n")
+}
+
+fn strip_heredoc(input: &str) -> &str {
+    let Some((first, rest)) = input.split_once('\n') else {
+        return input;
+    };
+    let marker = first
+        .trim()
+        .strip_prefix("cat ")
+        .unwrap_or(first.trim())
+        .trim()
+        .strip_prefix("<<")
+        .map(|marker| marker.trim_matches('\'').trim_matches('"'));
+    let Some(marker) = marker.filter(|marker| !marker.is_empty()) else {
+        return input;
+    };
+    rest.strip_suffix(&format!("\n{marker}"))
+        .map(str::trim_end)
+        .unwrap_or(input)
+}
+
+// ---------------------------------------------------------------------------
 // todowrite
 // ---------------------------------------------------------------------------
 
@@ -1402,6 +2036,7 @@ mod tests {
             agent: "build",
             session_id: "ses_tooltest000000000000000000",
             conn,
+            interrupt: None,
         }
     }
 
@@ -1577,6 +2212,43 @@ mod tests {
     }
 
     #[test]
+    fn definitions_include_apply_patch_todo_ids_and_timeout_bounds() {
+        let definitions = definitions();
+        assert!(definitions
+            .iter()
+            .any(|tool| tool["function"]["name"] == "apply_patch"));
+        let bash = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "bash")
+            .unwrap();
+        assert_eq!(
+            bash["function"]["parameters"]["properties"]["timeout"]["maximum"],
+            BASH_MAX_TIMEOUT_MS
+        );
+        assert_eq!(
+            bash["function"]["parameters"]["properties"]["timeout"]["minimum"],
+            1
+        );
+        let todo = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "todowrite")
+            .unwrap();
+        assert!(
+            todo["function"]["parameters"]["properties"]["todos"]["items"]["properties"]
+                .get("id")
+                .is_some()
+        );
+        let webfetch = definitions
+            .iter()
+            .find(|tool| tool["function"]["name"] == "webfetch")
+            .unwrap();
+        assert_eq!(
+            webfetch["function"]["parameters"]["properties"]["timeout"]["maximum"],
+            120
+        );
+    }
+
+    #[test]
     fn write_and_edit_round_trip() {
         let conn = memory_conn();
         let temp = std::env::temp_dir().join(format!("rust-tool-test-{}", std::process::id()));
@@ -1625,6 +2297,145 @@ mod tests {
             .as_deref()
             .unwrap()
             .starts_with("Could not find oldString"));
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_add_update_delete_round_trip() {
+        let conn = memory_conn();
+        let temp =
+            std::env::temp_dir().join(format!("rust-apply-patch-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        std::fs::write(temp.join("update.txt"), "before\n").expect("update");
+        std::fs::write(temp.join("remove.txt"), "remove\n").expect("remove");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({
+                "patchText": "*** Begin Patch\n*** Add File: nested/new.txt\n+created\n*** Update File: update.txt\n@@\n-before\n+after\n*** Delete File: remove.txt\n*** End Patch"
+            }),
+        );
+        assert!(settlement.error.is_none(), "{:?}", settlement.error);
+        assert_eq!(
+            settlement.content[0]["text"].as_str().unwrap(),
+            "Applied patch sequentially:\nA nested/new.txt\nM update.txt\nD remove.txt"
+        );
+        assert_eq!(settlement.structured["applied"][0]["type"], "add");
+        assert_eq!(settlement.structured["files"][0]["status"], "added");
+        assert_eq!(settlement.structured["files"][1]["additions"], 1);
+        assert_eq!(settlement.structured["files"][1]["deletions"], 1);
+        assert!(settlement.structured["files"][1]["patch"]
+            .as_str()
+            .unwrap()
+            .contains("-before\n+after"));
+        assert_eq!(
+            std::fs::read_to_string(temp.join("nested/new.txt")).unwrap(),
+            "created\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.join("update.txt")).unwrap(),
+            "after\n"
+        );
+        assert!(!temp.join("remove.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_rejects_invalid_later_update_before_applying_add() {
+        let conn = memory_conn();
+        let temp = std::env::temp_dir().join(format!(
+            "rust-apply-patch-prepare-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({
+                "patchText": "*** Begin Patch\n*** Add File: created.txt\n+created\n*** Update File: missing.txt\n@@\n-before\n+after\n*** End Patch"
+            }),
+        );
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Unable to apply patch at missing.txt")
+        );
+        assert!(!temp.join("created.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn apply_patch_uses_edit_permission_alias() {
+        let conn = memory_conn();
+        let temp = std::env::temp_dir().join(format!(
+            "rust-apply-patch-permission-test-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let mut tool_env = env(&conn, &directory);
+        tool_env.agent = "plan";
+        tool_env.worktree = &directory;
+
+        let settlement = execute(
+            &tool_env,
+            "apply_patch",
+            &json!({ "patchText": "*** Begin Patch\n*** Add File: created.txt\n+created\n*** End Patch" }),
+        );
+        assert_eq!(settlement.error.as_deref(), Some("Unable to apply patch"));
+        assert!(!temp.join("created.txt").exists());
+        let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn bash_interrupt_terminates_child_process_group() {
+        let temp =
+            std::env::temp_dir().join(format!("rust-bash-interrupt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&temp);
+        std::fs::create_dir_all(temp.join(".git")).expect("temp worktree");
+        let directory = temp.to_string_lossy().into_owned();
+        let token = InterruptToken::new();
+        let thread_token = token.clone();
+        let thread_directory = directory.clone();
+        let handle = std::thread::spawn(move || {
+            let conn = memory_conn();
+            let mut tool_env = env(&conn, &thread_directory);
+            tool_env.worktree = &thread_directory;
+            tool_env.interrupt = Some(&thread_token);
+            execute(
+                &tool_env,
+                "bash",
+                &json!({
+                    "command": "printf started > started && sleep 5 && printf done > done",
+                    "timeout": 10_000
+                }),
+            )
+        });
+        for _ in 0..200 {
+            if temp.join("started").exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(temp.join("started").exists());
+        token.interrupt();
+        let settlement = handle.join().expect("bash thread");
+        assert!(settlement.interrupt);
+        assert_eq!(
+            settlement.error.as_deref(),
+            Some("Tool execution interrupted")
+        );
+        assert!(!temp.join("done").exists());
         let _ = std::fs::remove_dir_all(&temp);
     }
 

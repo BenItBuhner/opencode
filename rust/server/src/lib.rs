@@ -2313,9 +2313,9 @@ async fn api_session_interrupt(
     if v2::get(&conn, &id)?.is_none() {
         return Ok(v2_session_not_found(&id));
     }
-    // V2 interruption targets the active process-local ownership chain. The
-    // Rust drain runs provider turns to settlement; mid-turn cancellation is a
-    // future slice, and idle or missing interruption is a no-op.
+    // V2 interruption targets the active process-local ownership chain; idle
+    // or missing interruption is a no-op.
+    runner::interrupt(&id);
     Ok(StatusCode::NO_CONTENT.into_response())
 }
 

@@ -23,7 +23,10 @@ use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection;
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc, Mutex,
+};
 
 type Pool = r2d2::Pool<SqliteConnectionManager>;
 
@@ -37,11 +40,35 @@ pub struct Env {
 /// steps only when the agent configures a limit.
 const MAX_STEPS: i64 = 24;
 
+#[derive(Clone, Default)]
+pub struct InterruptToken {
+    interrupted: Arc<AtomicBool>,
+}
+
+impl InterruptToken {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn interrupt(&self) {
+        self.interrupted.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_interrupted(&self) -> bool {
+        self.interrupted.load(Ordering::SeqCst)
+    }
+}
+
+struct RunState {
+    rerun: bool,
+    token: InterruptToken,
+}
+
 /// Process-local Session run coordinator: one active drain per Session,
 /// wakeups during a drain coalesce into one re-check.
-static RUNS: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
+static RUNS: Mutex<Option<HashMap<String, RunState>>> = Mutex::new(None);
 
-fn with_runs<T>(f: impl FnOnce(&mut HashMap<String, bool>) -> T) -> T {
+fn with_runs<T>(f: impl FnOnce(&mut HashMap<String, RunState>) -> T) -> T {
     let mut guard = RUNS.lock().expect("runner coordinator poisoned");
     f(guard.get_or_insert_with(HashMap::new))
 }
@@ -57,37 +84,71 @@ pub fn is_active(session_id: &str) -> bool {
 /// Advisory wake: schedule a drain for the Session unless one is already
 /// running, in which case the running drain re-checks the inbox afterwards.
 pub fn wake(env: Env, session_id: String) {
+    schedule(env, session_id, false);
+}
+
+pub fn interrupt(session_id: &str) {
+    with_runs(|runs| {
+        if let Some(state) = runs.get_mut(session_id) {
+            state.rerun = false;
+            state.token.interrupt();
+        }
+    });
+}
+
+fn schedule(env: Env, session_id: String, force: bool) {
     let joined = with_runs(|runs| {
-        if let Some(rerun) = runs.get_mut(&session_id) {
-            *rerun = true;
+        if let Some(state) = runs.get_mut(&session_id) {
+            if !force {
+                state.rerun = true;
+            }
             return true;
         }
-        runs.insert(session_id.clone(), false);
+        runs.insert(
+            session_id.clone(),
+            RunState {
+                rerun: false,
+                token: InterruptToken::new(),
+            },
+        );
         false
     });
     if joined {
         return;
     }
     tokio::spawn(async move {
+        let mut next_force = force;
         loop {
             let run_env = env.clone();
             let run_id = session_id.clone();
-            let outcome = tokio::task::spawn_blocking(move || drain(&run_env, &run_id)).await;
+            let token = with_runs(|runs| {
+                runs.get(&session_id)
+                    .map(|state| state.token.clone())
+                    .unwrap_or_default()
+            });
+            let outcome =
+                tokio::task::spawn_blocking(move || drain(&run_env, &run_id, next_force, &token))
+                    .await;
             if let Ok(Err(error)) = outcome {
                 eprintln!("runner drain failed for {session_id}: {error}");
             }
             let rerun = with_runs(|runs| {
-                let rerun = runs.get(&session_id).copied().unwrap_or(false);
-                if rerun {
-                    runs.insert(session_id.clone(), false);
+                let Some(state) = runs.get_mut(&session_id) else {
+                    return false;
+                };
+                if state.rerun {
+                    state.rerun = false;
+                    state.token = InterruptToken::new();
+                    true
                 } else {
                     runs.remove(&session_id);
+                    false
                 }
-                rerun
             });
             if !rerun {
                 break;
             }
+            next_force = false;
         }
     });
 }
@@ -113,23 +174,29 @@ fn has_pending(conn: &Connection, session_id: &str, delivery: &str) -> rusqlite:
 
 /// Port of SessionRunner.run: promote, run provider turns, continue for tool
 /// settlement or accepted steers, then drain queued inputs one at a time.
-fn drain(env: &Env, session_id: &str) -> Result<(), String> {
+fn drain(
+    env: &Env,
+    session_id: &str,
+    force: bool,
+    interrupt: &InterruptToken,
+) -> Result<(), String> {
     let mut conn = env.pool.get().map_err(|error| error.to_string())?;
-    let has_steer = has_pending(&conn, session_id, "steer").map_err(|error| error.to_string())?;
-    let has_queue =
-        !has_steer && has_pending(&conn, session_id, "queue").map_err(|error| error.to_string())?;
-    if !has_steer && !has_queue {
+    let plan = drain_plan(&conn, session_id, force).map_err(|error| error.to_string())?;
+    if !plan.should_run {
         return Ok(());
     }
     fail_interrupted_tools(&mut conn, session_id).map_err(|error| error.to_string())?;
 
-    let mut promotion: Option<&str> = Some(if has_steer { "steer" } else { "queue" });
-    let mut should_run = true;
+    let mut promotion = plan.promotion;
+    let mut should_run = plan.should_run;
     while should_run {
         let mut needs_continuation = true;
         let mut step: i64 = 1;
         while needs_continuation {
-            let result = run_turn(env, &mut conn, session_id, promotion, step)?;
+            if interrupt.is_interrupted() {
+                return Ok(());
+            }
+            let result = run_turn(env, &mut conn, session_id, promotion, step, interrupt)?;
             needs_continuation = result.needs_continuation;
             step = result.step + 1;
             promotion = Some("steer");
@@ -144,6 +211,26 @@ fn drain(env: &Env, session_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+struct DrainPlan {
+    promotion: Option<&'static str>,
+    should_run: bool,
+}
+
+fn drain_plan(conn: &Connection, session_id: &str, force: bool) -> rusqlite::Result<DrainPlan> {
+    let has_steer = has_pending(conn, session_id, "steer")?;
+    let has_queue = !has_steer && has_pending(conn, session_id, "queue")?;
+    Ok(DrainPlan {
+        promotion: if has_steer {
+            Some("steer")
+        } else if has_queue {
+            Some("queue")
+        } else {
+            None
+        },
+        should_run: force || has_steer || has_queue,
+    })
+}
+
 struct TurnResult {
     needs_continuation: bool,
     step: i64,
@@ -155,7 +242,14 @@ fn run_turn(
     session_id: &str,
     promotion: Option<&str>,
     step: i64,
+    interrupt: &InterruptToken,
 ) -> Result<TurnResult, String> {
+    if interrupt.is_interrupted() {
+        return Ok(TurnResult {
+            needs_continuation: false,
+            step,
+        });
+    }
     let session: (String, Option<String>, Option<String>) = conn
         .query_row(
             "SELECT directory, agent, model FROM session WHERE id = ?",
@@ -229,6 +323,10 @@ fn run_turn(
     let mut body = Map::new();
     body.insert("model".into(), json!(model.id));
     body.insert("messages".into(), Value::Array(messages));
+    body.insert(
+        "prompt_cache_key".into(),
+        json!(prompt_cache_key(session_id)),
+    );
     if !is_last_step {
         body.insert("tools".into(), Value::Array(tools::definitions_for(&agent)));
     } else {
@@ -386,6 +484,7 @@ fn run_turn(
                         agent: &agent,
                         session_id,
                         conn,
+                        interrupt: Some(interrupt),
                     },
                     name,
                     &input,
@@ -472,6 +571,15 @@ fn run_turn(
         needs_continuation: needs_continuation && !is_last_step,
         step: current_step,
     })
+}
+
+fn prompt_cache_key(session_id: &str) -> String {
+    let hash = session_id.strip_prefix("ses_");
+    if hash.is_some_and(|value| value.len() == 64 && value.chars().all(|ch| ch.is_ascii_hexdigit()))
+    {
+        return hash.expect("checked").to_string();
+    }
+    session_id.to_string()
 }
 
 struct Assistant<'a> {
@@ -904,5 +1012,38 @@ mod tests {
                 ("msg_future_steer".to_string(), None),
             ]
         );
+    }
+
+    #[test]
+    fn drain_plan_matches_force_semantics() {
+        let conn = memory_conn();
+        let idle = drain_plan(&conn, SESSION, false).unwrap();
+        assert!(!idle.should_run);
+        assert_eq!(idle.promotion, None);
+
+        let forced = drain_plan(&conn, SESSION, true).unwrap();
+        assert!(forced.should_run);
+        assert_eq!(forced.promotion, None);
+
+        insert_input(&conn, "msg_queue", "queue", 1, "queued");
+        let queued = drain_plan(&conn, SESSION, false).unwrap();
+        assert!(queued.should_run);
+        assert_eq!(queued.promotion, Some("queue"));
+
+        insert_input(&conn, "msg_steer", "steer", 2, "steer");
+        let steered = drain_plan(&conn, SESSION, false).unwrap();
+        assert!(steered.should_run);
+        assert_eq!(steered.promotion, Some("steer"));
+    }
+
+    #[test]
+    fn prompt_cache_key_matches_typescript_runner() {
+        assert_eq!(
+            prompt_cache_key(
+                "ses_0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+            ),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
+        assert_eq!(prompt_cache_key("ses_custom"), "ses_custom");
     }
 }
