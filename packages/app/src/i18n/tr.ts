@@ -1016,6 +1016,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}} oturum arşivlenecek.",
   "workspace.reset.note": "Bu işlem çalışma alanını varsayılan dalla eşleşecek şekilde sıfırlayacak.",
   "common.open": "Aç",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "Başla",
   "dialog.releaseNotes.action.next": "İleri",
   "dialog.releaseNotes.action.hideFuture": "Bunu gelecekte bir daha gösterme",
@@ -1103,4 +1109,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "Kalıcı proje simgesi oluşturulamadı",
   "error.childStore.storeCreateFailed": "Depo oluşturulamadı",
   "terminal.connectionLost.abnormalClose": "WebSocket anormal şekilde kapandı: {{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 } satisfies Partial<Record<Keys, string>>

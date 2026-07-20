@@ -1017,6 +1017,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}} sesiones serán archivadas.",
   "workspace.reset.note": "Esto restablecerá el espacio de trabajo para coincidir con la rama predeterminada.",
   "common.open": "Abrir",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "Comenzar",
   "dialog.releaseNotes.action.next": "Siguiente",
   "dialog.releaseNotes.action.hideFuture": "No mostrar esto en el futuro",
@@ -1105,4 +1111,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "Error al crear icono de proyecto persistente",
   "error.childStore.storeCreateFailed": "Error al crear almacén",
   "terminal.connectionLost.abnormalClose": "WebSocket cerrado anormalmente: {{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 }

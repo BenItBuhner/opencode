@@ -985,6 +985,12 @@ export const dict = {
   "workspace.reset.archived.many": "將封存 {{count}} 個工作階段。",
   "workspace.reset.note": "這將把工作區重設為與預設分支一致。",
   "common.open": "打開",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "開始",
   "dialog.releaseNotes.action.next": "下一步",
   "dialog.releaseNotes.action.hideFuture": "不再顯示",
@@ -1071,4 +1077,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "建立持續性專案圖示失敗",
   "error.childStore.storeCreateFailed": "建立儲存區失敗",
   "terminal.connectionLost.abnormalClose": "WebSocket 異常關閉：{{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 } satisfies Partial<Record<Keys, string>>

@@ -945,6 +945,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}} Sitzungen werden archiviert.",
   "workspace.reset.note": "Dadurch wird der Arbeitsbereich auf den Standard-Branch zurückgesetzt.",
   "common.open": "Öffnen",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "Loslegen",
   "dialog.releaseNotes.action.next": "Weiter",
   "dialog.releaseNotes.action.hideFuture": "In Zukunft nicht mehr anzeigen",
@@ -1034,4 +1040,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "Dauerhaftes Projekticon konnte nicht erstellt werden",
   "error.childStore.storeCreateFailed": "Speicher konnte nicht erstellt werden",
   "terminal.connectionLost.abnormalClose": "WebSocket abnormal geschlossen: {{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 } satisfies Partial<Record<Keys, string>>

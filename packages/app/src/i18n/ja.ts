@@ -926,6 +926,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}}個のセッションがアーカイブされます。",
   "workspace.reset.note": "これにより、ワークスペースはデフォルトブランチと一致するようにリセットされます。",
   "common.open": "開く",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "始める",
   "dialog.releaseNotes.action.next": "次へ",
   "dialog.releaseNotes.action.hideFuture": "今後表示しない",
@@ -1013,4 +1019,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "永続プロジェクトアイコンの作成に失敗しました",
   "error.childStore.storeCreateFailed": "ストアの作成に失敗しました",
   "terminal.connectionLost.abnormalClose": "WebSocket が異常終了しました: {{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 }

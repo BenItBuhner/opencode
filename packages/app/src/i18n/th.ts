@@ -996,6 +996,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}} เซสชันจะถูกจัดเก็บ",
   "workspace.reset.note": "สิ่งนี้จะรีเซ็ตพื้นที่ทำงานให้ตรงกับสาขาเริ่มต้น",
   "common.open": "เปิด",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "เริ่มต้น",
   "dialog.releaseNotes.action.next": "ถัดไป",
   "dialog.releaseNotes.action.hideFuture": "ไม่ต้องแสดงสิ่งนี้อีกในอนาคต",
@@ -1084,4 +1090,9 @@ export const dict = {
   "error.childStore.persistedProjectIconCreateFailed": "ไม่สามารถสร้างไอคอนโปรเจกต์ถาวร",
   "error.childStore.storeCreateFailed": "ไม่สามารถสร้างที่เก็บ",
   "terminal.connectionLost.abnormalClose": "WebSocket ปิดอย่างผิดปกติ: {{code}}",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 }

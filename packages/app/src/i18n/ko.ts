@@ -767,6 +767,12 @@ export const dict = {
   "workspace.reset.archived.many": "{{count}}개의 세션이 보관됩니다.",
   "workspace.reset.note": "이 작업은 작업 공간을 기본 브랜치와 일치하도록 재설정합니다.",
   "common.open": "열기",
+  "dialog.goal.title": "Goal summaries",
+  "dialog.goal.latest": "Latest summary",
+  "dialog.goal.previous": "Previous summary",
+  "dialog.goal.empty": "No goal summaries yet.",
+  "dialog.goal.showMore": "Show previous summaries",
+
   "dialog.releaseNotes.action.getStarted": "시작하기",
   "dialog.releaseNotes.action.next": "다음",
   "dialog.releaseNotes.action.hideFuture": "다시 보지 않기",
@@ -1012,4 +1018,9 @@ export const dict = {
   "settings.general.row.pinchZoom.description": "트랙패드 핀치 및 Ctrl-스크롤 제스처로 확대/축소 허용",
   "settings.updates.action.downloading": "다운로드 중...",
   "settings.updates.action.installing": "설치 중...",
+  "dialog.provider.custom.label": "Custom OpenAI-compatible provider",
+  "dialog.model.unpaid.viewMoreProviders": "See 70+ more providers",
+  "session.header.reveal.finder": "Reveal in Finder",
+  "session.header.reveal.fileExplorer": "Reveal in File Explorer",
+  "session.header.reveal.containingFolder": "Open containing folder",
 }

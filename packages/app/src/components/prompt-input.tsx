@@ -46,6 +46,7 @@ import { useDialog } from "@opencode-ai/ui/context/dialog"
 import { ModelSelectorPopover, ModelSelectorPopoverV2 } from "@/components/dialog-select-model"
 import { DialogSelectModelUnpaid } from "@/components/dialog-select-model-unpaid"
 import { DialogSelectModelUnpaidV2 } from "@/components/dialog-select-model-unpaid-v2"
+import { DialogGoalSummaries } from "@/components/dialog-goal-summaries"
 import { useCommand } from "@/context/command"
 import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
@@ -263,6 +264,12 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
     void tabs().open(tab)
     tabs().setActive(tab)
     void Promise.resolve(files.load(item.path)).finally(() => queueCommentFocus())
+  }
+
+  const openGoalSummaries = () => {
+    const sessionID = props.controls.session.id
+    if (!sessionID) return
+    dialog.show(() => <DialogGoalSummaries sessionID={sessionID} />)
   }
 
   const recent = createMemo(() => {
@@ -1814,9 +1821,13 @@ export const PromptInput: Component<PromptInputProps> = (props) => {
                 <Show when={sessionGoal()}>
                   {(goal) => (
                     <>
-                      <div class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted">
+                      <button
+                        type="button"
+                        class="min-w-0 max-w-[260px] truncate rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted hover:bg-surface-raised-base-hover"
+                        onClick={openGoalSummaries}
+                      >
                         Goal {goal().status}: {goal().text}
-                      </div>
+                      </button>
                       <Show when={goal().progress !== undefined}>
                         <div
                           class="shrink-0 rounded-md border border-border-subtle px-2 py-1 text-12-regular text-text-muted"
