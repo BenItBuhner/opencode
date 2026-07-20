@@ -24,9 +24,9 @@ const archMap = {
 
 const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
-const base = `@benitbuhner/opencode-goal-mode-${platform}-${arch}`
-const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
-const targetBinary = path.join(__dirname, "bin", "opencode-goal-mode.exe")
+const base = `@benitbuhner/opengoal-${platform}-${arch}`
+const sourceBinary = platform === "windows" ? "opengoal.exe" : "opengoal"
+const targetBinary = path.join(__dirname, "bin", platform === "windows" ? "opengoal.exe" : "opengoal")
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -175,7 +175,7 @@ function main() {
   }
 
   throw new Error(
-    `It seems your package manager failed to install the right opencode-goal-mode CLI package. Try manually installing ${packageNames()
+    `It seems your package manager failed to install the right opengoal CLI package. Try manually installing ${packageNames()
       .map((name) => JSON.stringify(name))
       .join(" or ")}.`,
   )

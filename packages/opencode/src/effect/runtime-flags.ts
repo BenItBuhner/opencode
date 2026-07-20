@@ -1,15 +1,23 @@
 import { Config, ConfigProvider, Context, Effect, Layer, Option } from "effect"
 import { ConfigService } from "@/effect/config-service"
 
-const bool = (name: string) => Config.boolean(name).pipe(Config.withDefault(false))
+const opengoalName = (name: string) => name.replace("OPENCODE_", "OPENGOAL_")
+const optionalBool = (name: string) =>
+  Config.boolean(opengoalName(name)).pipe(
+    Config.orElse(() => Config.boolean(name)),
+    Config.option,
+  )
+const bool = (name: string) => optionalBool(name).pipe(Config.map((value) => Option.getOrElse(value, () => false)))
+const string = (name: string) => Config.string(opengoalName(name)).pipe(Config.orElse(() => Config.string(name)))
 const positiveInteger = (name: string) =>
-  Config.number(name).pipe(
+  Config.number(opengoalName(name)).pipe(
+    Config.orElse(() => Config.number(name)),
     Config.map((value) => (Number.isInteger(value) && value > 0 ? value : undefined)),
     Config.orElse(() => Config.succeed(undefined)),
   )
 const experimental = bool("OPENCODE_EXPERIMENTAL")
 const enabledByExperimental = (name: string) =>
-  Config.all({ experimental, enabled: Config.boolean(name).pipe(Config.option) }).pipe(
+  Config.all({ experimental, enabled: optionalBool(name) }).pipe(
     Config.map((flags) => Option.getOrElse(flags.enabled, () => flags.experimental)),
   )
 
@@ -53,7 +61,7 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   bashDefaultTimeoutMs: positiveInteger("OPENCODE_EXPERIMENTAL_BASH_DEFAULT_TIMEOUT_MS"),
   experimentalNativeLlm: bool("OPENCODE_EXPERIMENTAL_NATIVE_LLM"),
   experimentalWebSockets: bool("OPENCODE_EXPERIMENTAL_WEBSOCKETS"),
-  client: Config.string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
+  client: string("OPENCODE_CLIENT").pipe(Config.withDefault("cli")),
 }) {}
 
 export type Info = Context.Service.Shape<typeof Service>

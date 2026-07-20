@@ -51,6 +51,8 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
     await task
 
     expect(setup.renderer.isDestroyed).toBe(true)
+    expect(titles).toContain("OpenGoal")
+    expect(titles).not.toContain("OpenCode")
     expect(titles.at(-1)).toBe("")
     expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
@@ -119,7 +121,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     await task
 
     expect(stdout).toContain("Demo session")
-    expect(stdout).toContain("opencode -s dummy")
+    expect(stdout).toContain("opengoal -s dummy")
   } finally {
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()

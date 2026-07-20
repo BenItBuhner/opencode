@@ -38,6 +38,13 @@ export function Logo() {
           </text>
         )
       }
+      if (char === ".") {
+        return (
+          <text fg={fg} attributes={attrs} selectable={false}>
+            {" "}
+          </text>
+        )
+      }
       return (
         <text fg={fg} attributes={attrs} selectable={false}>
           {char}
