@@ -405,6 +405,8 @@ export type SubtaskPart = {
     modelID: string
   }
   command?: string
+  goal_mode?: boolean
+  goal?: string
 }
 
 export type ReasoningPart = {
@@ -1339,6 +1341,7 @@ export type GlobalEvent = {
            */
           questions: Array<QuestionV2Info>
           tool?: QuestionV2Tool
+          timeout?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
         }
       }
     | {
@@ -1516,6 +1519,10 @@ export type GlobalEvent = {
            */
           questions: Array<QuestionInfo>
           tool?: QuestionTool
+          /**
+           * Timeout in seconds
+           */
+          timeout?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
         }
       }
     | {
@@ -2453,6 +2460,10 @@ export type QuestionRequest = {
    */
   questions: Array<QuestionInfo>
   tool?: QuestionTool
+  /**
+   * Timeout in seconds
+   */
+  timeout?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type QuestionNotFoundError = {
@@ -2589,6 +2600,8 @@ export type SubtaskPartInput = {
     modelID: string
   }
   command?: string
+  goal_mode?: boolean
+  goal?: string
 }
 
 export type SessionBusyError = {
@@ -5614,6 +5627,7 @@ export type QuestionV2Asked = {
      */
     questions: Array<QuestionV2Info>
     tool?: QuestionV2Tool
+    timeout?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -5943,6 +5957,10 @@ export type QuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Timeout in seconds
+     */
+    timeout?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -6109,6 +6127,7 @@ export type QuestionV2Request = {
    */
   questions: Array<QuestionV2Info>
   tool?: QuestionV2Tool
+  timeout?: number | "NaN" | "Infinity" | "-Infinity" | "Infinity" | "-Infinity" | "NaN"
 }
 
 export type QuestionV2Reply = {
@@ -6813,6 +6832,7 @@ export type EventQuestionV2Asked = {
      */
     questions: Array<QuestionV2Info>
     tool?: QuestionV2Tool
+    timeout?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
@@ -6952,6 +6972,10 @@ export type EventQuestionAsked = {
      */
     questions: Array<QuestionInfo>
     tool?: QuestionTool
+    /**
+     * Timeout in seconds
+     */
+    timeout?: number | "NaN" | "Infinity" | "-Infinity"
   }
 }
 
