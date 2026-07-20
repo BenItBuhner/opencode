@@ -1646,7 +1646,7 @@ function CompactionSummary(props: { message: AssistantMessage; parts: Part[] }) 
         </text>
       </Show>
       <Show when={failed()}>
-        <text fg={theme.error}>Compaction failed: {props.message.error?.data.message}</text>
+        <text fg={theme.error}>Compaction failed: {errorMessage(props.message.error)}</text>
       </Show>
       <Show when={expanded() && summary()}>
         <box>
