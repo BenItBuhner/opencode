@@ -10,7 +10,7 @@ import {
 } from "@opentui/core"
 import type { CommandContext } from "@opentui/keymap"
 import { createEffect, createMemo, onMount, createSignal, onCleanup, on, Show, Switch, Match } from "solid-js"
-import "opentui-spinner/solid"
+import { registerOpencodeSpinner } from "../register-spinner"
 import path from "path"
 import { fileURLToPath } from "url"
 import { useLocal } from "../../context/local"
@@ -57,6 +57,9 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { useLocation } from "../../context/location"
+
+registerOpencodeSpinner()
 
 export type PromptProps = {
   sessionID?: string
@@ -163,6 +166,7 @@ export function Prompt(props: PromptProps) {
   const local = useLocal()
   const args = useArgs()
   const paths = useTuiPaths()
+  const location = useLocation()
   const terminalEnvironment = useTuiTerminalEnvironment()
   const clipboard = useClipboard()
   const sdk = useSDK()
@@ -684,6 +688,7 @@ export function Prompt(props: PromptProps) {
       "prompt.stash",
       "prompt.stash.pop",
       "prompt.stash.list",
+      "prompt.skills",
       "session.interrupt",
       "workspace.set",
       "session.move",
@@ -1563,6 +1568,9 @@ export function Prompt(props: PromptProps) {
                       <text fg={fadeColor(highlight(), agentMetaAlpha())}>
                         {store.mode === "shell" ? "Shell" : Locale.titlecase(agent().name)}
                       </text>
+                      <Show when={store.mode === "normal" && local.permission.mode === "auto"}>
+                        <text fg={fadeColor(theme.textMuted, agentMetaAlpha())}>auto</text>
+                      </Show>
                       <Show when={store.mode === "normal"}>
                         <box flexDirection="row" gap={1}>
                           <text fg={fadeColor(theme.textMuted, modelMetaAlpha())}>·</text>
@@ -1753,7 +1761,15 @@ export function Prompt(props: PromptProps) {
                 <text fg={theme.accent}>(new working copy)</text>
               </box>
             </Match>
-            <Match when={true}>{props.hint ?? <text />}</Match>
+            <Match when={true}>
+              {props.hint ?? (
+                <Show when={props.sessionID}>
+                  <box marginLeft={1}>
+                    <text fg={theme.textMuted}>{location()?.directory ?? paths.cwd}</text>
+                  </box>
+                </Show>
+              )}
+            </Match>
           </Switch>
           <Show when={status().type !== "retry"}>
             <box gap={2} flexDirection="row">
