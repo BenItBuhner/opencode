@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test"
+import { UI } from "@/cli/ui"
 
 test("workspace and CLI packages use OpenGoal branding", async () => {
   const root = await Bun.file(new URL("../../../package.json", import.meta.url)).json()
@@ -26,4 +27,11 @@ test("publish pipeline emits OpenGoal packages and command aliases", async () =>
   expect(publish).toContain('const packageName = "@benitbuhner/opengoal"')
   expect(publish).toContain('const commandName = "opengoal"')
   expect(publish).toContain('opencode: "./bin/opencode.mjs"')
+})
+
+test("plain CLI wordmark renders OpenGoal glyphs without marker characters", () => {
+  const output = UI.logo()
+  expect(output).toContain("█▀▀▀ █▀▀█ ▄▀▀█ █")
+  expect(output).not.toContain("_")
+  expect(output).not.toContain("^")
 })
