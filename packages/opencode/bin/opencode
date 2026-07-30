@@ -43,13 +43,13 @@ function run(target) {
   })
 }
 
-const envPath = process.env.OPENCODE_BIN_PATH
+const envPath = process.env.OPENGOAL_BIN_PATH || process.env.OPENCODE_BIN_PATH
 
 const scriptPath = fs.realpathSync(__filename)
 const scriptDir = path.dirname(scriptPath)
 
 //
-const cached = path.join(scriptDir, ".opencode")
+const cached = [path.join(scriptDir, ".opengoal"), path.join(scriptDir, ".opencode")]
 
 const platformMap = {
   darwin: "darwin",
@@ -70,8 +70,10 @@ let arch = archMap[os.arch()]
 if (!arch) {
   arch = os.arch()
 }
-const base = "opencode-" + platform + "-" + arch
-const binary = platform === "windows" ? "opencode.exe" : "opencode"
+const base = "opengoal-" + platform + "-" + arch
+const legacyBase = "opencode-" + platform + "-" + arch
+const binary = platform === "windows" ? "opengoal.exe" : "opengoal"
+const legacyBinary = platform === "windows" ? "opencode.exe" : "opencode"
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -126,6 +128,7 @@ function supportsAvx2() {
 const names = (() => {
   const avx2 = supportsAvx2()
   const baseline = arch === "x64" && !avx2
+  const packageNames = (suffixes) => suffixes.flatMap((suffix) => [`${base}${suffix}`, `${legacyBase}${suffix}`])
 
   if (platform === "linux") {
     const musl = (() => {
@@ -148,24 +151,24 @@ const names = (() => {
 
     if (musl) {
       if (arch === "x64") {
-        if (baseline) return [`${base}-baseline-musl`, `${base}-musl`, `${base}-baseline`, base]
-        return [`${base}-musl`, `${base}-baseline-musl`, base, `${base}-baseline`]
+        if (baseline) return packageNames(["-baseline-musl", "-musl", "-baseline", ""])
+        return packageNames(["-musl", "-baseline-musl", "", "-baseline"])
       }
-      return [`${base}-musl`, base]
+      return packageNames(["-musl", ""])
     }
 
     if (arch === "x64") {
-      if (baseline) return [`${base}-baseline`, base, `${base}-baseline-musl`, `${base}-musl`]
-      return [base, `${base}-baseline`, `${base}-musl`, `${base}-baseline-musl`]
+      if (baseline) return packageNames(["-baseline", "", "-baseline-musl", "-musl"])
+      return packageNames(["", "-baseline", "-musl", "-baseline-musl"])
     }
-    return [base, `${base}-musl`]
+    return packageNames(["", "-musl"])
   }
 
   if (arch === "x64") {
-    if (baseline) return [`${base}-baseline`, base]
-    return [base, `${base}-baseline`]
+    if (baseline) return packageNames(["-baseline", ""])
+    return packageNames(["", "-baseline"])
   }
-  return [base]
+  return packageNames([""])
 })()
 
 function findBinary(startDir) {
@@ -174,8 +177,10 @@ function findBinary(startDir) {
     const modules = path.join(current, "node_modules")
     if (fs.existsSync(modules)) {
       for (const name of names) {
-        const candidate = path.join(modules, name, "bin", binary)
-        if (fs.existsSync(candidate)) return candidate
+        for (const item of [binary, legacyBinary]) {
+          const candidate = path.join(modules, name, "bin", item)
+          if (fs.existsSync(candidate)) return candidate
+        }
       }
     }
     const parent = path.dirname(current)
@@ -186,10 +191,10 @@ function findBinary(startDir) {
   }
 }
 
-const resolved = envPath || (fs.existsSync(cached) ? cached : findBinary(scriptDir))
+const resolved = envPath || cached.find((item) => fs.existsSync(item)) || findBinary(scriptDir)
 if (!resolved) {
   console.error(
-    "It seems that your package manager failed to install the right version of the opencode CLI for your platform. You can try manually installing " +
+    "It seems that your package manager failed to install the right version of the opengoal CLI for your platform. You can try manually installing " +
       names.map((n) => `\"${n}\"`).join(" or ") +
       " package",
   )

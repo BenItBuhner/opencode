@@ -1,12 +1,13 @@
 export * as Config from "./config"
 
+import { makeLocationNode } from "./effect/app-node"
 import path from "path"
 import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Permission } from "@opencode-ai/schema/permission"
 import { FSUtil } from "./fs-util"
 import { Global } from "./global"
 import { Location } from "./location"
-import { PermissionSchema } from "./permission/schema"
 import { Policy } from "./policy"
 import { AbsolutePath } from "./schema"
 import { ConfigAgent } from "./config/agent"
@@ -56,7 +57,7 @@ export class Info extends Schema.Class<Info>("Config.Info")({
   username: Schema.String.pipe(Schema.optional).annotate({
     description: "Username displayed in conversations and used for telemetry identity",
   }),
-  permissions: PermissionSchema.Ruleset.pipe(Schema.optional).annotate({
+  permissions: Permission.Ruleset.pipe(Schema.optional).annotate({
     description: "Ordered tool permission rules applied to agent tool use",
   }),
   agents: Schema.Record(Schema.String, ConfigAgent.Info).pipe(Schema.optional).annotate({
@@ -131,14 +132,14 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/v2/Config") {}
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const fs = yield* FSUtil.Service
     const global = yield* Global.Service
     const location = yield* Location.Service
     const policy = yield* Policy.Service
-    const names = ["config.json", "opencode.json", "opencode.jsonc"]
+    const names = ["opencode.json", "opencode.jsonc", "opengoal.json", "opengoal.jsonc"]
     const decodeOptions = { errors: "all", onExcessProperty: "ignore", propertyOrder: "original" } as const
     const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
     const decodeV1Info = Schema.decodeUnknownOption(ConfigV1.Info, decodeOptions)
@@ -177,7 +178,7 @@ export const layer = Layer.effect(
       ? []
       : yield* fs
           .up({
-            targets: [".opencode", ...names.toReversed()],
+            targets: [".opencode", ".opengoal", ...names.toReversed()],
             start: location.directory,
             stop: location.project.directory,
           })
@@ -185,13 +186,13 @@ export const layer = Layer.effect(
     const directories = [
       globalDirectory,
       ...discovered
-        .filter((item) => path.basename(item) === ".opencode")
+        .filter(isConfigDirectory)
         .toReversed()
         .map((directory) => AbsolutePath.make(directory)),
     ]
     // A config closer to the opened directory should win over one higher up.
     // Search starts nearby, so reverse the results before applying them.
-    const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
+    const directPaths = discovered.filter((item) => !isConfigDirectory(item)).toReversed()
     const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
       Effect.orDie,
       Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
@@ -218,3 +219,13 @@ export const layer = Layer.effect(
 )
 
 export const locationLayer = layer.pipe(Layer.provideMerge(Policy.locationLayer))
+
+function isConfigDirectory(item: string) {
+  return path.basename(item) === ".opencode" || path.basename(item) === ".opengoal"
+}
+
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [FSUtil.node, Global.node, Location.node, Policy.node],
+})

@@ -23,8 +23,8 @@ const archMap = {
 
 const platform = platformMap[os.platform()] ?? os.platform()
 const arch = archMap[os.arch()] ?? os.arch()
-const base = `@benitbuhner/opencode-goal-mode-${platform}-${arch}`
-const sourceBinary = platform === "windows" ? "opencode.exe" : "opencode"
+const base = `@benitbuhner/opengoal-${platform}-${arch}`
+const sourceBinary = platform === "windows" ? "opengoal.exe" : "opengoal"
 
 function supportsAvx2() {
   if (arch !== "x64") return false
@@ -138,7 +138,7 @@ function findBinary() {
   }
 
   throw new Error(
-    `Could not find the opencode-goal-mode binary package. Try reinstalling, or manually install ${packageNames()
+    `Could not find the opengoal binary package. Try reinstalling, or manually install ${packageNames()
       .map((name) => JSON.stringify(name))
       .join(" or ")}.`,
   )

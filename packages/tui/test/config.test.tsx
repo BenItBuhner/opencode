@@ -49,7 +49,7 @@ test("resolves host-neutral defaults", () => {
     notifications: true,
     sound: true,
     volume: 0.4,
-    sound_pack: "opencode.default",
+    sound_pack: "opengoal.default",
     sounds: {},
   })
   expect(config.leader_timeout).toBe(LeaderTimeoutDefault)
@@ -78,6 +78,12 @@ test("resolves overrides without mutating input", () => {
   expect(config).toMatchObject({ theme: "custom", mouse: false, leader_timeout: 750, attention: input.attention })
   expect(config.keybinds.get("session.list")).toHaveLength(1)
   expect(input.keybinds).toEqual({ session_list: "ctrl+l" })
+})
+
+test("resolves a session move keybind", () => {
+  const config = resolve({ keybinds: { session_move: "ctrl+o" } }, { terminalSuspend: true })
+
+  expect(config.keybinds.get("session.move")).toMatchObject([{ key: "ctrl+o" }])
 })
 
 test("disables suspend and assigns ctrl+z to undo when unsupported", () => {
