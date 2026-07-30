@@ -233,13 +233,13 @@ export function PromptInputV2(props: PromptInputV2Props) {
             >
               {props.modelControl}
             </Show>
-            <Show when={(props.variantControlVisible ?? true) && view.variant}>
+            <Show when={(props.variantControlVisible ?? true) && view.variant} keyed>
               {(control) => (
-                <Show when={control().options().length > 1}>
+                <Show when={control.options().length > 1}>
                   <PromptInputV2ConfiguredSelect
                     title="Choose model variant"
                     keybind={["Shift", "Mod", "D"]}
-                    control={control()}
+                    control={control}
                   />
                 </Show>
               )}
