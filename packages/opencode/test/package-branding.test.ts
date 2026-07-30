@@ -35,3 +35,13 @@ test("plain CLI wordmark renders OpenGoal glyphs without marker characters", () 
   expect(output).not.toContain("_")
   expect(output).not.toContain("^")
 })
+
+test("inline TUI splash uses the compact OpenGoal mark and command", async () => {
+  const splash = await Bun.file(new URL("../src/cli/cmd/run/splash.ts", import.meta.url)).text()
+
+  expect(splash).toContain("const mark = go.left.slice(1)")
+  expect(splash).toContain("const markRight = go.right.slice(1)")
+  expect(splash).toContain('"OpenGoal"')
+  expect(splash).toContain("`opengoal --mini -s ${meta.session_id}`")
+  expect(splash).not.toContain('"OpenCode"')
+})

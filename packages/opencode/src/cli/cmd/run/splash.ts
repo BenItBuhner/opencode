@@ -1,6 +1,6 @@
 // Entry and exit splash banners for direct interactive mode scrollback.
 //
-// Renders the full opencode entry logo and a compact [O] exit badge, plus
+// Renders the OpenGoal entry logo and a compact GO exit badge, plus
 // session metadata and the resume command. These are scrollback snapshots, so
 // they become immutable terminal history once committed.
 //
@@ -181,9 +181,11 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
   let height = 1
 
   if (kind === "entry") {
-    const mark = go.right.slice(1)
+    const mark = go.left.slice(1)
+    const markRight = go.right.slice(1)
     const top = 1
-    const body_left = (mark[0]?.length ?? 0) + 2
+    const rightOffset = (mark[0]?.length ?? 0) + 1
+    const body_left = rightOffset + (markRight[0]?.length ?? 0) + 2
 
     for (let i = 0; i < mark.length; i += 1) {
       draw(lines, mark[i] ?? "", {
@@ -192,9 +194,16 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
         fg: left,
         shadow: leftShadow,
       })
+      draw(lines, markRight[i] ?? "", {
+        left: rightOffset,
+        top: top + i,
+        fg: right,
+        shadow: leftShadow,
+        attrs: TextAttributes.BOLD,
+      })
     }
 
-    push(lines, body_left, top, "OpenCode", right, undefined, TextAttributes.BOLD)
+    push(lines, body_left, top, "OpenGoal", right, undefined, TextAttributes.BOLD)
     if (input.detail) {
       push(
         lines,
@@ -209,9 +218,11 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
   }
 
   if (kind === "exit") {
-    const mark = go.right.slice(1)
+    const mark = go.left.slice(1)
+    const markRight = go.right.slice(1)
     const top = 1
-    const body_left = (mark[0]?.length ?? 0) + 2
+    const rightOffset = (mark[0]?.length ?? 0) + 1
+    const body_left = rightOffset + (markRight[0]?.length ?? 0) + 2
     const session = "Session  "
     const label = "Continue "
 
@@ -221,6 +232,13 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
         top: top + i,
         fg: left,
         shadow: leftShadow,
+      })
+      draw(lines, markRight[i] ?? "", {
+        left: rightOffset,
+        top: top + i,
+        fg: right,
+        shadow: leftShadow,
+        attrs: TextAttributes.BOLD,
       })
     }
 
@@ -234,7 +252,7 @@ function build(input: SplashWriterInput, kind: "entry" | "exit", ctx: Scrollback
       lines,
       body_left + label.length,
       top + 1,
-      `opencode --mini -s ${meta.session_id}`,
+      `opengoal --mini -s ${meta.session_id}`,
       right,
       undefined,
       TextAttributes.BOLD,
