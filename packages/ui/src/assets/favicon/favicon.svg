@@ -1,7 +1,9 @@
-<svg xmlns="http://www.w3.org/2000/svg" version="1.1" xmlns:xlink="http://www.w3.org/1999/xlink" width="512" height="512"><svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
-<rect width="512" height="512" fill="#131010"></rect>
-<path d="M320 224V352H192V224H320Z" fill="#5A5858"></path>
-<path fill-rule="evenodd" clip-rule="evenodd" d="M384 416H128V96H384V416ZM320 160H192V352H320V160Z" fill="white"></path>
-</svg><style>@media (prefers-color-scheme: light) { :root { filter: none; } }
-@media (prefers-color-scheme: dark) { :root { filter: none; } }
-</style></svg>
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="OpenGoal">
+  <title>OpenGoal</title>
+  <rect width="512" height="512" fill="#131010" />
+  <path d="M320 352H192V160H320V224H256V288H320V352Z" fill="#5A5858" />
+  <path
+    d="M128 96H384V160H128V96ZM128 96H192V416H128V96ZM128 352H384V416H128V352ZM320 224H384V416H320V224ZM256 224H384V288H256V224Z"
+    fill="white"
+  />
+</svg>

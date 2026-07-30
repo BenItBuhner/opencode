@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test"
 import { OauthCallbackPage } from "../src/oauth/page"
 
 describe("OauthCallbackPage", () => {
+  test("renders the OpenGoal wordmark", () => {
+    const html = OauthCallbackPage.success()
+
+    expect(html).toContain('aria-label="OpenGoal"')
+    expect(html).not.toContain('aria-label="OpenCode"')
+  })
+
   test("escapes bootstrap options embedded in the inline script", () => {
     const html = OauthCallbackPage.bootstrap({
       provider: `xAI</script><script>alert("provider")</script>`,
