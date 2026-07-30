@@ -169,10 +169,18 @@ export function seedActiveSessionStatuses(
   session: Pick<ServerSession, "data" | "set">,
   active: SessionActiveOutput | Record<string, SessionStatus>,
 ) {
+  const activeIDs = new Set(Object.keys(active))
+  for (const [sessionID, status] of Object.entries(session.data.session_status)) {
+    if (status.type === "idle") continue
+    if (activeIDs.has(sessionID)) continue
+    session.set("session_status", sessionID, { type: "idle" })
+  }
   for (const sessionID of Object.keys(active)) {
-    if (session.data.session_status[sessionID] !== undefined) continue
     const status = active[sessionID]
-    session.set("session_status", sessionID, status?.type === "running" ? { type: "busy" } : status)
+    const next = status?.type === "running" ? { type: "busy" as const } : status
+    if (!next) continue
+    if (next.type !== "idle" && session.data.session_status[sessionID] !== undefined) continue
+    session.set("session_status", sessionID, next)
   }
 }
 

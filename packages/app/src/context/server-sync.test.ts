@@ -100,6 +100,26 @@ describe("active session query", () => {
       next: 10,
     })
   })
+
+  test("clears non-idle statuses omitted from an authoritative active snapshot", () => {
+    const session = createServerSession({} as OpencodeClient)
+    session.set("session_status", "ses_done", { type: "busy" })
+
+    seedActiveSessionStatuses(session, {})
+
+    expect(session.data.session_status.ses_done).toEqual({ type: "idle" })
+    expect(session.data.session_working("ses_done")).toBe(false)
+  })
+
+  test("applies explicit idle statuses over stale busy state", () => {
+    const session = createServerSession({} as OpencodeClient)
+    session.set("session_status", "ses_done", { type: "busy" })
+
+    seedActiveSessionStatuses(session, { ses_done: { type: "idle" } })
+
+    expect(session.data.session_status.ses_done).toEqual({ type: "idle" })
+    expect(session.data.session_working("ses_done")).toBe(false)
+  })
 })
 
 describe("pickDirectoriesToEvict", () => {
