@@ -9,5 +9,8 @@ test("shared logo assets carry the OpenGoal identity", async () => {
   expect(source).toContain('data-slot="logo-logo-mark-g"')
   expect(source).not.toContain('data-slot="logo-logo-mark-o"')
   expect(source).toContain('data-wordmark="opengoal"')
+  expect(source).toContain('data-letter="g"')
+  expect(source).toContain('data-letter="a"')
+  expect(source).toContain('data-letter="l"')
   expect(source.match(/<title>OpenGoal<\/title>/g)).toHaveLength(3)
 })
