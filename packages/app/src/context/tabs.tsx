@@ -12,6 +12,7 @@ import { sessionHref } from "@/utils/session-route"
 import { createTabMemory } from "./tab-memory"
 import { nextTabAfterClose, pushClosedTab, removeClosedTabs, takeClosedTab, type ClosedTab } from "./closed-tabs"
 import { createDraftPromptSession, type PromptModel } from "./prompt-state"
+import { migrateTabs } from "./tab-migration"
 import { nextTab, previousTab, rememberTab, type TabHistory } from "./tab-history"
 
 export type SessionTab = {
@@ -60,13 +61,7 @@ export const { use: useTabs, provider: TabsProvider } = createSimpleContext({
     const [store, setStore, _, ready] = persisted(
       {
         ...Persist.window("tabs"),
-        migrate: (value: unknown) => {
-          if (!Array.isArray(value)) return value
-          return value.map((tab) => {
-            if (!tab || typeof tab !== "object" || "server" in tab) return tab
-            return { ...tab, server: fallback }
-          })
-        },
+        migrate: (value: unknown) => migrateTabs(value, fallback),
       },
       createStore<Tab[]>([]),
     )
