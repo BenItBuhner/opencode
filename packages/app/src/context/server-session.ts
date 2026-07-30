@@ -1028,6 +1028,11 @@ export function createServerSession(
         setData("session_status", props.sessionID, reconcile(props.status))
         return
       }
+      case "session.idle": {
+        const props = event.properties as { sessionID: string }
+        setData("session_status", props.sessionID, { type: "idle" })
+        return
+      }
       case "message.updated": {
         const info = cleanMessage((event.properties as { info: Message }).info)
         indexLegacyMessage(info)

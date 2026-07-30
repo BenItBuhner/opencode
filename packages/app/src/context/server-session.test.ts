@@ -1605,6 +1605,16 @@ describe("server session", () => {
     expect(ctx.get).toEqual([])
   })
 
+  test("clears working state on a legacy session idle event", () => {
+    const ctx = setup({})
+    ctx.store.apply({ type: "session.status", properties: { sessionID: "root", status: { type: "busy" } } })
+
+    ctx.store.apply({ type: "session.idle", properties: { sessionID: "root" } })
+
+    expect(ctx.store.data.session_status.root).toEqual({ type: "idle" })
+    expect(ctx.store.data.session_working("root")).toBe(false)
+  })
+
   test("preserves pinned session content under server-wide cache pressure", () => {
     const ctx = setup({})
     ctx.store.pin("active")
