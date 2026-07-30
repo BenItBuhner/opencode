@@ -1,4 +1,4 @@
-import type { Message, UserMessage } from "@opencode-ai/sdk/v2"
+import type { Message, SessionStatus, UserMessage } from "@opencode-ai/sdk/v2"
 import { RGBA } from "@opentui/core"
 import { createEffect, createMemo, createSignal, on, onCleanup, onMount, Show } from "solid-js"
 import { useTheme } from "../context/theme"
@@ -57,6 +57,7 @@ export function createGoalStatus(props: {
   sessionID: () => string | undefined
   goal: (sessionID: string) => unknown
   messages: (sessionID: string) => readonly Message[]
+  status?: (sessionID: string) => SessionStatus | undefined
 }) {
   const sessionGoal = createMemo(() => {
     const sessionID = props.sessionID()
@@ -67,6 +68,11 @@ export function createGoalStatus(props: {
     const sessionID = props.sessionID()
     if (!sessionID) return undefined
     return props.messages(sessionID).findLast((message): message is UserMessage => message.role === "user")
+  })
+  const sessionStatus = createMemo(() => {
+    const sessionID = props.sessionID()
+    if (!sessionID) return undefined
+    return props.status?.(sessionID)
   })
   const [retainedGoal, setRetainedGoal] = createSignal<GoalStatusView>()
 
@@ -94,6 +100,10 @@ export function createGoalStatus(props: {
       },
     ),
   )
+  createEffect(() => {
+    if (sessionGoal()) return
+    if (sessionStatus()?.type === "idle") setRetainedGoal(undefined)
+  })
 
   return createMemo(() => sessionGoal() ?? retainedGoal())
 }

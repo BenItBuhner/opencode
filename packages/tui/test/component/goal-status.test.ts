@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { compactProgressBar, parseGoalStatus } from "../../src/component/goal-status"
+import type { SessionStatus } from "@opencode-ai/sdk/v2"
+import { createRoot, createSignal } from "solid-js"
+import { compactProgressBar, createGoalStatus, parseGoalStatus } from "../../src/component/goal-status"
 
 describe("goal status", () => {
   test("parses valid goal metadata and derives latest summary progress", () => {
@@ -34,5 +36,50 @@ describe("goal status", () => {
   test("clamps compact progress bars", () => {
     expect(compactProgressBar(-10)).toEqual({ filled: "", empty: "────────────" })
     expect(compactProgressBar(150)).toEqual({ filled: "━━━━━━━━━━━━", empty: "" })
+  })
+
+  test("clears a retained goal-agent goal when the session returns to idle", async () => {
+    await new Promise<void>((resolve, reject) =>
+      createRoot((dispose) => {
+        const [goalValue, setGoalValue] = createSignal<unknown>({
+          text: "Calculate 8 * 7 and report the result",
+          status: "active",
+          created: Date.now(),
+        })
+        const [statusValue, setStatusValue] = createSignal<SessionStatus>({ type: "busy" })
+        const goal = createGoalStatus({
+          sessionID: () => "ses_goal",
+          goal: () => goalValue(),
+          messages: () => [
+            {
+              id: "msg_goal",
+              sessionID: "ses_goal",
+              role: "user",
+              time: { created: 1 },
+              agent: "goal",
+              model: { providerID: "test", modelID: "test" },
+            },
+          ],
+          status: () => statusValue(),
+        })
+
+        Promise.resolve()
+          .then(() => {
+            expect(goal()?.status).toBe("active")
+            setGoalValue(undefined)
+            return Promise.resolve()
+          })
+          .then(() => {
+            expect(goal()?.status).toBe("active")
+            setStatusValue({ type: "idle" })
+            return Promise.resolve()
+          })
+          .then(() => {
+            expect(goal()).toBeUndefined()
+            dispose()
+            resolve()
+          }, reject)
+      }),
+    )
   })
 })

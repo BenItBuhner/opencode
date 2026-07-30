@@ -12,6 +12,7 @@ function View(props: { api: TuiPluginApi; sessionID: string }) {
     sessionID: () => props.sessionID,
     goal: (sessionID) => props.api.state.session.get(sessionID)?.metadata?.goal,
     messages: (sessionID) => props.api.state.session.messages(sessionID),
+    status: (sessionID) => props.api.state.session.status(sessionID),
   })
   const elapsed = createGoalElapsed(goal)
 

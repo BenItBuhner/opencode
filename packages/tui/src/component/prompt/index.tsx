@@ -241,6 +241,10 @@ export function Prompt(props: PromptProps) {
       },
     ),
   )
+  createEffect(() => {
+    if (sessionGoal()) return
+    if (status().type === "idle") setRetainedGoal(undefined)
+  })
   const displayGoal = createMemo(() => sessionGoal() ?? retainedGoal())
   const [goalNow, setGoalNow] = createSignal(Date.now())
   onMount(() => {
