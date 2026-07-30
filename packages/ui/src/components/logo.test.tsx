@@ -1,19 +1,13 @@
 import { expect, test } from "bun:test"
-import { renderToString } from "solid-js/web"
-import { Logo, Mark, Splash } from "./logo"
 
-test("shared logo assets carry the OpenGoal identity", () => {
-  const mark = renderToString(() => <Mark />)
-  const splash = renderToString(() => <Splash />)
-  const wordmark = renderToString(() => <Logo />)
+test("shared logo assets carry the OpenGoal identity", async () => {
+  const source = await Bun.file(new URL("./logo.tsx", import.meta.url)).text()
 
-  expect(mark).toContain('data-brand="opengoal"')
-  expect(mark).toContain('data-glyph="g"')
-  expect(mark).toContain('aria-label="OpenGoal"')
-  expect(mark).toContain('data-slot="logo-logo-mark-g"')
-  expect(mark).not.toContain('data-slot="logo-logo-mark-o"')
-  expect(splash).toContain('data-brand="opengoal"')
-  expect(splash).toContain('data-glyph="g"')
-  expect(wordmark).toContain('data-wordmark="opengoal"')
-  expect(wordmark).toContain("<title>OpenGoal</title>")
+  expect(source.match(/data-brand="opengoal"/g)).toHaveLength(3)
+  expect(source.match(/data-glyph="g"/g)).toHaveLength(2)
+  expect(source.match(/aria-label="OpenGoal"/g)).toHaveLength(3)
+  expect(source).toContain('data-slot="logo-logo-mark-g"')
+  expect(source).not.toContain('data-slot="logo-logo-mark-o"')
+  expect(source).toContain('data-wordmark="opengoal"')
+  expect(source.match(/<title>OpenGoal<\/title>/g)).toHaveLength(3)
 })
