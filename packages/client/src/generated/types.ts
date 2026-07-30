@@ -2710,6 +2710,7 @@ export type QuestionsListRequestsOutput = {
       readonly custom?: boolean
     }>
     readonly tool?: { readonly messageID: string; readonly callID: string }
+    readonly timeout?: number | "Infinity" | "-Infinity" | "NaN"
   }>
 }
 
@@ -2727,6 +2728,7 @@ export type QuestionsListOutput = {
       readonly custom?: boolean
     }>
     readonly tool?: { readonly messageID: string; readonly callID: string }
+    readonly timeout?: number | "Infinity" | "-Infinity" | "NaN"
   }>
 }["data"]
 
