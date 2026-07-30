@@ -78,23 +78,23 @@ export const Logo = (props: { class?: string }) => {
         <path
           data-letter="g"
           d="M120 6H144V12H120V6ZM120 6H126V36H120V6ZM120 30H144V36H120V30ZM138 18H144V36H138V18ZM132 18H144V24H132V18Z"
-          fill="var(--icon-strong-base)"
+          fill="var(--text-strong)"
         />
-        <path data-letter="o" d="M168 30H156V18H168V30Z" fill="var(--icon-weak-base)" />
+        <path data-letter="o" d="M168 30H156V18H168V30Z" fill="var(--text-weak)" />
         <path
           data-letter="o"
           d="M168 12H156V30H168V12ZM174 36H150V6H174V36Z"
-          fill="var(--icon-strong-base)"
+          fill="var(--text-strong)"
         />
         <path
           data-letter="a"
           d="M186 6H198V12H186V6ZM180 12H186V36H180V12ZM198 12H204V36H198V12ZM180 18H204V24H180V18Z"
-          fill="var(--icon-strong-base)"
+          fill="var(--text-strong)"
         />
         <path
           data-letter="l"
           d="M210 6H216V36H210V6ZM210 30H234V36H210V30Z"
-          fill="var(--icon-strong-base)"
+          fill="var(--text-strong)"
         />
       </g>
     </svg>
