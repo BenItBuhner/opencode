@@ -70,7 +70,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode run --help 1`] = `
 "opengoal run [message..]
 
-run opencode with a message
+run OpenGoal with a message
 
 Positionals:
   message  message to send                                                     [array] [default: []]
@@ -92,9 +92,9 @@ Options:
                                           [string] [choices: "default", "json"] [default: "default"]
   -f, --file         file(s) to attach to message                                            [array]
       --title        title for the session (uses truncated prompt if no value provided)     [string]
-      --attach       attach to a running opencode server (e.g., http://localhost:4096)      [string]
+      --attach       attach to a running OpenGoal server (e.g., http://localhost:4096)      [string]
   -p, --password     basic auth password (defaults to OPENCODE_SERVER_PASSWORD)             [string]
-  -u, --username     basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode')
+  -u, --username     basic auth username (defaults to OPENGOAL_SERVER_USERNAME or 'opengoal')
                                                                                             [string]
       --dir          directory to run in, path on remote server if attaching                [string]
       --port         port for the local server (defaults to random port if no value provided)
@@ -173,7 +173,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode upgrade --help 1`] = `
 "opengoal upgrade [target]
 
-upgrade opencode to the latest or a specific version
+upgrade OpenGoal to the latest or a specific version
 
 Positionals:
   target  version to upgrade to, for ex '0.1.48' or 'v0.1.48'                               [string]
@@ -185,13 +185,13 @@ Options:
       --log-level   log level                   [string] [choices: "DEBUG", "INFO", "WARN", "ERROR"]
       --pure        run without external plugins                                           [boolean]
   -m, --method      installation method to use
-                          [string] [choices: "curl", "npm", "pnpm", "bun", "brew", "choco", "scoop"]"
+                                            [string] [choices: "curl", "npm", "pnpm", "bun", "yarn"]"
 `;
 
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode uninstall --help 1`] = `
 "opengoal uninstall
 
-uninstall opencode and remove all related files
+uninstall opengoal and remove all related files
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -208,7 +208,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode serve --help 1`] = `
 "opengoal serve
 
-starts a headless opencode server
+starts a headless OpenGoal server
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -228,7 +228,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode web --help 1`] = `
 "opengoal web
 
-start opencode server and open web interface
+start OpenGoal server and open web interface
 
 Options:
   -h, --help         show help                                                             [boolean]
@@ -334,7 +334,7 @@ Options:
 exports[`opencode CLI help-text snapshots every documented command emits stable help text: opencode pr --help 1`] = `
 "opengoal pr <number>
 
-fetch and checkout a GitHub PR branch, then run opencode
+fetch and checkout a GitHub PR branch, then run OpenGoal
 
 Positionals:
   number  PR number to checkout                                                  [number] [required]
@@ -489,7 +489,7 @@ exports[`opencode CLI help-text snapshots every documented command emits stable 
 log in to a provider
 
 Positionals:
-  url  opencode auth provider                                                               [string]
+  url  OpenGoal auth provider                                                               [string]
 
 Options:
   -h, --help        show help                                                              [boolean]
