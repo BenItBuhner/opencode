@@ -154,3 +154,72 @@ jobs:
           path: |
             packages/app/e2e/test-results
             packages/app/e2e/playwright-report
+
+  desktop-package-windows:
+    name: desktop package (windows)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    env:
+      OPENCODE_CHANNEL: prod
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Build desktop
+        run: bun --cwd packages/desktop build
+
+      - name: Package desktop
+        run: bun --cwd packages/desktop package:win
+
+      - name: Upload desktop installer
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opengoal-desktop-windows-${{ github.run_attempt }}
+          path: packages/desktop/dist/opengoal-desktop-win-x64.exe
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-package-macos:
+    name: desktop package (macos)
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: false
+      OPENCODE_CHANNEL: prod
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "24"
+
+      - name: Setup Bun
+        uses: ./.github/actions/setup-bun
+
+      - name: Build desktop
+        run: bun --cwd packages/desktop build
+
+      - name: Package unsigned desktop zip
+        working-directory: packages/desktop
+        run: bunx electron-builder --mac zip --config electron-builder.config.ts --config.mac.identity=null --config.mac.notarize=false
+
+      - name: Upload desktop archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opengoal-desktop-macos-${{ github.run_attempt }}
+          path: packages/desktop/dist/opengoal-desktop-mac-*.zip
+          if-no-files-found: error
+          retention-days: 7
