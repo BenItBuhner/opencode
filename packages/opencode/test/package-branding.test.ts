@@ -45,3 +45,20 @@ test("inline TUI splash uses the compact OpenGoal mark and command", async () =>
   expect(splash).toContain("`opengoal --mini -s ${meta.session_id}`")
   expect(splash).not.toContain('"OpenCode"')
 })
+
+test("installer targets OpenGoal releases and paths", async () => {
+  const installer = await Bun.file(new URL("../../../install", import.meta.url)).text()
+  const installation = await Bun.file(new URL("../src/installation/index.ts", import.meta.url)).text()
+
+  expect(installer).toContain("APP=opengoal")
+  expect(installer).toContain("REPO=${OPENGOAL_REPO:-BenItBuhner/opengoal}")
+  expect(installer).toContain("INSTALL_DIR=$HOME/.opengoal/bin")
+  expect(installer).toContain('mv "$tmp_dir/opengoal" "$INSTALL_DIR"')
+  expect(installer).toContain('cp "$binary_path" "${INSTALL_DIR}/opengoal"')
+  expect(installer).not.toContain("github.com/anomalyco/opencode/releases")
+  expect(installer).not.toContain("$HOME/.opencode/bin")
+  expect(installation).toContain("api.github.com/repos/BenItBuhner/opengoal/releases/latest")
+  expect(installation).toContain("@benitbuhner/opengoal")
+  expect(installation).toContain('path.join(".opengoal", "bin")')
+  expect(installation).not.toContain("HttpClientRequest.get(\"https://opencode.ai/install\")")
+})
