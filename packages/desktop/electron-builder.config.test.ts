@@ -4,9 +4,14 @@ import type { Configuration } from "electron-builder"
 const legacyDesktopEntry = "resources/linux/opencode-desktop.desktop"
 
 const channels = [
-  { channel: "dev", appId: "ai.opencode.desktop.dev", productName: "OpenGoal Dev" },
-  { channel: "beta", appId: "ai.opencode.desktop.beta", productName: "OpenGoal Beta" },
-  { channel: "prod", appId: "ai.opencode.desktop", productName: "OpenGoal" },
+  { channel: "dev", appId: "ai.opencode.desktop.dev", productName: "OpenGoal Dev", packageName: "opengoal-dev" },
+  {
+    channel: "beta",
+    appId: "ai.opencode.desktop.beta",
+    productName: "OpenGoal Beta",
+    packageName: "opengoal-beta",
+  },
+  { channel: "prod", appId: "ai.opencode.desktop", productName: "OpenGoal", packageName: "opengoal" },
 ] as const
 
 for (const channel of channels) {
@@ -22,6 +27,8 @@ for (const channel of channels) {
 
     expect(config.appId).toBe(channel.appId)
     expect(config.productName).toBe(channel.productName)
+    expect(config.artifactName).toBe("opengoal-desktop-${os}-${arch}.${ext}")
+    expect(config.rpm?.packageName).toBe(channel.packageName)
     expect(config.extraMetadata?.desktopName).toBe(`${channel.appId}.desktop`)
     expect(config.linux?.executableName).toBe(channel.appId)
     expect(config.linux?.desktop?.entry?.StartupWMClass).toBe(channel.appId)

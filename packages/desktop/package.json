@@ -6,7 +6,8 @@
   "license": "MIT",
   "homepage": "https://github.com/BenItBuhner/opengoal",
   "author": {
-    "name": "OpenGoal"
+    "name": "OpenGoal",
+    "email": "BenItBuhner@users.noreply.github.com"
   },
   "scripts": {
     "typecheck": "tsgo -b",

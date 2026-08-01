@@ -42,7 +42,7 @@ const APP_IDS = {
 } as const
 
 const getBase = (appId: string): Configuration => ({
-  artifactName: "opencode-desktop-${os}-${arch}.${ext}",
+  artifactName: "opengoal-desktop-${os}-${arch}.${ext}",
   directories: {
     output: "dist",
     buildResources: "resources",
@@ -129,7 +129,7 @@ function getConfig() {
         appId,
         productName: "OpenGoal Dev",
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-dev", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opengoal-dev", fpm: [metainfoFpm(appId)] },
       }
     }
     case "beta": {
@@ -140,7 +140,7 @@ function getConfig() {
         protocols: { name: "OpenGoal Beta", schemes: ["opencode"] },
         publish: { provider: "github", owner: "BenItBuhner", repo: "opengoal", channel: "beta" },
         deb: { fpm: [metainfoFpm(appId)] },
-        rpm: { packageName: "opencode-beta", fpm: [metainfoFpm(appId)] },
+        rpm: { packageName: "opengoal-beta", fpm: [metainfoFpm(appId)] },
       }
     }
     case "prod": {
@@ -151,7 +151,7 @@ function getConfig() {
         protocols: { name: "OpenGoal", schemes: ["opencode"] },
         publish: { provider: "github", owner: "BenItBuhner", repo: "opengoal", channel: "latest" },
         deb: { fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
-        rpm: { packageName: "opencode", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
+        rpm: { packageName: "opengoal", fpm: [metainfoFpm(appId), legacyDesktopEntryFpm] },
       }
     }
   }
