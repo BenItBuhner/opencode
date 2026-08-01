@@ -196,6 +196,7 @@ jobs:
     timeout-minutes: 30
     env:
       CSC_IDENTITY_AUTO_DISCOVERY: false
+      NODE_OPTIONS: --max-old-space-size=6144
       OPENCODE_CHANNEL: prod
     steps:
       - name: Checkout repository
