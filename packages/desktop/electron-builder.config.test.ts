@@ -4,9 +4,9 @@ import type { Configuration } from "electron-builder"
 const legacyDesktopEntry = "resources/linux/opencode-desktop.desktop"
 
 const channels = [
-  { channel: "dev", appId: "ai.opencode.desktop.dev" },
-  { channel: "beta", appId: "ai.opencode.desktop.beta" },
-  { channel: "prod", appId: "ai.opencode.desktop" },
+  { channel: "dev", appId: "ai.opencode.desktop.dev", productName: "OpenGoal Dev" },
+  { channel: "beta", appId: "ai.opencode.desktop.beta", productName: "OpenGoal Beta" },
+  { channel: "prod", appId: "ai.opencode.desktop", productName: "OpenGoal" },
 ] as const
 
 for (const channel of channels) {
@@ -21,11 +21,17 @@ for (const channel of channels) {
     else process.env.OPENCODE_CHANNEL = previous
 
     expect(config.appId).toBe(channel.appId)
+    expect(config.productName).toBe(channel.productName)
     expect(config.extraMetadata?.desktopName).toBe(`${channel.appId}.desktop`)
     expect(config.linux?.executableName).toBe(channel.appId)
     expect(config.linux?.desktop?.entry?.StartupWMClass).toBe(channel.appId)
     expect(config.deb?.fpm).toContainEqual(expect.stringContaining(`/usr/share/metainfo/${channel.appId}.metainfo.xml`))
     expect(config.rpm?.fpm).toContainEqual(expect.stringContaining(`/usr/share/metainfo/${channel.appId}.metainfo.xml`))
+    if (channel.channel !== "dev") {
+      expect(config.publish).toEqual(
+        expect.objectContaining({ provider: "github", owner: "BenItBuhner", repo: "opengoal" }),
+      )
+    }
   })
 }
 
@@ -51,7 +57,8 @@ test("keeps a hidden prod launcher for old Linux pins", async () => {
   ).toBe(true)
 
   const desktop = await Bun.file(legacyDesktopEntry).text()
-  expect(desktop).toContain("Exec=/opt/OpenCode/ai.opencode.desktop %U")
+  expect(desktop).toContain("Name=OpenGoal")
+  expect(desktop).toContain("Exec=/opt/OpenGoal/ai.opencode.desktop %U")
   expect(desktop).toContain("Icon=ai.opencode.desktop")
   expect(desktop).toContain("StartupWMClass=ai.opencode.desktop")
   expect(desktop).toContain("NoDisplay=true")

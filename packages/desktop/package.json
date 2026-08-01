@@ -4,10 +4,9 @@
   "version": "1.18.10",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://opencode.ai",
+  "homepage": "https://github.com/BenItBuhner/opengoal",
   "author": {
-    "name": "OpenCode",
-    "email": "hello@opencode.ai"
+    "name": "OpenGoal"
   },
   "scripts": {
     "typecheck": "tsgo -b",

@@ -4,7 +4,7 @@ const arg = process.argv[2]
 const channel = arg === "dev" || arg === "beta" || arg === "prod" ? arg : resolveChannel()
 
 const appId = channel === "prod" ? "ai.opencode.desktop" : `ai.opencode.desktop.${channel}`
-const productName = channel === "prod" ? "OpenCode" : `OpenCode ${channel.charAt(0).toUpperCase() + channel.slice(1)}`
+const productName = channel === "prod" ? "OpenGoal" : `OpenGoal ${channel.charAt(0).toUpperCase() + channel.slice(1)}`
 const summary = `Open source AI coding agent${channel !== "prod" ? ` (${channel})` : ""}`
 
 const xml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -23,7 +23,7 @@ const xml = `<?xml version="1.0" encoding="UTF-8"?>
 
   <description>
     <p>
-      OpenCode is an open source agent that helps you write and run code with any AI model.
+      OpenGoal is an open source agent that helps you write and run code with any AI model.
     </p>
   </description>
 
@@ -32,7 +32,7 @@ const xml = `<?xml version="1.0" encoding="UTF-8"?>
   <content_rating type="oars-1.1" />
 
   <url type="bugtracker">https://github.com/anomalyco/opencode/issues</url>
-  <url type="homepage">https://opencode.ai</url>
+  <url type="homepage">https://github.com/BenItBuhner/opengoal</url>
   <url type="vcs-browser">https://github.com/anomalyco/opencode</url>
 
   <screenshots>
