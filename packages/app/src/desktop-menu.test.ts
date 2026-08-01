@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { DESKTOP_MENU } from "./desktop-menu"
+import { DESKTOP_MENU, type DesktopMenuItem } from "./desktop-menu"
 
 describe("desktop menu", () => {
   test("uses the OpenGoal product name", () => {
@@ -8,16 +8,12 @@ describe("desktop menu", () => {
 
   test("points product help and feedback at the OpenGoal fork", () => {
     const help = DESKTOP_MENU.find((menu) => menu.id === "help")?.items ?? []
+    const item = (label: string) =>
+      help.find((entry): entry is DesktopMenuItem => entry.type === "item" && entry.label === label)
 
-    expect(help.find((item) => item.type === "item" && item.label === "OpenGoal Documentation")?.href).toContain(
-      "BenItBuhner/opengoal",
-    )
-    expect(help.find((item) => item.type === "item" && item.label === "Share Feedback")?.href).toContain(
-      "BenItBuhner/opengoal",
-    )
-    expect(help.find((item) => item.type === "item" && item.label === "Report a Bug")?.href).toContain(
-      "BenItBuhner/opengoal",
-    )
+    expect(item("OpenGoal Documentation")?.href).toContain("BenItBuhner/opengoal")
+    expect(item("Share Feedback")?.href).toContain("BenItBuhner/opengoal")
+    expect(item("Report a Bug")?.href).toContain("BenItBuhner/opengoal")
   })
 
   test("navigates between tabs", () => {
