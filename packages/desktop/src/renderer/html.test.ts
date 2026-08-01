@@ -38,6 +38,12 @@ describe("electron renderer html", () => {
         const content = await html(name)
         expect(content).not.toContain('rel="manifest"')
       })
+
+      test("uses the OpenGoal product title", async () => {
+        const content = await html(name)
+        expect(content).toContain("<title>OpenGoal</title>")
+        expect(content).not.toContain("<title>OpenCode</title>")
+      })
     })
   }
 })

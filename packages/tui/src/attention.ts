@@ -38,14 +38,14 @@ type TuiAttentionHost = TuiAttention & {
   dispose(): void
 }
 
-const DEFAULT_TITLE = "opencode"
-const DEFAULT_PACK_ID = "opencode.default"
+const DEFAULT_TITLE = "opengoal"
+const DEFAULT_PACK_ID = "opengoal.default"
 const KV_SOUND_PACK = "attention_sound_pack"
 const TITLE_LIMIT = 80
 const MESSAGE_LIMIT = 240
 const BUILTIN_PACK: RegisteredSoundPack = {
   id: DEFAULT_PACK_ID,
-  name: "OpenCode Default",
+  name: "OpenGoal Default",
   builtin: true,
   sounds: {
     default: defaultSoundPath,
@@ -120,7 +120,10 @@ export function createTuiAttention(input: {
   let focus: FocusState = "unknown"
   let disposed = false
   let activePackID: string | undefined
-  const packs = new Map<string, RegisteredSoundPack>([[BUILTIN_PACK.id, BUILTIN_PACK]])
+  const packs = new Map<string, RegisteredSoundPack>([
+    [BUILTIN_PACK.id, BUILTIN_PACK],
+    ["opencode.default", BUILTIN_PACK],
+  ])
   const audio = input.audio ?? TuiAudio
 
   const onFocus = () => {

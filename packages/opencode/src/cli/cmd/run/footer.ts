@@ -27,7 +27,7 @@
 import { CliRenderEvents, type CliRenderer, type KeyEvent, type Renderable, type TreeSitterClient } from "@opentui/core"
 import type { Keymap } from "@opentui/keymap"
 import { render } from "@opentui/solid"
-import "@opencode-ai/tui/ui/register-spinner"
+import { registerOpencodeSpinner } from "@opencode-ai/tui/component/register-spinner"
 import { createComponent, createSignal, type Accessor, type Setter } from "solid-js"
 import { createStore, reconcile } from "solid-js/store"
 import { OpencodeKeymapProvider } from "@opencode-ai/tui/keymap"
@@ -60,6 +60,8 @@ import type {
   RunTuiConfig,
   StreamCommit,
 } from "./types"
+
+registerOpencodeSpinner()
 
 type CycleResult = {
   modelLabel?: string

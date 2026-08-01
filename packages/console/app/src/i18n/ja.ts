@@ -15,7 +15,7 @@ export const dict = {
   "nav.home": "ホーム",
   "nav.openMenu": "メニューを開く",
   "nav.getStartedFree": "無料ではじめる",
-  "nav.logoAlt": "OpenCode",
+  "nav.logoAlt": "OpenGoal",
 
   "nav.context.copyLogo": "ロゴをSVGでコピー",
   "nav.context.copyWordmark": "ワードマークをSVGでコピー",
@@ -37,7 +37,7 @@ export const dict = {
   "email.subscribe": "登録",
   "email.success": "ほぼ完了です。受信トレイを確認してメールアドレスを認証してください",
 
-  "notFound.title": "見つかりません | OpenCode",
+  "notFound.title": "見つかりません | OpenGoal",
   "notFound.heading": "404 - ページが見つかりません",
   "notFound.home": "ホーム",
   "notFound.docs": "ドキュメント",
@@ -81,31 +81,35 @@ export const dict = {
   "error.reloadAmountMin": "リロード額は少なくとも ${{amount}} である必要があります",
   "error.reloadTriggerMin": "残高トリガーは少なくとも ${{amount}} である必要があります",
 
-  "app.meta.description": "OpenCode - オープンソースのコーディングエージェント。",
+  "app.meta.description": "OpenGoal - オープンソースのコーディングエージェント。",
 
-  "home.title": "OpenCode | オープンソースのAIコーディングエージェント",
+  "home.title": "OpenGoal | オープンソースのAIコーディングエージェント",
 
-  "temp.title": "OpenCode | ターミナル向けに構築されたAIコーディングエージェント",
+  "temp.title": "OpenGoal | ターミナル向けに構築されたAIコーディングエージェント",
   "temp.hero.title": "ターミナル向けに構築されたAIコーディングエージェント",
   "temp.zen": "OpenCode Zen",
   "temp.getStarted": "はじめる",
   "temp.feature.native.title": "ネイティブ TUI",
   "temp.feature.native.body": "レスポンシブでネイティブ、テーマ変更可能なターミナルUI",
-  "temp.feature.zen.beforeLink": "OpenCodeが提供する",
+  "temp.feature.zen.beforeLink": "OpenGoalが提供する",
   "temp.feature.zen.link": "厳選されたモデルリスト",
   "temp.feature.zen.afterLink": "",
   "temp.feature.models.beforeLink": "ローカルモデルを含む、",
   "temp.feature.models.afterLink": "を通じて75以上のLLMプロバイダーをサポート",
-  "temp.screenshot.caption": "tokyonight テーマを使用した OpenCode TUI",
-  "temp.screenshot.alt": "tokyonight テーマの OpenCode TUI",
+  "temp.screenshot.caption": "tokyonight テーマを使用した OpenGoal TUI",
+  "temp.screenshot.alt": "tokyonight テーマの OpenGoal TUI",
   "temp.logoLightAlt": "opencodeのロゴ（ライト）",
   "temp.logoDarkAlt": "opencodeのロゴ（ダーク）",
 
   "home.banner.badge": "新着",
-  "home.banner.text": "デスクトップアプリのベータ版が利用可能",
-  "home.banner.platforms": "macOS、Windows、Linux で",
+  "home.banner.text": "デスクトップ版にタブが登場。",
+  "home.banner.platforms": "macOS、Windows、Linux で利用できます",
   "home.banner.downloadNow": "今すぐダウンロード",
   "home.banner.downloadBetaNow": "デスクトップベータ版を今すぐダウンロード",
+  "home.promo.title": "デスクトップ版にタブが登場",
+  "home.promo.body": "タブで作業とアクティブなセッションを整理できます。",
+  "home.promo.cta": "始めるには最新版をダウンロードしてください。",
+  "home.promo.close": "デスクトップアプリのお知らせを閉じる",
 
   "home.hero.title": "オープンソースのAIコーディングエージェント",
   "home.hero.subtitle.a": "無料モデルが含まれています。また、任意のプロバイダーの任意のモデルに接続でき、",
@@ -113,9 +117,9 @@ export const dict = {
 
   "home.install.ariaLabel": "インストールオプション",
 
-  "home.what.title": "OpenCodeとは？",
+  "home.what.title": "OpenGoalとは？",
   "home.what.body":
-    "OpenCodeは、ターミナル、IDE、またはデスクトップでのコード作成を支援するオープンソースのエージェントです。",
+    "OpenGoalは、ターミナル、IDE、またはデスクトップでのコード作成を支援するオープンソースのエージェントです。",
   "home.what.lsp.title": "LSP対応",
   "home.what.lsp.body": "LLMに適したLSPを自動的に読み込みます",
   "home.what.multiSession.title": "マルチセッション",
@@ -141,43 +145,43 @@ export const dict = {
 
   "home.privacy.title": "プライバシーを最優先に設計",
   "home.privacy.body":
-    "OpenCodeはコードやコンテキストデータを一切保存しないため、プライバシーが重視される環境でも利用できます。",
+    "OpenGoalはコードやコンテキストデータを一切保存しないため、プライバシーが重視される環境でも利用できます。",
   "home.privacy.learnMore": "詳しくは",
   "home.privacy.link": "プライバシー",
 
-  "home.faq.q1": "OpenCodeとは？",
+  "home.faq.q1": "OpenGoalとは？",
   "home.faq.a1":
-    "OpenCodeは、任意のAIモデルでコードの作成・実行を支援するオープンソースのエージェントです。ターミナルベースのインターフェース、デスクトップアプリ、IDE拡張として利用できます。",
-  "home.faq.q2": "OpenCodeの使い方は？",
+    "OpenGoalは、任意のAIモデルでコードの作成・実行を支援するオープンソースのエージェントです。ターミナルベースのインターフェース、デスクトップアプリ、IDE拡張として利用できます。",
+  "home.faq.q2": "OpenGoalの使い方は？",
   "home.faq.a2.before": "最も簡単な始め方は",
   "home.faq.a2.link": "イントロを読む",
-  "home.faq.q3": "OpenCodeには追加のAIサブスクリプションが必要ですか？",
-  "home.faq.a3.p1": "必ずしも必要ではありません。OpenCodeには、アカウント不要で使える無料モデルが含まれています。",
+  "home.faq.q3": "OpenGoalには追加のAIサブスクリプションが必要ですか？",
+  "home.faq.a3.p1": "必ずしも必要ではありません。OpenGoalには、アカウント不要で使える無料モデルが含まれています。",
   "home.faq.a3.p2.beforeZen": "これらに加えて、",
   "home.faq.a3.p2.afterZen": " アカウントを作成することで、人気のコーディングモデルを利用できます。",
   "home.faq.a3.p3":
-    "Zenの利用を推奨していますが、OpenCodeはOpenAI、Anthropic、xAIなどの主要プロバイダーにも対応しています。",
+    "Zenの利用を推奨していますが、OpenGoalはOpenAI、Anthropic、xAIなどの主要プロバイダーにも対応しています。",
   "home.faq.a3.p4.beforeLocal": "さらに、",
   "home.faq.a3.p4.localLink": "ローカルモデル",
-  "home.faq.q4": "既存のAIサブスクリプションをOpenCodeで使えますか？",
+  "home.faq.q4": "既存のAIサブスクリプションをOpenGoalで使えますか？",
   "home.faq.a4.p1":
-    "はい、OpenCodeは主要プロバイダーのサブスクリプションプランに対応しています。Claude Pro/Max、ChatGPT Plus/Pro、GitHub Copilotのサブスクリプションを利用できます。",
+    "はい、OpenGoalは主要プロバイダーのサブスクリプションプランに対応しています。Claude Pro/Max、ChatGPT Plus/Pro、GitHub Copilotのサブスクリプションを利用できます。",
   "home.faq.q5": "ターミナルだけで使えますか？",
-  "home.faq.a5.beforeDesktop": "もう違います！OpenCodeは今は",
+  "home.faq.a5.beforeDesktop": "もう違います！OpenGoalは今は",
   "home.faq.a5.desktop": "デスクトップ",
   "home.faq.a5.and": "と",
   "home.faq.a5.web": "ウェブ",
-  "home.faq.q6": "OpenCodeの価格は？",
+  "home.faq.q6": "OpenGoalの価格は？",
   "home.faq.a6":
-    "OpenCodeは100%無料で使えます。無料モデルも含まれています。他のプロバイダーに接続する場合は追加費用が発生することがあります。",
+    "OpenGoalは100%無料で使えます。無料モデルも含まれています。他のプロバイダーに接続する場合は追加費用が発生することがあります。",
   "home.faq.q7": "データとプライバシーは？",
   "home.faq.a7.p1": "無料モデルを使う場合や共有リンクを作成する場合にのみ、データが保存されます。",
   "home.faq.a7.p2.beforeModels": "詳しくは",
   "home.faq.a7.p2.modelsLink": "モデルのプライバシー",
   "home.faq.a7.p2.and": "と",
   "home.faq.a7.p2.shareLink": "共有ページのプライバシー",
-  "home.faq.q8": "OpenCodeはオープンソースですか？",
-  "home.faq.a8.p1": "はい、OpenCodeは完全にオープンソースです。ソースコードは",
+  "home.faq.q8": "OpenGoalはオープンソースですか？",
+  "home.faq.a8.p1": "はい、OpenGoalは完全にオープンソースです。ソースコードは",
   "home.faq.a8.p2": "の",
   "home.faq.a8.mitLicense": "MITライセンス",
   "home.faq.a8.p3":
@@ -185,30 +189,30 @@ export const dict = {
 
   "home.zenCta.title": "コーディングエージェント向けの信頼できる最適化モデル",
   "home.zenCta.body":
-    "Zenは、OpenCodeがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
+    "Zenは、OpenGoalがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
   "home.zenCta.link": "Zenについて知る",
 
   "zen.title": "OpenCode Zen | コーディングエージェント向けの信頼できる最適化モデル",
   "zen.hero.title": "コーディングエージェント向けの信頼できる最適化モデル",
   "zen.hero.body":
-    "Zenは、OpenCodeがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
+    "Zenは、OpenGoalがコーディングエージェント向けにテスト・ベンチマーク済みのAIモデルを厳選して提供します。プロバイダー間の性能・品質のブレを気にせず、検証済みのモデルを利用できます。",
 
   "zen.faq.q1": "OpenCode Zenとは？",
   "zen.faq.a1":
-    "Zenは、OpenCodeのチームが作成した、コーディングエージェント向けにテスト・ベンチマークされたAIモデルの厳選セットです。",
+    "Zenは、OpenGoalのチームが作成した、コーディングエージェント向けにテスト・ベンチマークされたAIモデルの厳選セットです。",
   "zen.faq.q2": "Zenはなぜ精度が高いのですか？",
   "zen.faq.a2":
     "Zenはコーディングエージェント向けにテスト・ベンチマークされたモデルだけを提供します。ステーキを切るのにバターナイフを使わないように、コーディングには品質の低いモデルを使わないでください。",
   "zen.faq.q3": "Zenは安いですか？",
   "zen.faq.a3":
-    "Zenは営利目的ではありません。Zenはモデル提供元のコストをそのままあなたに渡します。Zenの利用が増えるほど、OpenCodeはより良いレートを交渉し、その分をあなたに還元できます。",
+    "Zenは営利目的ではありません。Zenはモデル提供元のコストをそのままあなたに渡します。Zenの利用が増えるほど、OpenGoalはより良いレートを交渉し、その分をあなたに還元できます。",
   "zen.faq.q4": "Zenの料金は？",
   "zen.faq.a4.p1.beforePricing": "Zenは",
   "zen.faq.a4.p1.pricingLink": "リクエスト単位で課金",
   "zen.faq.a4.p1.afterPricing": "し、マークアップはありません。つまり、モデル提供元の請求額をそのまま支払います。",
   "zen.faq.a4.p2.beforeAccount": "総コストは利用量に依存し、月次の支出上限を",
   "zen.faq.a4.p2.accountLink": "アカウント",
-  "zen.faq.a4.p3": "コストを賄うために、OpenCodeは$20の残高チャージあたり$1.23の小さな決済手数料のみを追加します。",
+  "zen.faq.a4.p3": "コストを賄うために、OpenGoalは$20の残高チャージあたり$1.23の小さな決済手数料のみを追加します。",
   "zen.faq.q5": "データとプライバシーは？",
   "zen.faq.a5.beforeExceptions":
     "Zenのモデルはすべて米国でホストされています。プロバイダーはゼロ保持ポリシーを守り、データをモデル学習に使用しません（",
@@ -219,7 +223,7 @@ export const dict = {
   "zen.faq.a7": "はい、いつでも請求を無効化し、残りの残高を利用できます。",
   "zen.faq.q8": "他のコーディングエージェントでもZenを使えますか？",
   "zen.faq.a8":
-    "ZenはOpenCodeとの相性が良いですが、どのエージェントでもZenを利用できます。お使いのコーディングエージェントのセットアップ手順に従ってください。",
+    "ZenはOpenGoalとの相性が良いですが、どのエージェントでもZenを利用できます。お使いのコーディングエージェントのセットアップ手順に従ってください。",
 
   "zen.cta.start": "Zenをはじめる",
   "zen.pricing.title": "$20の従量課金制残高を追加",
@@ -229,12 +233,12 @@ export const dict = {
   "zen.problem.title": "Zenはどのような問題を解決していますか？",
   "zen.problem.body":
     "利用可能なモデルは非常に多くありますが、コーディングエージェントで適切に機能するモデルはほんのわずかです。ほとんどのプロバイダーは、それらを異なる設定で提供し、結果も異なります。",
-  "zen.problem.subtitle": "OpenCodeユーザーだけでなく、すべての人を対象にこの問題を修正しています。",
+  "zen.problem.subtitle": "OpenGoalユーザーだけでなく、すべての人を対象にこの問題を修正しています。",
   "zen.problem.item1": "選択したモデルをテストし、チームに相談する",
   "zen.problem.item2": "プロバイダーと連携して適切に提供されるようにする",
   "zen.problem.item3": "私たちが推奨するすべてのモデルとプロバイダーの組み合わせをベンチマークする",
   "zen.how.title": "Zenの仕組み",
-  "zen.how.body": "ZenをOpenCodeとともに使用することをお勧めしますが、Zenはどのエージェントでも使用できます。",
+  "zen.how.body": "ZenをOpenGoalとともに使用することをお勧めしますが、Zenはどのエージェントでも使用できます。",
   "zen.how.step1.title": "サインアップして$20の残高を追加",
   "zen.how.step1.beforeLink": "",
   "zen.how.step1.link": "セットアップ手順",
@@ -249,9 +253,9 @@ export const dict = {
   "zen.privacy.exceptionsLink": "以下の例外",
 
   "go.title": "OpenCode Go | すべての人のための低価格なコーディングモデル",
-  "go.banner.text": "MiniMax M3の利用上限が期間限定で3倍に",
+  "go.banner.text": "GPT 5.6 Lunaの利用上限が期間限定で2倍に",
   "go.meta.description":
-    "Goは最初の月$5、その後$10/月で、GLM-5.1、GLM-5、Kimi K2.7 Code、Kimi K2.6、MiMo-V2.5-Pro、MiMo-V2.5、Qwen3.7 Max、Qwen3.7 Plus、Qwen3.6 Plus、MiniMax M2.7、MiniMax M3、DeepSeek V4 Pro、DeepSeek V4 Flashに対して5時間のゆとりあるリクエスト上限があります。",
+    "Goは最初の月$5、その後$10/月で、主要なコーディングモデルへのゆとりある利用上限と安定したアクセスを提供します。",
   "go.hero.title": "すべての人のための低価格なコーディングモデル",
   "go.hero.body":
     "Goは、世界中のプログラマーにエージェント型コーディングをもたらします。最も高性能なオープンソースモデルへの十分な制限と安定したアクセスを提供し、コストや可用性を気にすることなく強力なエージェントで構築できます。",
@@ -268,12 +272,11 @@ export const dict = {
   "go.graph.go": "Go",
   "go.graph.label": "5時間あたりのリクエスト数",
   "go.graph.usageLimits": "利用制限",
-  "go.graph.tick": "{{n}}倍",
   "go.graph.aria": "5時間あたりのリクエスト数: {{free}} 対 {{go}}",
 
   "go.testimonials.brand.zen": "Zen",
   "go.testimonials.brand.go": "Go",
-  "go.testimonials.handle": "@OpenCode",
+  "go.testimonials.handle": "@OpenGoal",
   "go.testimonials.dax.name": "Dax Raad",
   "go.testimonials.dax.title": "元CEO, Terminal Products",
   "go.testimonials.dax.quoteAfter": "は人生を変えるものでした。本当に迷う必要はありません。",
@@ -295,15 +298,14 @@ export const dict = {
   "go.testimonials.frank.quote": "まだNvidiaにいられたらよかったのに。",
   "go.problem.title": "Goはどのような問題を解決していますか？",
   "go.problem.body":
-    "私たちはOpenCodeの体験をできるだけ多くの人に届けることに注力しています。OpenCode Goは低価格のサブスクリプションで、最初の月は$5、その後は$10/月です。ゆとりある上限と、最も高性能なオープンソースモデルへの信頼できるアクセスを提供します。",
+    "私たちはOpenGoalの体験をできるだけ多くの人に届けることに注力しています。OpenCode Goは低価格のサブスクリプションで、最初の月は$5、その後は$10/月です。ゆとりある上限と、最も高性能なオープンソースモデルへの信頼できるアクセスを提供します。",
   "go.problem.subtitle": " ",
   "go.problem.item1": "低価格なサブスクリプション料金",
   "go.problem.item2": "十分な制限と安定したアクセス",
   "go.problem.item3": "できるだけ多くのプログラマーのために構築",
-  "go.problem.item4":
-    "GLM-5.1、GLM-5、Kimi K2.7 Code、Kimi K2.6、MiMo-V2.5-Pro、MiMo-V2.5、Qwen3.7 Max、Qwen3.7 Plus、Qwen3.6 Plus、MiniMax M2.7、MiniMax M3、DeepSeek V4 Pro、DeepSeek V4 Flashを含む",
+  "go.problem.item4": "エージェント型コーディング向けにテストされた厳選モデルラインナップ",
   "go.how.title": "Goの仕組み",
-  "go.how.body": "Goは最初の月$5、その後$10/月で始まります。OpenCodeまたは任意のエージェントで使えます。",
+  "go.how.body": "Goは最初の月$5、その後$10/月で始まります。OpenGoalまたは任意のエージェントで使えます。",
   "go.how.step1.title": "アカウントを作成",
   "go.how.step1.beforeLink": "",
   "go.how.step1.link": "セットアップ手順はこちら",
@@ -326,7 +328,7 @@ export const dict = {
   "go.faq.a2": "Go には、十分な利用上限と安定したアクセスを備えた、以下のモデルが含まれます。",
   "go.faq.q3": "GoはZenと同じですか？",
   "go.faq.a3":
-    "いいえ。Zenは従量課金制ですが、Goは最初の月$5、その後$10/月で始まり、GLM-5.1、GLM-5、Kimi K2.7 Code、Kimi K2.6、MiMo-V2.5-Pro、MiMo-V2.5、Qwen3.7 Max、Qwen3.7 Plus、Qwen3.6 Plus、MiniMax M2.7、MiniMax M3、DeepSeek V4 Pro、DeepSeek V4 Flashのオープンソースモデルに対して、ゆとりある上限と信頼できるアクセスを提供します。",
+    "いいえ。Zenは従量課金制ですが、Goは最初の月$5、その後$10/月で、厳選されたモデルラインナップへのゆとりある上限と安定したアクセスを提供します。",
   "go.faq.q4": "Goの料金は？",
   "go.faq.a4.p1.beforePricing": "Goは",
   "go.faq.a4.p1.pricingLink": "最初の月$5",
@@ -335,8 +337,18 @@ export const dict = {
   "go.faq.a4.p2.accountLink": "アカウント",
   "go.faq.a4.p3": "いつでもキャンセル可能です。",
   "go.faq.q5": "データとプライバシーは？",
-  "go.faq.a5.body":
-    "このプランは主に海外ユーザー向けに設計されており、米国、EU、シンガポールでホストされたモデルにより安定したグローバルアクセスを提供します。プロバイダーはゼロ保持ポリシーに従い、お客様のデータをモデルのトレーニングに使用しません。",
+  "go.faq.a5.model": "モデル",
+  "go.faq.a5.training": "モデルのトレーニング",
+  "go.faq.a5.retention": "データ保持",
+  "go.faq.a5.retention30": "30日",
+  "go.faq.a5.retention0": "0日",
+  "go.faq.a5.used": "使用あり",
+  "go.faq.a5.notUsed": "使用なし",
+  "go.faq.a5.noAgreement": "契約なし",
+  "go.faq.a5.grokRetention":
+    "ZDRでは、保存データに依存する重要なAPI機能（ステートフルなResponses API、Files and Collections、Batch APIなど）が無効になります。",
+  "go.faq.a5.gptRetention": "不正使用監視ログはすべてのAPI機能の使用時に生成され、最大30日間保持されます。",
+  "go.faq.a5.learnMore": "詳しく見る",
   "go.faq.a5.beforeExceptions":
     "Goのモデルは米国でホストされています。プロバイダーはゼロ保持ポリシーに従い、モデルのトレーニングにデータを使用しません（",
   "go.faq.a5.exceptionsLink": "以下の例外",
@@ -350,7 +362,7 @@ export const dict = {
 
   "go.faq.q9": "無料モデルとGoの違いは何ですか？",
   "go.faq.a9":
-    "無料モデルにはBig Pickleと、その時点で利用可能なプロモーションモデルが含まれ、1日200リクエストの制限があります。GoにはGLM-5.1、GLM-5、Kimi K2.7 Code、Kimi K2.6、MiMo-V2.5-Pro、MiMo-V2.5、Qwen3.7 Max、Qwen3.7 Plus、Qwen3.6 Plus、MiniMax M2.7、MiniMax M3、DeepSeek V4 Pro、DeepSeek V4 Flashが含まれ、ローリングウィンドウ（5時間、週間、月間）全体でより高いリクエスト制限が適用されます。これは概算で5時間あたり$12、週間$30、月間$60相当です（実際のリクエスト数はモデルと使用状況により異なります）。",
+    "無料モデルにはBig Pickleと、その時点で利用可能なプロモーションモデルが含まれ、1日200リクエストの制限があります。Goでは厳選されたモデルラインナップを利用でき、ローリングウィンドウ（5時間、週間、月間）全体でより高いリクエスト制限が適用されます。これは概算で5時間あたり$12、週間$30、月間$60相当です（実際のリクエスト数はモデルと使用状況により異なります）。",
 
   "zen.api.error.rateLimitExceeded": "レート制限を超えました。後でもう一度お試しください。",
   "zen.api.error.modelNotSupported": "モデル {{model}} はサポートされていません",
@@ -359,6 +371,7 @@ export const dict = {
   "zen.api.error.providerNotSupported": "プロバイダー {{provider}} はサポートされていません",
   "zen.api.error.missingApiKey": "APIキーがありません。",
   "zen.api.error.invalidApiKey": "無効なAPIキーです。",
+  "zen.api.error.requestBlockedByUpstreamProvider": "上流プロバイダーによりリクエストがブロックされました。",
   "zen.api.error.subscriptionQuotaExceeded":
     "サブスクリプションの制限を超えました。{{retryIn}} 後に再試行してください。",
   "zen.api.error.goSubscriptionRollingLimitExceeded":
@@ -374,14 +387,16 @@ export const dict = {
   "zen.api.error.userMonthlyLimitReached":
     "月額の利用上限 ${{amount}} に達しました。こちらから上限を管理してください: {{membersUrl}}",
   "zen.api.error.modelDisabled": "モデルが無効です",
+  "zen.api.error.regionNotAllowed":
+    "このモデルの最新バージョンは中国でのみホスト提供されており、利用するには明示的なオプトインが必要です: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
     "{{model}} の無料プロモーションは終了しました。OpenCode Go を購読するとモデルを引き続き使用できます - {{link}}",
 
-  "black.meta.title": "OpenCode Black | 世界最高峰のコーディングモデルすべてにアクセス",
-  "black.meta.description": "OpenCode Black サブスクリプションプランで、Claude、GPT、Gemini などにアクセス。",
+  "black.meta.title": "OpenGoal Black | 世界最高峰のコーディングモデルすべてにアクセス",
+  "black.meta.description": "OpenGoal Black サブスクリプションプランで、Claude、GPT、Gemini などにアクセス。",
   "black.hero.title": "世界最高峰のコーディングモデルすべてにアクセス",
   "black.hero.subtitle": "Claude、GPT、Gemini などを含む",
-  "black.title": "OpenCode Black | 料金",
+  "black.title": "OpenGoal Black | 料金",
   "black.paused": "Blackプランの登録は一時的に停止しています。",
   "black.plan.icon20": "Black 20 プラン",
   "black.plan.icon100": "Black 100 プラン",
@@ -400,10 +415,10 @@ export const dict = {
   "black.action.continue": "続ける",
   "black.finePrint.beforeTerms": "表示価格には適用される税金は含まれていません",
   "black.finePrint.terms": "利用規約",
-  "black.workspace.title": "OpenCode Black | ワークスペースの選択",
+  "black.workspace.title": "OpenGoal Black | ワークスペースの選択",
   "black.workspace.selectPlan": "このプランのワークスペースを選択してください",
   "black.workspace.name": "ワークスペース {{n}}",
-  "black.subscribe.title": "OpenCode Black を購読する",
+  "black.subscribe.title": "OpenGoal Black を購読する",
   "black.subscribe.paymentMethod": "支払い方法",
   "black.subscribe.loadingPaymentForm": "支払いフォームを読み込み中...",
   "black.subscribe.selectWorkspaceToContinue": "続けるにはワークスペースを選択してください",
@@ -415,9 +430,9 @@ export const dict = {
   "black.subscribe.processing": "処理中...",
   "black.subscribe.submit": "購読する ${{plan}}",
   "black.subscribe.form.chargeNotice": "サブスクリプションが有効化された時点でのみ請求されます",
-  "black.subscribe.success.title": "OpenCode Black ウェイトリストに登録されました",
+  "black.subscribe.success.title": "OpenGoal Black ウェイトリストに登録されました",
   "black.subscribe.success.subscriptionPlan": "サブスクリプションプラン",
-  "black.subscribe.success.planName": "OpenCode Black {{plan}}",
+  "black.subscribe.success.planName": "OpenGoal Black {{plan}}",
   "black.subscribe.success.amount": "金額",
   "black.subscribe.success.amountValue": "${{plan}} / 月",
   "black.subscribe.success.paymentMethod": "支払い方法",
@@ -446,15 +461,15 @@ export const dict = {
     "最適なパフォーマンスを実現するように構成されたモデルにアクセスします。ダウングレードや安価なプロバイダーへのルーティングはありません。",
   "workspace.newUser.feature.lockin.title": "ロックインなし",
   "workspace.newUser.feature.lockin.body":
-    "任意のコーディングエージェントでZenを使用でき、必要に応じていつでもOpenCodeを備えた他のプロバイダーを使用し続けることができます。",
+    "任意のコーディングエージェントでZenを使用でき、必要に応じていつでもOpenGoalを備えた他のプロバイダーを使用し続けることができます。",
   "workspace.newUser.copyApiKey": "APIキーをコピー",
   "workspace.newUser.copyKey": "キーをコピー",
   "workspace.newUser.copied": "コピーしました！",
   "workspace.newUser.step.enableBilling": "課金を有効にする",
   "workspace.newUser.step.login.before": "実行",
-  "workspace.newUser.step.login.after": "してOpenCodeを選択",
+  "workspace.newUser.step.login.after": "してOpenGoalを選択",
   "workspace.newUser.step.pasteKey": "APIキーを貼り付け",
-  "workspace.newUser.step.models.before": "OpenCodeを起動し実行",
+  "workspace.newUser.step.models.before": "OpenGoalを起動し実行",
   "workspace.newUser.step.models.after": "してモデルを選択",
 
   "workspace.models.title": "モデル",
@@ -500,10 +515,10 @@ export const dict = {
   "workspace.cost.subscriptionShort": "サブ",
 
   "workspace.keys.title": "APIキー",
-  "workspace.keys.subtitle": "OpenCodeサービスにアクセスするためのAPIキーを管理します。",
+  "workspace.keys.subtitle": "OpenGoalサービスにアクセスするためのAPIキーを管理します。",
   "workspace.keys.create": "APIキーの作成",
   "workspace.keys.placeholder": "キー名を入力してください",
-  "workspace.keys.empty": "OpenCodeゲートウェイAPIキーを作成する",
+  "workspace.keys.empty": "OpenGoalゲートウェイAPIキーを作成する",
   "workspace.keys.table.name": "名前",
   "workspace.keys.table.key": "キー",
   "workspace.keys.table.createdBy": "作成者",
@@ -618,7 +633,7 @@ export const dict = {
   "workspace.black.time.minutes": "分",
   "workspace.black.time.fewSeconds": "数秒",
   "workspace.black.subscription.title": "サブスクリプション",
-  "workspace.black.subscription.message": "あなたは OpenCode Black を月額 ${{plan}} で購読しています。",
+  "workspace.black.subscription.message": "あなたは OpenGoal Black を月額 ${{plan}} で購読しています。",
   "workspace.black.subscription.manage": "サブスクリプションの管理",
   "workspace.black.subscription.rollingUsage": "5時間利用",
   "workspace.black.subscription.weeklyUsage": "週間利用量",
@@ -626,8 +641,8 @@ export const dict = {
   "workspace.black.subscription.useBalance": "利用限度額に達したら利用可能な残高を使用する",
   "workspace.black.waitlist.title": "ウェイトリスト",
   "workspace.black.waitlist.joined":
-    "あなたは月額 ${{plan}} の OpenCode Black プランのウェイトリストに登録されています。",
-  "workspace.black.waitlist.ready": "月額 ${{plan}} の OpenCode Black プランに登録する準備ができました。",
+    "あなたは月額 ${{plan}} の OpenGoal Black プランのウェイトリストに登録されています。",
+  "workspace.black.waitlist.ready": "月額 ${{plan}} の OpenGoal Black プランに登録する準備ができました。",
   "workspace.black.waitlist.leave": "ウェイトリストから抜ける",
   "workspace.black.waitlist.leaving": "処理中...",
   "workspace.black.waitlist.left": "退会済み",
@@ -654,8 +669,11 @@ export const dict = {
   "workspace.lite.subscription.useBalance": "利用限度額に達したら利用可能な残高を使用する",
   "workspace.lite.subscription.selectProvider":
     "Go モデルを使用するには、opencode の設定で「OpenCode Go」をプロバイダーとして選択してください。",
+  "workspace.lite.providers.title": "プロバイダー",
+  "workspace.lite.providers.description": "ルーティングに使用するプロバイダーを管理します。",
+  "workspace.lite.providers.useChina": "中国でホストされているモデルを有効にする",
   "workspace.lite.black.message":
-    "現在 OpenCode Black を購読中、またはウェイティングリストに登録されています。Go に切り替える場合は、先に登録を解除してください。",
+    "現在 OpenGoal Black を購読中、またはウェイティングリストに登録されています。Go に切り替える場合は、先に登録を解除してください。",
   "workspace.lite.other.message":
     "このワークスペースの別のメンバーが既に OpenCode Go を購読しています。ワークスペースにつき1人のメンバーのみが購読できます。",
   "workspace.lite.promo.description":
@@ -663,7 +681,7 @@ export const dict = {
   "workspace.lite.promo.price": "初月$5",
   "workspace.lite.promo.modelsTitle": "含まれるもの",
   "workspace.lite.promo.footer":
-    "このプランは主にグローバルユーザー向けに設計されており、米国、EU、シンガポールでホストされたモデルにより安定したグローバルアクセスを提供します。料金と利用制限は、初期の利用状況やフィードバックに基づいて変更される可能性があります。",
+    "このプランは主に海外のユーザー向けに設計されており、世界中から安定してご利用いただけます。料金と利用上限は、初期の利用状況やフィードバックを踏まえて変更される場合があります。",
   "workspace.lite.promo.subscribe": "Goを購読する",
   "workspace.lite.promo.subscribing": "リダイレクト中...",
   "workspace.lite.promo.otherMethods": "その他の支払い方法",
@@ -702,15 +720,15 @@ export const dict = {
   "workspace.referral.apply.confirmBody": "{{amount}} を適用して、このワークスペースの現在の使用量を減らします。",
   "workspace.referral.apply.confirmAction": "適用",
 
-  "download.title": "OpenCode | ダウンロード",
-  "download.meta.description": "OpenCode を macOS、Windows、Linux 向けにダウンロード",
-  "download.hero.title": "OpenCode をダウンロード",
+  "download.title": "OpenGoal | ダウンロード",
+  "download.meta.description": "OpenGoal を macOS、Windows、Linux 向けにダウンロード",
+  "download.hero.title": "OpenGoal デスクトップ版をダウンロード",
   "download.hero.subtitle": "macOS、Windows、Linux 向けベータ版を利用可能",
   "download.hero.button": "{{os}} 向けダウンロード",
-  "download.section.terminal": "OpenCode Terminal",
-  "download.section.desktop": "OpenCode Desktop (Beta)",
-  "download.section.extensions": "OpenCode Extensions",
-  "download.section.integrations": "OpenCode Integrations",
+  "download.section.terminal": "OpenGoal Terminal",
+  "download.section.desktop": "OpenGoal Desktop",
+  "download.section.extensions": "OpenGoal Extensions",
+  "download.section.integrations": "OpenGoal Integrations",
   "download.action.download": "ダウンロード",
   "download.action.install": "インストール",
 
@@ -721,26 +739,26 @@ export const dict = {
   "download.platform.linuxRpm": "Linux (.rpm)",
 
   "download.faq.a3.beforeLocal":
-    "必ずしもそうではありませんが、おそらく必要です。OpenCodeを有料プロバイダーに接続したい場合はAIサブスクリプションが必要ですが、",
+    "必ずしもそうではありませんが、おそらく必要です。OpenGoalを有料プロバイダーに接続したい場合はAIサブスクリプションが必要ですが、",
   "download.faq.a3.localLink": "ローカルモデル",
   "download.faq.a3.afterLocal.beforeZen": "であれば無料で利用できます。ユーザーには",
   "download.faq.a3.afterZen":
-    "の利用をお勧めしていますが、OpenCodeはOpenAI、Anthropic、xAIなどの主要なプロバイダーに対応しています。",
+    "の利用をお勧めしていますが、OpenGoalはOpenAI、Anthropic、xAIなどの主要なプロバイダーに対応しています。",
 
-  "download.faq.a5.p1": "OpenCodeは100%無料で利用できます。",
+  "download.faq.a5.p1": "OpenGoalは100%無料で利用できます。",
   "download.faq.a5.p2.beforeZen":
-    "追加コストはモデルプロバイダーのサブスクリプションから発生します。OpenCodeはどのモデルプロバイダーでも利用できますが、",
+    "追加コストはモデルプロバイダーのサブスクリプションから発生します。OpenGoalはどのモデルプロバイダーでも利用できますが、",
   "download.faq.a5.p2.afterZen": "の利用をおすすめします。",
 
-  "download.faq.a6.p1": "あなたのデータと情報は、OpenCodeで共有リンクを作成したときにのみ保存されます。",
+  "download.faq.a6.p1": "あなたのデータと情報は、OpenGoalで共有リンクを作成したときにのみ保存されます。",
   "download.faq.a6.p2.beforeShare": "詳しくは",
   "download.faq.a6.shareLink": "共有ページ",
 
-  "enterprise.title": "OpenCode | 組織向けエンタープライズソリューション",
-  "enterprise.meta.description": "エンタープライズソリューションについてOpenCodeに問い合わせる",
+  "enterprise.title": "OpenGoal | 組織向けエンタープライズソリューション",
+  "enterprise.meta.description": "エンタープライズソリューションについてOpenGoalに問い合わせる",
   "enterprise.hero.title": "あなたのコードはあなたのもの",
   "enterprise.hero.body1":
-    "OpenCodeは、データやコンテキストを一切保存せず、ライセンス制限や所有権の主張もなく、組織内で安全に動作します。チームでのトライアルから始め、SSOや社内AIゲートウェイと統合して組織全体に展開できます。",
+    "OpenGoalは、データやコンテキストを一切保存せず、ライセンス制限や所有権の主張もなく、組織内で安全に動作します。チームでのトライアルから始め、SSOや社内AIゲートウェイと統合して組織全体に展開できます。",
   "enterprise.hero.body2": "どのような支援ができるか、お聞かせください。",
   "enterprise.form.name.label": "氏名",
   "enterprise.form.name.placeholder": "ジェフ・ベゾス",
@@ -762,29 +780,29 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "無効なメール形式です。",
   "enterprise.form.error.internalServer": "内部サーバーエラー。",
   "enterprise.faq.title": "FAQ",
-  "enterprise.faq.q1": "OpenCode Enterpriseとは？",
+  "enterprise.faq.q1": "OpenGoal Enterpriseとは？",
   "enterprise.faq.a1":
-    "OpenCode Enterpriseは、コードとデータが決してインフラの外に出ないことを保証したい組織向けです。SSOや社内AIゲートウェイと統合する集中設定を使用することでこれを実現します。",
-  "enterprise.faq.q2": "OpenCode Enterpriseを始めるには？",
+    "OpenGoal Enterpriseは、コードとデータが決してインフラの外に出ないことを保証したい組織向けです。SSOや社内AIゲートウェイと統合する集中設定を使用することでこれを実現します。",
+  "enterprise.faq.q2": "OpenGoal Enterpriseを始めるには？",
   "enterprise.faq.a2":
-    "まずはチームでの社内トライアルから始めてください。OpenCodeはデフォルトでコードやコンテキストデータを保存しないため、簡単に始められます。その後、価格や導入オプションについてお問い合わせください。",
+    "まずはチームでの社内トライアルから始めてください。OpenGoalはデフォルトでコードやコンテキストデータを保存しないため、簡単に始められます。その後、価格や導入オプションについてお問い合わせください。",
   "enterprise.faq.q3": "エンタープライズ価格の仕組みは？",
   "enterprise.faq.a3":
     "シート単位（ユーザー数）でのエンタープライズ価格を提供します。独自のLLMゲートウェイをお持ちの場合、使用トークンに対する課金はありません。詳細は、組織の要件に基づいた見積もりのためにお問い合わせください。",
-  "enterprise.faq.q4": "OpenCode Enterpriseでデータは安全ですか？",
+  "enterprise.faq.q4": "OpenGoal Enterpriseでデータは安全ですか？",
   "enterprise.faq.a4":
-    "はい。OpenCodeはコードやコンテキストデータを保存しません。すべての処理はローカル、またはAIプロバイダーへの直接API呼び出しを通じて行われます。集中設定とSSO統合により、データは組織のインフラ内で安全に保たれます。",
+    "はい。OpenGoalはコードやコンテキストデータを保存しません。すべての処理はローカル、またはAIプロバイダーへの直接API呼び出しを通じて行われます。集中設定とSSO統合により、データは組織のインフラ内で安全に保たれます。",
 
-  "brand.title": "OpenCode | ブランド",
-  "brand.meta.description": "OpenCode ブランドガイドライン",
+  "brand.title": "OpenGoal | ブランド",
+  "brand.meta.description": "OpenGoal ブランドガイドライン",
   "brand.heading": "ブランドガイドライン",
-  "brand.subtitle": "OpenCodeブランドを扱うためのリソースと素材です。",
+  "brand.subtitle": "OpenGoalブランドを扱うためのリソースと素材です。",
   "brand.downloadAll": "すべての素材をダウンロード",
 
-  "changelog.title": "OpenCode | 変更履歴",
-  "changelog.meta.description": "OpenCode リリースノートと変更履歴",
+  "changelog.title": "OpenGoal | 変更履歴",
+  "changelog.meta.description": "OpenGoal リリースノートと変更履歴",
   "changelog.hero.title": "変更履歴",
-  "changelog.hero.subtitle": "OpenCodeの新しいアップデートと改善",
+  "changelog.hero.subtitle": "OpenGoalの新しいアップデートと改善",
   "changelog.empty": "変更履歴が見つかりませんでした。",
   "changelog.viewJson": "JSONを表示",
 

@@ -9,19 +9,35 @@ import { fileURLToPath } from "url"
 const dir = fileURLToPath(new URL("..", import.meta.url))
 process.chdir(dir)
 
-const packageName = "@benitbuhner/opencode-goal-mode"
-const packageDirName = "opencode-goal-mode"
-const commandName = "opencode-goal-mode"
+const packageName = "@benitbuhner/opengoal"
+const packageDirName = "opengoal"
+const commandName = "opengoal"
 const publishExtraRegistries = process.env.OPENCODE_GOAL_MODE_PUBLISH_REGISTRIES === "1"
+const npmTag = process.env.OPENCODE_NPM_TAG ?? "latest"
 const packOnly = process.env.OPENCODE_GOAL_MODE_PACK_ONLY === "1"
 
 async function published(name: string, version: string) {
   return (await $`npm view ${name}@${version} version`.nothrow()).exitCode === 0
 }
 
+function ensureBinExecutable(dir: string) {
+  const binDir = path.join(dir, "bin")
+  if (!fs.existsSync(binDir)) return
+  for (const name of fs.readdirSync(binDir)) {
+    const target = path.join(binDir, name)
+    if (!fs.statSync(target).isFile()) continue
+    try {
+      fs.chmodSync(target, 0o755)
+    } catch {
+      // Publishing from Windows cannot always set Unix modes in the tarball.
+    }
+  }
+}
+
 async function publish(dir: string, name: string, version: string) {
   // GitHub artifact downloads can drop the executable bit, and Docker uses the
   // unpacked dist binaries directly rather than the published tarball.
+  ensureBinExecutable(dir)
   if (process.platform !== "win32") await $`chmod -R 755 .`.cwd(dir)
   if (await published(name, version)) {
     console.log(`already published ${name}@${version}`)
@@ -37,7 +53,7 @@ async function publish(dir: string, name: string, version: string) {
     fs.writeFileSync(npmrc, "//registry.npmjs.org/:_authToken=${NPM_TOKEN}\n")
   }
   try {
-    await $`npm publish *.tgz --access public --tag ${Script.channel}`.cwd(dir)
+    await $`npm publish *.tgz --access public --tag ${npmTag}`.cwd(dir)
   } finally {
     fs.rmSync(npmrc, { force: true })
   }
@@ -56,7 +72,7 @@ for (const filepath of new Bun.Glob("*/package.json").scanSync({ cwd: "./dist" }
   if (filepath === `${packageDirName}/package.json` || filepath === `${packageDirName}\\package.json`) continue
   const item = await Bun.file(`./dist/${filepath}`).json()
   const dir = `./dist/${filepath.replace(/[\\/]package\.json$/, "")}`
-  const name = String(item.name).replace(/^opencode-/, `${packageName}-`)
+  const name = String(item.name).replace(/^opengoal-/, `${packageName}-`)
   await Bun.file(`./dist/${filepath}`).write(
     JSON.stringify(
       {
@@ -75,20 +91,24 @@ const version = process.env.OPENCODE_GOAL_MODE_META_VERSION ?? Object.values(bin
 
 await $`mkdir -p ./dist/${packageDirName}`
 await $`mkdir -p ./dist/${packageDirName}/bin`
-await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/${commandName}.mjs`
+await $`cp ./script/launcher.mjs ./dist/${packageDirName}/bin/opencode.mjs`
+await $`cp ./script/npm-postinstall-chmod.mjs ./dist/${packageDirName}/postinstall.mjs`
 await Bun.file(`./dist/${packageDirName}/LICENSE`).write(await Bun.file("../../LICENSE").text())
+ensureBinExecutable(`./dist/${packageDirName}`)
 
 await Bun.file(`./dist/${packageDirName}/package.json`).write(
   JSON.stringify(
     {
       name: packageName,
-      files: ["bin", "LICENSE"],
+      type: "module",
+      files: ["bin", "postinstall.mjs", "LICENSE"],
       bin: {
-        [commandName]: `./bin/${commandName}`,
+        [commandName]: `./bin/${commandName}.mjs`,
+        opencode: "./bin/opencode.mjs",
       },
       scripts: {
-        postinstall:
-          "node -e \"if(process.platform!=='win32')require('fs').chmodSync(require('path').join(process.cwd(),'bin','opencode-goal-mode'),0o755)\"",
+        postinstall: "node postinstall.mjs",
       },
       version: version,
       license: pkg.license,

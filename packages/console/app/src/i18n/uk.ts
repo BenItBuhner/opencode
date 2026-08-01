@@ -14,7 +14,7 @@ export const dict = {
   "nav.home": "Головна",
   "nav.openMenu": "Відкрити меню",
   "nav.getStartedFree": "Почати безкоштовно",
-  "nav.logoAlt": "OpenCode",
+  "nav.logoAlt": "OpenGoal",
 
   "nav.context.copyLogo": "Копіювати логотип як SVG",
   "nav.context.copyWordmark": "Копіювати знак як SVG",
@@ -81,9 +81,9 @@ export const dict = {
   "error.reloadAmountMin": "Сума поповнення має бути щонайменше ${{amount}}",
   "error.reloadTriggerMin": "Поріг балансу має бути щонайменше ${{amount}}",
 
-  "app.meta.description": "OpenCode — відкритий агент для програмування.",
+  "app.meta.description": "OpenGoal — відкритий агент для програмування.",
 
-  "home.title": "OpenCode | Відкритий AI-агент для кодування",
+  "home.title": "OpenGoal | Відкритий AI-агент для кодування",
 
   "temp.title": "opencode | AI-агент для кодування, створений для термінала",
   "temp.hero.title": "AI-агент для кодування, створений для термінала",
@@ -96,16 +96,20 @@ export const dict = {
   "temp.feature.zen.afterLink": "від opencode",
   "temp.feature.models.beforeLink": "Підтримує 75+ LLM-провайдерів через",
   "temp.feature.models.afterLink": ", включаючи локальні моделі",
-  "temp.screenshot.caption": "OpenCode TUI з темою tokyonight",
-  "temp.screenshot.alt": "OpenCode TUI з темою tokyonight",
+  "temp.screenshot.caption": "OpenGoal TUI з темою tokyonight",
+  "temp.screenshot.alt": "OpenGoal TUI з темою tokyonight",
   "temp.logoLightAlt": "світлий логотип opencode",
   "temp.logoDarkAlt": "темний логотип opencode",
 
   "home.banner.badge": "Нове",
-  "home.banner.text": "Десктопний застосунок доступний у бета-версії",
-  "home.banner.platforms": "на macOS, Windows та Linux",
+  "home.banner.text": "Представляємо вкладки в десктопному застосунку.",
+  "home.banner.platforms": "Доступно на macOS, Windows та Linux",
   "home.banner.downloadNow": "Завантажити зараз",
   "home.banner.downloadBetaNow": "Завантажити бета-версію десктопного застосунку",
+  "home.promo.title": "Представляємо вкладки в десктопному застосунку",
+  "home.promo.body": "Упорядковуйте роботу й активні сесії за допомогою вкладок.",
+  "home.promo.cta": "Завантажте останню версію, щоб почати.",
+  "home.promo.close": "Закрити оголошення про десктопний застосунок",
 
   "home.hero.title": "Відкритий AI-агент для кодування",
   "home.hero.subtitle.a": "Безкоштовні моделі включено або підключіть будь-яку модель від будь-якого провайдера,",
@@ -113,8 +117,8 @@ export const dict = {
 
   "home.install.ariaLabel": "Параметри встановлення",
 
-  "home.what.title": "Що таке OpenCode?",
-  "home.what.body": "OpenCode — це відкритий агент, який допомагає писати код у терміналі, IDE або на десктопі.",
+  "home.what.title": "Що таке OpenGoal?",
+  "home.what.body": "OpenGoal — це відкритий агент, який допомагає писати код у терміналі, IDE або на десктопі.",
   "home.what.lsp.title": "LSP увімкнено",
   "home.what.lsp.body": "Автоматично завантажує потрібні LSP для LLM",
   "home.what.multiSession.title": "Багатосесійність",
@@ -133,44 +137,44 @@ export const dict = {
 
   "home.growth.title": "Відкритий AI-агент для кодування",
   "home.growth.body":
-    "З понад <strong>{{stars}}</strong> зірками на GitHub, <strong>{{contributors}}</strong> учасниками та понад <strong>{{commits}}</strong> комітами, OpenCode використовують понад <strong>{{monthlyUsers}}</strong> розробників щомісяця.",
+    "З понад <strong>{{stars}}</strong> зірками на GitHub, <strong>{{contributors}}</strong> учасниками та понад <strong>{{commits}}</strong> комітами, OpenGoal використовують понад <strong>{{monthlyUsers}}</strong> розробників щомісяця.",
   "home.growth.githubStars": "Зірки GitHub",
   "home.growth.contributors": "Учасники",
   "home.growth.monthlyDevs": "Розробників на місяць",
 
   "home.privacy.title": "Створено для конфіденційності",
   "home.privacy.body":
-    "OpenCode не зберігає ваш код або контекстні дані, тому може працювати в середовищах з чутливими даними.",
+    "OpenGoal не зберігає ваш код або контекстні дані, тому може працювати в середовищах з чутливими даними.",
   "home.privacy.learnMore": "Дізнатися більше про",
   "home.privacy.link": "конфіденційність",
 
-  "home.faq.q1": "Що таке OpenCode?",
+  "home.faq.q1": "Що таке OpenGoal?",
   "home.faq.a1":
-    "OpenCode — це відкритий агент, який допомагає писати та запускати код з будь-якою AI-моделлю. Доступний як термінальний інтерфейс, десктопний застосунок або розширення IDE.",
-  "home.faq.q2": "Як почати користуватися OpenCode?",
+    "OpenGoal — це відкритий агент, який допомагає писати та запускати код з будь-якою AI-моделлю. Доступний як термінальний інтерфейс, десктопний застосунок або розширення IDE.",
+  "home.faq.q2": "Як почати користуватися OpenGoal?",
   "home.faq.a2.before": "Найпростіший спосіб почати — прочитати",
   "home.faq.a2.link": "вступ",
-  "home.faq.q3": "Чи потрібні додаткові AI-підписки для використання OpenCode?",
+  "home.faq.q3": "Чи потрібні додаткові AI-підписки для використання OpenGoal?",
   "home.faq.a3.p1":
-    "Не обов'язково, OpenCode має набір безкоштовних моделей, які можна використовувати без реєстрації.",
+    "Не обов'язково, OpenGoal має набір безкоштовних моделей, які можна використовувати без реєстрації.",
   "home.faq.a3.p2.beforeZen":
     "Крім цього, ви можете використовувати будь-які популярні моделі, створивши обліковий запис",
   "home.faq.a3.p2.afterZen": ".",
   "home.faq.a3.p3":
-    "Хоча ми рекомендуємо Zen, OpenCode також працює з усіма популярними провайдерами, такими як OpenAI, Anthropic, xAI тощо.",
+    "Хоча ми рекомендуємо Zen, OpenGoal також працює з усіма популярними провайдерами, такими як OpenAI, Anthropic, xAI тощо.",
   "home.faq.a3.p4.beforeLocal": "Ви навіть можете підключити свої",
   "home.faq.a3.p4.localLink": "локальні моделі",
-  "home.faq.q4": "Чи можу я використовувати свої наявні AI-підписки з OpenCode?",
+  "home.faq.q4": "Чи можу я використовувати свої наявні AI-підписки з OpenGoal?",
   "home.faq.a4.p1":
-    "Так, OpenCode підтримує підписки всіх основних провайдерів. Ви можете використовувати Claude Pro/Max, ChatGPT Plus/Pro або GitHub Copilot.",
-  "home.faq.q5": "Чи можна використовувати OpenCode лише в терміналі?",
-  "home.faq.a5.beforeDesktop": "Вже ні! OpenCode тепер доступний як застосунок для",
+    "Так, OpenGoal підтримує підписки всіх основних провайдерів. Ви можете використовувати Claude Pro/Max, ChatGPT Plus/Pro або GitHub Copilot.",
+  "home.faq.q5": "Чи можна використовувати OpenGoal лише в терміналі?",
+  "home.faq.a5.beforeDesktop": "Вже ні! OpenGoal тепер доступний як застосунок для",
   "home.faq.a5.desktop": "десктопа",
   "home.faq.a5.and": "та",
   "home.faq.a5.web": "вебу",
-  "home.faq.q6": "Скільки коштує OpenCode?",
+  "home.faq.q6": "Скільки коштує OpenGoal?",
   "home.faq.a6":
-    "OpenCode є 100% безкоштовним. Він також має набір безкоштовних моделей. Додаткові витрати можливі, якщо ви підключите іншого провайдера.",
+    "OpenGoal є 100% безкоштовним. Він також має набір безкоштовних моделей. Додаткові витрати можливі, якщо ви підключите іншого провайдера.",
   "home.faq.q7": "А як щодо даних та конфіденційності?",
   "home.faq.a7.p1":
     "Ваші дані зберігаються лише тоді, коли ви використовуєте безкоштовні моделі або створюєте посилання для обміну.",
@@ -178,8 +182,8 @@ export const dict = {
   "home.faq.a7.p2.modelsLink": "наші моделі",
   "home.faq.a7.p2.and": "та",
   "home.faq.a7.p2.shareLink": "сторінки обміну",
-  "home.faq.q8": "Чи є OpenCode відкритим?",
-  "home.faq.a8.p1": "Так, OpenCode повністю відкритий. Вихідний код доступний публічно на",
+  "home.faq.q8": "Чи є OpenGoal відкритим?",
+  "home.faq.a8.p1": "Так, OpenGoal повністю відкритий. Вихідний код доступний публічно на",
   "home.faq.a8.p2": "під ліцензією",
   "home.faq.a8.mitLicense": "MIT License",
   "home.faq.a8.p3":
@@ -187,22 +191,22 @@ export const dict = {
 
   "home.zenCta.title": "Отримайте доступ до надійних оптимізованих моделей для агентів кодування",
   "home.zenCta.body":
-    "Zen дає доступ до добірки AI-моделей, які OpenCode протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
+    "Zen дає доступ до добірки AI-моделей, які OpenGoal протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
   "home.zenCta.link": "Дізнатися про Zen",
 
   "zen.title": "OpenCode Zen | Добірка надійних оптимізованих моделей для агентів кодування",
   "zen.hero.title": "Надійні оптимізовані моделі для агентів кодування",
   "zen.hero.body":
-    "Zen дає доступ до добірки AI-моделей, які OpenCode протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
+    "Zen дає доступ до добірки AI-моделей, які OpenGoal протестував спеціально для агентів кодування. Не турбуйтеся про нестабільну якість — використовуйте перевірені моделі.",
 
   "zen.faq.q1": "Що таке OpenCode Zen?",
-  "zen.faq.a1": "Zen — це добірка AI-моделей, протестованих для агентів кодування, створена командою OpenCode.",
+  "zen.faq.a1": "Zen — це добірка AI-моделей, протестованих для агентів кодування, створена командою OpenGoal.",
   "zen.faq.q2": "Чому Zen точніший?",
   "zen.faq.a2":
     "Zen надає лише моделі, спеціально протестовані для агентів кодування. Ви ж не використовуєте масло ніж для стейка — не використовуйте погані моделі для кодування.",
   "zen.faq.q3": "Чи Zen дешевший?",
   "zen.faq.a3":
-    "Zen не є прибутковим. Zen передає вам вартість від провайдерів моделей. Чим вище використання Zen, тим кращі ціни OpenCode може узгодити та передати вам.",
+    "Zen не є прибутковим. Zen передає вам вартість від провайдерів моделей. Чим вище використання Zen, тим кращі ціни OpenGoal може узгодити та передати вам.",
   "zen.faq.q4": "Скільки коштує Zen?",
   "zen.faq.a4.p1.beforePricing": "Zen",
   "zen.faq.a4.p1.pricingLink": "стягує плату за запит",
@@ -210,7 +214,7 @@ export const dict = {
   "zen.faq.a4.p2.beforeAccount": "Загальна вартість залежить від використання. Ви можете встановити місячні ліміти в",
   "zen.faq.a4.p2.accountLink": "обліковому записі",
   "zen.faq.a4.p3":
-    "Щоб покрити витрати, OpenCode додає лише невелику комісію за обробку платежу в розмірі $1.23 за кожне поповнення балансу $20.",
+    "Щоб покрити витрати, OpenGoal додає лише невелику комісію за обробку платежу в розмірі $1.23 за кожне поповнення балансу $20.",
   "zen.faq.q5": "А як щодо даних та конфіденційності?",
   "zen.faq.a5.beforeExceptions":
     "Усі моделі Zen розміщені в США. Провайдери дотримуються політики нульового зберігання та не використовують ваші дані для навчання моделей, за",
@@ -221,7 +225,7 @@ export const dict = {
   "zen.faq.a7": "Так, ви можете вимкнути оплату в будь-який час і використовувати залишок.",
   "zen.faq.q8": "Чи можна використовувати Zen з іншими агентами кодування?",
   "zen.faq.a8":
-    "Хоча Zen чудово працює з OpenCode, ви можете використовувати Zen з будь-яким агентом. Дотримуйтесь інструкцій з налаштування у вашому агенті.",
+    "Хоча Zen чудово працює з OpenGoal, ви можете використовувати Zen з будь-яким агентом. Дотримуйтесь інструкцій з налаштування у вашому агенті.",
 
   "zen.cta.start": "Почати з Zen",
   "zen.pricing.title": "Додати $20 балансу Pay as you go",
@@ -230,13 +234,13 @@ export const dict = {
   "zen.problem.title": "Яку проблему вирішує Zen?",
   "zen.problem.body":
     "Доступно багато моделей, але лише деякі добре працюють з агентами кодування. Більшість провайдерів налаштовують їх по-різному з різними результатами.",
-  "zen.problem.subtitle": "Ми вирішуємо це для всіх, а не лише для користувачів OpenCode.",
+  "zen.problem.subtitle": "Ми вирішуємо це для всіх, а не лише для користувачів OpenGoal.",
   "zen.problem.item1": "Тестування вибраних моделей та консультації з їхніми командами",
   "zen.problem.item2": "Співпраця з провайдерами для забезпечення правильної доставки",
   "zen.problem.item3": "Бенчмаркінг усіх комбінацій моделей та провайдерів, які ми рекомендуємо",
   "zen.how.title": "Як працює Zen",
   "zen.how.body":
-    "Хоча ми пропонуємо використовувати Zen з OpenCode, ви можете використовувати Zen з будь-яким агентом.",
+    "Хоча ми пропонуємо використовувати Zen з OpenGoal, ви можете використовувати Zen з будь-яким агентом.",
   "zen.how.step1.title": "Зареєструйтеся та додайте $20 балансу",
   "zen.how.step1.beforeLink": "дотримуйтесь",
   "zen.how.step1.link": "інструкцій з налаштування",
@@ -251,9 +255,9 @@ export const dict = {
   "zen.privacy.exceptionsLink": "такими винятками",
 
   "go.title": "OpenCode Go | Недорогі моделі кодування для всіх",
-  "go.banner.text": "MiniMax M3 отримує 3x ліміти використання протягом обмеженого часу",
+  "go.banner.text": "GPT 5.6 Luna отримує 2x ліміти використання протягом обмеженого часу",
   "go.meta.description":
-    "Go починається від $5 за перший місяць, потім $10/місяць, з generous 5-годинними лімітами запитів для GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro та DeepSeek V4 Flash.",
+    "Go починається від $5 за перший місяць, потім $10/місяць, зі щедрими лімітами використання та надійним доступом до провідних моделей для кодування.",
   "go.hero.title": "Недорогі моделі кодування для всіх",
   "go.hero.body":
     "Go надає агентне програмування програмістам у всьому світі, пропонуючи щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
@@ -270,12 +274,11 @@ export const dict = {
   "go.graph.go": "Go",
   "go.graph.label": "Запитів за 5 годин",
   "go.graph.usageLimits": "Ліміти використання",
-  "go.graph.tick": "{{n}}x",
   "go.graph.aria": "Запитів за 5 год: {{free}} vs {{go}}",
 
   "go.testimonials.brand.zen": "Zen",
   "go.testimonials.brand.go": "Go",
-  "go.testimonials.handle": "@OpenCode",
+  "go.testimonials.handle": "@OpenGoal",
   "go.testimonials.dax.name": "Dax Raad",
   "go.testimonials.dax.title": "ex-CEO, Terminal Products",
   "go.testimonials.dax.quoteAfter": "змінило моє життя, це справді очевидний вибір.",
@@ -296,16 +299,15 @@ export const dict = {
   "go.testimonials.frank.quote": "Хотів би я досі бути в Nvidia.",
   "go.problem.title": "Яку проблему вирішує Go?",
   "go.problem.body":
-    "Ми зосереджені на тому, щоб зробити досвід OpenCode доступним для якомога більшої кількості людей. OpenCode Go — це недорога підписка: $5 за перший місяць, потім $10/місяць. Вона надає щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
+    "Ми зосереджені на тому, щоб зробити досвід OpenGoal доступним для якомога більшої кількості людей. OpenCode Go — це недорога підписка: $5 за перший місяць, потім $10/місяць. Вона надає щедрі ліміти та надійний доступ до найкращих моделей з відкритим кодом.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Недорога підписка",
   "go.problem.item2": "Щедрі ліміти та надійний доступ",
   "go.problem.item3": "Створено для якомога більшої кількості програмістів",
-  "go.problem.item4":
-    "Включає GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro та DeepSeek V4 Flash",
+  "go.problem.item4": "Добірка моделей, протестованих для агентного кодування",
   "go.how.title": "Як працює Go",
   "go.how.body":
-    "Go починається від $5 за перший місяць, потім $10/місяць. Використовуйте з OpenCode або будь-яким агентом.",
+    "Go починається від $5 за перший місяць, потім $10/місяць. Використовуйте з OpenGoal або будь-яким агентом.",
   "go.how.step1.title": "Створіть обліковий запис",
   "go.how.step1.beforeLink": "дотримуйтесь",
   "go.how.step1.link": "інструкцій з налаштування",
@@ -328,7 +330,7 @@ export const dict = {
   "go.faq.a2": "Go включає моделі, перелічені нижче, із щедрими лімітами та надійним доступом.",
   "go.faq.q3": "Чи Go те саме, що Zen?",
   "go.faq.a3":
-    "Ні. Zen — це плата за використання, тоді як Go починається від $5 за перший місяць, потім $10/місяць, із щедрими лімітами та надійним доступом до моделей з відкритим кодом GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro та DeepSeek V4 Flash.",
+    "Ні. Zen — це плата за використання, тоді як Go починається від $5 за перший місяць, потім $10/місяць, із щедрими лімітами та надійним доступом до добірки моделей.",
   "go.faq.q4": "Скільки коштує Go?",
   "go.faq.a4.p1.beforePricing": "Go коштує",
   "go.faq.a4.p1.pricingLink": "$5 за перший місяць",
@@ -337,8 +339,20 @@ export const dict = {
   "go.faq.a4.p2.accountLink": "обліковому записі",
   "go.faq.a4.p3": "Скасуйте в будь-який час.",
   "go.faq.q5": "А як щодо даних та конфіденційності?",
-  "go.faq.a5.body":
-    "План розроблений переважно для міжнародних користувачів, з моделями в США, ЄС та Сінгапурі. Провайдери дотримуються політики нульового зберігання.",
+  "go.faq.a5.model": "Модель",
+  "go.faq.a5.training": "Навчання моделей",
+  "go.faq.a5.retention": "Зберігання даних",
+  "go.faq.a5.retention30": "30 днів",
+  "go.faq.a5.retention0": "0 днів",
+  "go.faq.a5.used": "Використовується",
+  "go.faq.a5.notUsed": "Не використовується",
+  "go.faq.a5.noAgreement": "Немає угоди",
+  "go.faq.a5.grokRetention":
+    "ZDR вимикає важливі функції API, які залежать від збережених даних, зокрема Responses API зі збереженням стану, Files and Collections та Batch API.",
+  "go.faq.a5.gptRetention":
+    "Журнали моніторингу зловживань створюються для всіх випадків використання функцій API та зберігаються до 30 днів.",
+  "go.faq.a5.learnMore": "Докладніше",
+
   "go.faq.a5.beforeExceptions":
     "Моделі Go розміщені в США. Провайдери дотримуються політики нульового зберігання та не використовують ваші дані для навчання моделей, за",
   "go.faq.a5.exceptionsLink": "такими винятками",
@@ -351,7 +365,7 @@ export const dict = {
 
   "go.faq.q9": "Яка різниця між безкоштовними моделями та Go?",
   "go.faq.a9":
-    "Безкоштовні моделі включають Big Pickle та акційні моделі з лімітом 200 запитів/день. Go включає GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro та DeepSeek V4 Flash із вищими лімітами.",
+    "Безкоштовні моделі включають Big Pickle та доступні на той момент акційні моделі з квотою 200 запитів/день. Go пропонує добірку моделей із вищими квотами запитів, що застосовуються протягом ковзних періодів (5 годин, тижня та місяця), приблизно еквівалентними $12 за 5 годин, $30 на тиждень і $60 на місяць (фактична кількість запитів залежить від моделі та використання).",
 
   "zen.api.error.rateLimitExceeded": "Перевищено ліміт запитів. Спробуйте пізніше.",
   "zen.api.error.modelNotSupported": "Модель {{model}} не підтримується",
@@ -360,6 +374,7 @@ export const dict = {
   "zen.api.error.providerNotSupported": "Провайдер {{provider}} не підтримується",
   "zen.api.error.missingApiKey": "Відсутній ключ API.",
   "zen.api.error.invalidApiKey": "Недійсний ключ API.",
+  "zen.api.error.requestBlockedByUpstreamProvider": "Запит заблоковано зовнішнім провайдером.",
   "zen.api.error.subscriptionQuotaExceeded": "Перевищено квоту підписки. Повторіть через {{retryIn}}.",
   "zen.api.error.goSubscriptionRollingLimitExceeded":
     "Досягнуто 5-годинного ліміту використання. Скидається через {{retryIn}}. Щоб продовжити, увімкніть використання з доступного балансу: {{consoleGoUrl}}",
@@ -374,14 +389,16 @@ export const dict = {
   "zen.api.error.userMonthlyLimitReached":
     "Ви досягли місячного ліміту витрат ${{amount}}. Керуйте лімітами: {{membersUrl}}",
   "zen.api.error.modelDisabled": "Модель вимкнено",
+  "zen.api.error.regionNotAllowed":
+    "Остання версія цієї моделі доступна лише на серверах у Китаї, і для її використання потрібно надати явну згоду: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
     "Безкоштовна акція для {{model}} закінчилася. Ви можете продовжити використання, підписавшись на OpenCode Go — {{link}}",
 
-  "black.meta.title": "OpenCode Black | Доступ до найкращих моделей кодування",
-  "black.meta.description": "Отримайте доступ до Claude, GPT, Gemini та інших із планами підписки OpenCode Black.",
+  "black.meta.title": "OpenGoal Black | Доступ до найкращих моделей кодування",
+  "black.meta.description": "Отримайте доступ до Claude, GPT, Gemini та інших із планами підписки OpenGoal Black.",
   "black.hero.title": "Доступ до найкращих моделей кодування",
   "black.hero.subtitle": "Включаючи Claude, GPT, Gemini та інші",
-  "black.title": "OpenCode Black | Ціни",
+  "black.title": "OpenGoal Black | Ціни",
   "black.paused": "Реєстрація в план Black тимчасово призупинена.",
   "black.plan.icon20": "План Black 20",
   "black.plan.icon100": "План Black 100",
@@ -400,10 +417,10 @@ export const dict = {
   "black.action.continue": "Продовжити",
   "black.finePrint.beforeTerms": "Зазначені ціни не включають податки",
   "black.finePrint.terms": "Умови надання послуг",
-  "black.workspace.title": "OpenCode Black | Виберіть робочий простір",
+  "black.workspace.title": "OpenGoal Black | Виберіть робочий простір",
   "black.workspace.selectPlan": "Виберіть робочий простір для цього плану",
   "black.workspace.name": "Робочий простір {{n}}",
-  "black.subscribe.title": "Підписатися на OpenCode Black",
+  "black.subscribe.title": "Підписатися на OpenGoal Black",
   "black.subscribe.paymentMethod": "Спосіб оплати",
   "black.subscribe.loadingPaymentForm": "Завантаження форми оплати...",
   "black.subscribe.selectWorkspaceToContinue": "Виберіть робочий простір для продовження",
@@ -415,9 +432,9 @@ export const dict = {
   "black.subscribe.processing": "Обробка...",
   "black.subscribe.submit": "Підписатися ${{plan}}",
   "black.subscribe.form.chargeNotice": "Платіж буде списано лише після активації підписки",
-  "black.subscribe.success.title": "Ви в списку очікування OpenCode Black",
+  "black.subscribe.success.title": "Ви в списку очікування OpenGoal Black",
   "black.subscribe.success.subscriptionPlan": "План підписки",
-  "black.subscribe.success.planName": "OpenCode Black {{plan}}",
+  "black.subscribe.success.planName": "OpenGoal Black {{plan}}",
   "black.subscribe.success.amount": "Сума",
   "black.subscribe.success.amountValue": "${{plan}} на місяць",
   "black.subscribe.success.paymentMethod": "Спосіб оплати",
@@ -618,15 +635,15 @@ export const dict = {
   "workspace.black.time.minutes": "хвилин(и)",
   "workspace.black.time.fewSeconds": "кілька секунд",
   "workspace.black.subscription.title": "Підписка",
-  "workspace.black.subscription.message": "Ви підписані на OpenCode Black за ${{plan}} на місяць.",
+  "workspace.black.subscription.message": "Ви підписані на OpenGoal Black за ${{plan}} на місяць.",
   "workspace.black.subscription.manage": "Керувати підпискою",
   "workspace.black.subscription.rollingUsage": "Використання (5 год)",
   "workspace.black.subscription.weeklyUsage": "Тижневе використання",
   "workspace.black.subscription.resetsIn": "Скидається через",
   "workspace.black.subscription.useBalance": "Використовуйте доступний баланс після досягнення лімітів",
   "workspace.black.waitlist.title": "Список очікування",
-  "workspace.black.waitlist.joined": "Ви в списку очікування на план OpenCode Black за ${{plan}} на місяць.",
-  "workspace.black.waitlist.ready": "Ми готові зареєструвати вас на план OpenCode Black за ${{plan}} на місяць.",
+  "workspace.black.waitlist.joined": "Ви в списку очікування на план OpenGoal Black за ${{plan}} на місяць.",
+  "workspace.black.waitlist.ready": "Ми готові зареєструвати вас на план OpenGoal Black за ${{plan}} на місяць.",
   "workspace.black.waitlist.leave": "Залишити список очікування",
   "workspace.black.waitlist.leaving": "Вихід...",
   "workspace.black.waitlist.left": "Вишли",
@@ -652,27 +669,31 @@ export const dict = {
   "workspace.lite.subscription.resetsIn": "Скидається через",
   "workspace.lite.subscription.useBalance": "Використовуйте доступний баланс після досягнення лімітів",
   "workspace.lite.subscription.selectProvider": 'Виберіть "OpenCode Go" як провайдера в конфігурації opencode.',
+  "workspace.lite.providers.title": "Провайдери",
+  "workspace.lite.providers.description": "Керуйте провайдерами, які використовуються для маршрутизації.",
+  "workspace.lite.providers.useChina": "Увімкнути моделі, розміщені в Китаї",
   "workspace.lite.black.message":
-    "Ви вже підписані на OpenCode Black або в списку очікування. Спочатку скасуйте підписку, якщо хочете перейти на Go.",
+    "Ви вже підписані на OpenGoal Black або в списку очікування. Спочатку скасуйте підписку, якщо хочете перейти на Go.",
   "workspace.lite.other.message": "Інший учасник цього робочого простору вже підписаний на OpenCode Go.",
   "workspace.lite.promo.description": "OpenCode Go починається від {{price}}, потім $10/місяць, із щедрими лімітами.",
   "workspace.lite.promo.price": "$5 за перший місяць",
   "workspace.lite.promo.modelsTitle": "Що включено",
-  "workspace.lite.promo.footer": "План призначений для міжнародних користувачів. Ціни можуть змінюватися.",
+  "workspace.lite.promo.footer":
+    "План призначений насамперед для міжнародних користувачів і забезпечує стабільний глобальний доступ. Ціни та ліміти використання можуть змінюватися з урахуванням перших даних про використання та відгуків.",
   "workspace.lite.promo.subscribe": "Підписатися на Go",
   "workspace.lite.promo.subscribing": "Перенаправлення...",
   "workspace.lite.promo.otherMethods": "Інші способи оплати",
   "workspace.lite.promo.selectMethod": "Виберіть спосіб оплати",
 
-  "download.title": "OpenCode | Завантажити",
-  "download.meta.description": "Завантажте OpenCode для macOS, Windows та Linux",
-  "download.hero.title": "Завантажити OpenCode",
+  "download.title": "OpenGoal | Завантажити",
+  "download.meta.description": "Завантажте OpenGoal для macOS, Windows та Linux",
+  "download.hero.title": "Завантажити OpenGoal Desktop",
   "download.hero.subtitle": "Доступно в бета-версії для macOS, Windows та Linux",
   "download.hero.button": "Завантажити для {{os}}",
-  "download.section.terminal": "Термінал OpenCode",
-  "download.section.desktop": "Десктоп OpenCode (Бета)",
-  "download.section.extensions": "Розширення OpenCode",
-  "download.section.integrations": "Інтеграції OpenCode",
+  "download.section.terminal": "Термінал OpenGoal",
+  "download.section.desktop": "Десктоп OpenGoal",
+  "download.section.extensions": "Розширення OpenGoal",
+  "download.section.integrations": "Інтеграції OpenGoal",
   "download.action.download": "Завантажити",
   "download.action.install": "Встановити",
 
@@ -687,22 +708,22 @@ export const dict = {
   "download.faq.a3.localLink": "локальними моделями",
   "download.faq.a3.afterLocal.beforeZen": "безкоштовно. Хоча ми рекомендуємо",
   "download.faq.a3.afterZen":
-    ", OpenCode працює з усіма популярними провайдерами, такими як OpenAI, Anthropic, xAI тощо.",
+    ", OpenGoal працює з усіма популярними провайдерами, такими як OpenAI, Anthropic, xAI тощо.",
 
-  "download.faq.a5.p1": "OpenCode є 100% безкоштовним.",
+  "download.faq.a5.p1": "OpenGoal є 100% безкоштовним.",
   "download.faq.a5.p2.beforeZen":
     "Будь-які додаткові витрати будуть з вашої підписки у провайдера моделі. Ми рекомендуємо",
   "download.faq.a5.p2.afterZen": ".",
 
-  "download.faq.a6.p1": "Ваші дані зберігаються лише при створенні посилань для обміну в OpenCode.",
+  "download.faq.a6.p1": "Ваші дані зберігаються лише при створенні посилань для обміну в OpenGoal.",
   "download.faq.a6.p2.beforeShare": "Дізнайтеся більше про",
   "download.faq.a6.shareLink": "сторінки обміну",
 
-  "enterprise.title": "OpenCode | Enterprise-рішення для вашої організації",
-  "enterprise.meta.description": "Зв'яжіться з OpenCode для Enterprise-рішень",
+  "enterprise.title": "OpenGoal | Enterprise-рішення для вашої організації",
+  "enterprise.meta.description": "Зв'яжіться з OpenGoal для Enterprise-рішень",
   "enterprise.hero.title": "Ваш код належить вам",
   "enterprise.hero.body1":
-    "OpenCode працює безпечно всередині вашої організації без зберігання даних, ліцензійних обмежень. Почніть пробний період із командою, потім розгорніть через SSO та внутрішній AI-шлюз.",
+    "OpenGoal працює безпечно всередині вашої організації без зберігання даних, ліцензійних обмежень. Почніть пробний період із командою, потім розгорніть через SSO та внутрішній AI-шлюз.",
   "enterprise.hero.body2": "Дайте знати, чим ми можемо допомогти.",
   "enterprise.form.name.label": "Повне ім'я",
   "enterprise.form.name.placeholder": "Джеф Безос",
@@ -724,29 +745,29 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Недійсний формат email.",
   "enterprise.form.error.internalServer": "Внутрішня помилка сервера.",
   "enterprise.faq.title": "FAQ",
-  "enterprise.faq.q1": "Що таке OpenCode Enterprise?",
+  "enterprise.faq.q1": "Що таке OpenGoal Enterprise?",
   "enterprise.faq.a1":
-    "OpenCode Enterprise для організацій, які хочуть гарантувати, що код і дані ніколи не залишають їхню інфраструктуру.",
-  "enterprise.faq.q2": "Як почати з OpenCode Enterprise?",
+    "OpenGoal Enterprise для організацій, які хочуть гарантувати, що код і дані ніколи не залишають їхню інфраструктуру.",
+  "enterprise.faq.q2": "Як почати з OpenGoal Enterprise?",
   "enterprise.faq.a2":
-    "Почніть із внутрішнього тестування з командою. OpenCode за замовчуванням не зберігає код. Потім зв'яжіться з нами для обговорення цін.",
+    "Почніть із внутрішнього тестування з командою. OpenGoal за замовчуванням не зберігає код. Потім зв'яжіться з нами для обговорення цін.",
   "enterprise.faq.q3": "Як працює ціноутворення enterprise?",
   "enterprise.faq.a3":
     "Ми пропонуємо ціну за робоче місце. Якщо у вас власний LLM-шлюз, ми не стягуємо плату за токени.",
-  "enterprise.faq.q4": "Чи безпечні мої дані з OpenCode Enterprise?",
+  "enterprise.faq.q4": "Чи безпечні мої дані з OpenGoal Enterprise?",
   "enterprise.faq.a4":
-    "Так. OpenCode не зберігає ваш код або контекст. Вся обробка відбувається локально або через прямі API-виклики.",
+    "Так. OpenGoal не зберігає ваш код або контекст. Вся обробка відбувається локально або через прямі API-виклики.",
 
-  "brand.title": "OpenCode | Бренд",
-  "brand.meta.description": "Рекомендації щодо бренду OpenCode",
+  "brand.title": "OpenGoal | Бренд",
+  "brand.meta.description": "Рекомендації щодо бренду OpenGoal",
   "brand.heading": "Рекомендації щодо бренду",
-  "brand.subtitle": "Ресурси та матеріали для роботи з брендом OpenCode.",
+  "brand.subtitle": "Ресурси та матеріали для роботи з брендом OpenGoal.",
   "brand.downloadAll": "Завантажити всі матеріали",
 
-  "changelog.title": "OpenCode | Журнал змін",
-  "changelog.meta.description": "Нотатки про випуски та журнал змін OpenCode",
+  "changelog.title": "OpenGoal | Журнал змін",
+  "changelog.meta.description": "Нотатки про випуски та журнал змін OpenGoal",
   "changelog.hero.title": "Журнал змін",
-  "changelog.hero.subtitle": "Нові оновлення та покращення OpenCode",
+  "changelog.hero.subtitle": "Нові оновлення та покращення OpenGoal",
   "changelog.empty": "Записів у журналі змін не знайдено.",
   "changelog.viewJson": "Переглянути JSON",
 

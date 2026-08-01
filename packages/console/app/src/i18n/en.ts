@@ -13,7 +13,7 @@ export const dict = {
   "nav.home": "Home",
   "nav.openMenu": "Open menu",
   "nav.getStartedFree": "Get started for free",
-  "nav.logoAlt": "OpenCode",
+  "nav.logoAlt": "OpenGoal",
 
   "nav.context.copyLogo": "Copy logo as SVG",
   "nav.context.copyWordmark": "Copy wordmark as SVG",
@@ -81,9 +81,9 @@ export const dict = {
   "error.reloadAmountMin": "Reload amount must be at least ${{amount}}",
   "error.reloadTriggerMin": "Balance trigger must be at least ${{amount}}",
 
-  "app.meta.description": "OpenCode - The open source coding agent.",
+  "app.meta.description": "OpenGoal - The open source coding agent.",
 
-  "home.title": "OpenCode | The open source AI coding agent",
+  "home.title": "OpenGoal | The open source AI coding agent",
 
   "temp.title": "opencode | AI coding agent built for the terminal",
   "temp.hero.title": "The AI coding agent built for the terminal",
@@ -102,10 +102,15 @@ export const dict = {
   "temp.logoDarkAlt": "opencode logo dark",
 
   "home.banner.badge": "New",
-  "home.banner.text": "Desktop app available in beta",
-  "home.banner.platforms": "on macOS, Windows, and Linux",
+  "home.banner.text": "Introducing tabs for desktop.",
+  "home.banner.platforms": "Available on macOS, Windows, and Linux",
   "home.banner.downloadNow": "Download now",
   "home.banner.downloadBetaNow": "Download the desktop beta now",
+
+  "home.promo.title": "Introducing Tabs for Desktop",
+  "home.promo.body": "Organize your work and active sessions with tabs.",
+  "home.promo.cta": "Download the latest to get started.",
+  "home.promo.close": "Dismiss desktop app announcement",
 
   "home.hero.title": "The open source AI coding agent",
   "home.hero.subtitle.a": "Free models included or connect any model from any provider,",
@@ -113,8 +118,8 @@ export const dict = {
 
   "home.install.ariaLabel": "Install options",
 
-  "home.what.title": "What is OpenCode?",
-  "home.what.body": "OpenCode is an open source agent that helps you write code in your terminal, IDE, or desktop.",
+  "home.what.title": "What is OpenGoal?",
+  "home.what.body": "OpenGoal is an open source agent that helps you write code in your terminal, IDE, or desktop.",
   "home.what.lsp.title": "LSP enabled",
   "home.what.lsp.body": "Automatically loads the right LSPs for the LLM",
   "home.what.multiSession.title": "Multi-session",
@@ -133,51 +138,51 @@ export const dict = {
 
   "home.growth.title": "The open source AI coding agent",
   "home.growth.body":
-    "With over <strong>{{stars}}</strong> GitHub stars, <strong>{{contributors}}</strong> contributors, and over <strong>{{commits}}</strong> commits, OpenCode is used and trusted by over <strong>{{monthlyUsers}}</strong> developers every month.",
+    "With over <strong>{{stars}}</strong> GitHub stars, <strong>{{contributors}}</strong> contributors, and over <strong>{{commits}}</strong> commits, OpenGoal is used and trusted by over <strong>{{monthlyUsers}}</strong> developers every month.",
   "home.growth.githubStars": "GitHub Stars",
   "home.growth.contributors": "Contributors",
   "home.growth.monthlyDevs": "Monthly Devs",
 
   "home.privacy.title": "Built for privacy first",
   "home.privacy.body":
-    "OpenCode does not store any of your code or context data, so that it can operate in privacy sensitive environments.",
+    "OpenGoal does not store any of your code or context data, so that it can operate in privacy sensitive environments.",
   "home.privacy.learnMore": "Learn more about",
   "home.privacy.link": "privacy",
 
-  "home.faq.q1": "What is OpenCode?",
+  "home.faq.q1": "What is OpenGoal?",
   "home.faq.a1":
-    "OpenCode is an open source agent that helps you write and run code with any AI model. It's available as a terminal-based interface, desktop app, or IDE extension.",
-  "home.faq.q2": "How do I use OpenCode?",
+    "OpenGoal is an open source agent that helps you write and run code with any AI model. It's available as a terminal-based interface, desktop app, or IDE extension.",
+  "home.faq.q2": "How do I use OpenGoal?",
   "home.faq.a2.before": "The easiest way to get started is to read the",
   "home.faq.a2.link": "intro",
-  "home.faq.q3": "Do I need extra AI subscriptions to use OpenCode?",
+  "home.faq.q3": "Do I need extra AI subscriptions to use OpenGoal?",
   "home.faq.a3.p1":
-    "Not necessarily, OpenCode comes with a set of free models that you can use without creating an account.",
+    "Not necessarily, OpenGoal comes with a set of free models that you can use without creating an account.",
   "home.faq.a3.p2.beforeZen": "Aside from these, you can use any of the popular coding models by creating a",
   "home.faq.a3.p2.afterZen": " account.",
   "home.faq.a3.p3":
-    "While we encourage users to use Zen, OpenCode also works with all popular providers such as OpenAI, Anthropic, xAI etc.",
+    "While we encourage users to use Zen, OpenGoal also works with all popular providers such as OpenAI, Anthropic, xAI etc.",
   "home.faq.a3.p4.beforeLocal": "You can even connect your",
   "home.faq.a3.p4.localLink": "local models",
-  "home.faq.q4": "Can I use my existing AI subscriptions with OpenCode?",
+  "home.faq.q4": "Can I use my existing AI subscriptions with OpenGoal?",
   "home.faq.a4.p1":
-    "Yes, OpenCode supports subscription plans from all major providers. You can use your Claude Pro/Max, ChatGPT Plus/Pro, or GitHub Copilot subscriptions.",
-  "home.faq.q5": "Can I only use OpenCode in the terminal?",
-  "home.faq.a5.beforeDesktop": "Not anymore! OpenCode is now available as an app for your",
+    "Yes, OpenGoal supports subscription plans from all major providers. You can use your Claude Pro/Max, ChatGPT Plus/Pro, or GitHub Copilot subscriptions.",
+  "home.faq.q5": "Can I only use OpenGoal in the terminal?",
+  "home.faq.a5.beforeDesktop": "Not anymore! OpenGoal is now available as an app for your",
   "home.faq.a5.desktop": "desktop",
   "home.faq.a5.and": "and",
   "home.faq.a5.web": "web",
-  "home.faq.q6": "How much does OpenCode cost?",
+  "home.faq.q6": "How much does OpenGoal cost?",
   "home.faq.a6":
-    "OpenCode is 100% free to use. It also comes with a set of free models. There might be additional costs if you connect any other provider.",
+    "OpenGoal is 100% free to use. It also comes with a set of free models. There might be additional costs if you connect any other provider.",
   "home.faq.q7": "What about data and privacy?",
   "home.faq.a7.p1": "Your data and information is only stored when you use our free models or create sharable links.",
   "home.faq.a7.p2.beforeModels": "Learn more about",
   "home.faq.a7.p2.modelsLink": "our models",
   "home.faq.a7.p2.and": "and",
   "home.faq.a7.p2.shareLink": "share pages",
-  "home.faq.q8": "Is OpenCode open source?",
-  "home.faq.a8.p1": "Yes, OpenCode is fully open source. The source code is public on",
+  "home.faq.q8": "Is OpenGoal open source?",
+  "home.faq.a8.p1": "Yes, OpenGoal is fully open source. The source code is public on",
   "home.faq.a8.p2": "under the",
   "home.faq.a8.mitLicense": "MIT License",
   "home.faq.a8.p3":
@@ -185,30 +190,30 @@ export const dict = {
 
   "home.zenCta.title": "Access reliable optimized models for coding agents",
   "home.zenCta.body":
-    "Zen gives you access to a handpicked set of AI models that OpenCode has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality across providers, use validated models that work.",
+    "Zen gives you access to a handpicked set of AI models that OpenGoal has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality across providers, use validated models that work.",
   "home.zenCta.link": "Learn about Zen",
 
   "zen.title": "OpenCode Zen | A curated set of reliable optimized models for coding agents",
   "zen.hero.title": "Reliable optimized models for coding agents",
   "zen.hero.body":
-    "Zen gives you access to a curated set of AI models that OpenCode has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality, use validated models that work.",
+    "Zen gives you access to a curated set of AI models that OpenGoal has tested and benchmarked specifically for coding agents. No need to worry about inconsistent performance and quality, use validated models that work.",
 
   "zen.faq.q1": "What is OpenCode Zen?",
   "zen.faq.a1":
-    "Zen is a curated set of AI models tested and benchmarked for coding agents created by the team behind OpenCode.",
+    "Zen is a curated set of AI models tested and benchmarked for coding agents created by the team behind OpenGoal.",
   "zen.faq.q2": "What makes Zen more accurate?",
   "zen.faq.a2":
     "Zen only provides models that have been specifically tested and benchmarked for coding agents. You wouldn't use a butter knife to cut steak, don't use poor models for coding.",
   "zen.faq.q3": "Is Zen cheaper?",
   "zen.faq.a3":
-    "Zen is not for profit. Zen passes through the costs from the model providers to you. The higher Zen's usage the more OpenCode can negotiate better rates and pass those to you.",
+    "Zen is not for profit. Zen passes through the costs from the model providers to you. The higher Zen's usage the more OpenGoal can negotiate better rates and pass those to you.",
   "zen.faq.q4": "How much does Zen cost?",
   "zen.faq.a4.p1.beforePricing": "Zen",
   "zen.faq.a4.p1.pricingLink": "charges per request",
   "zen.faq.a4.p1.afterPricing": "with zero markups, so you pay exactly what the model provider charges.",
   "zen.faq.a4.p2.beforeAccount": "Your total cost depends on usage, and you can set monthly spend limits in your",
   "zen.faq.a4.p2.accountLink": "account",
-  "zen.faq.a4.p3": "To cover costs, OpenCode adds only a small payment processing fee of $1.23 per $20 balance top-up.",
+  "zen.faq.a4.p3": "To cover costs, OpenGoal adds only a small payment processing fee of $1.23 per $20 balance top-up.",
   "zen.faq.q5": "What about data and privacy?",
   "zen.faq.a5.beforeExceptions":
     "All Zen models are hosted in the US. Providers follow a zero-retention policy and do not use your data for model training, with the",
@@ -219,7 +224,7 @@ export const dict = {
   "zen.faq.a7": "Yes, you can disable billing at any time and use your remaining balance.",
   "zen.faq.q8": "Can I use Zen with other coding agents?",
   "zen.faq.a8":
-    "While Zen works great with OpenCode, you can use Zen with any agent. Follow the setup instructions in your preferred coding agent.",
+    "While Zen works great with OpenGoal, you can use Zen with any agent. Follow the setup instructions in your preferred coding agent.",
 
   "zen.cta.start": "Get started with Zen",
   "zen.pricing.title": "Add $20 Pay as you go balance",
@@ -228,12 +233,12 @@ export const dict = {
   "zen.problem.title": "What problem is Zen solving?",
   "zen.problem.body":
     "There are so many models available, but only a few work well with coding agents. Most providers configure them differently with varying results.",
-  "zen.problem.subtitle": "We're fixing this for everyone, not just OpenCode users.",
+  "zen.problem.subtitle": "We're fixing this for everyone, not just OpenGoal users.",
   "zen.problem.item1": "Testing select models and consulting their teams",
   "zen.problem.item2": "Working with providers to ensure they're delivered properly",
   "zen.problem.item3": "Benchmarking all model-provider combinations we recommend",
   "zen.how.title": "How Zen works",
-  "zen.how.body": "While we suggest you use Zen with OpenCode, you can use Zen with any agent.",
+  "zen.how.body": "While we suggest you use Zen with OpenGoal, you can use Zen with any agent.",
   "zen.how.step1.title": "Sign up and add $20 balance",
   "zen.how.step1.beforeLink": "follow the",
   "zen.how.step1.link": "setup instructions",
@@ -248,9 +253,9 @@ export const dict = {
   "zen.privacy.exceptionsLink": "following exceptions",
 
   "go.title": "OpenCode Go | Low cost coding models for everyone",
-  "go.banner.text": "MiniMax M3 gets 3× usage limits for a limited time",
+  "go.banner.text": "GPT 5.6 Luna gets 2× usage limits for a limited time",
   "go.meta.description":
-    "Go starts at $5 for your first month, then $10/month, with generous 5-hour request limits for GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, and DeepSeek V4 Flash.",
+    "Go starts at $5 for your first month, then $10/month, with generous usage limits and reliable access to leading coding models.",
   "go.hero.title": "Low cost coding models for everyone",
   "go.hero.body":
     "Go brings agentic coding to programmers around the world. Offering generous limits and reliable access to the most capable open-source models, so you can build with powerful agents without worrying about cost or availability.",
@@ -265,13 +270,13 @@ export const dict = {
   "go.graph.freePill": "Big Pickle and free models",
   "go.graph.go": "Go",
   "go.graph.label": "Requests per 5 hour",
-  "go.graph.usageLimits": "Usage limits",
   "go.graph.tick": "{{n}}x",
+  "go.graph.usageLimits": "Usage limits",
   "go.graph.aria": "Requests per 5h: {{free}} vs {{go}}",
 
   "go.testimonials.brand.zen": "Zen",
   "go.testimonials.brand.go": "Go",
-  "go.testimonials.handle": "@OpenCode",
+  "go.testimonials.handle": "@OpenGoal",
   "go.testimonials.dax.name": "Dax Raad",
   "go.testimonials.dax.title": "ex-CEO, Terminal Products",
   "go.testimonials.dax.quoteAfter": "has been life changing, it's truly a no-brainer.",
@@ -292,15 +297,14 @@ export const dict = {
   "go.testimonials.frank.quote": "I wish I was still at Nvidia.",
   "go.problem.title": "What problem is Go solving?",
   "go.problem.body":
-    "We're focused on bringing the OpenCode experience to as many people as possible. OpenCode Go is a low cost subscription: $5 for your first month, then $10/month. It provides generous limits and reliable access to the most capable open source models.",
+    "We're focused on bringing the OpenGoal experience to as many people as possible. OpenCode Go is a low cost subscription: $5 for your first month, then $10/month. It provides generous limits and reliable access to the most capable open source models.",
   "go.problem.subtitle": " ",
   "go.problem.item1": "Low cost subscription pricing",
   "go.problem.item2": "Generous limits and reliable access",
   "go.problem.item3": "Built for as many programmers as possible",
-  "go.problem.item4":
-    "Includes GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, and DeepSeek V4 Flash",
+  "go.problem.item4": "A curated model lineup tested for agentic coding",
   "go.how.title": "How Go works",
-  "go.how.body": "Go starts at $5 for your first month, then $10/month. You can use it with OpenCode or any agent.",
+  "go.how.body": "Go starts at $5 for your first month, then $10/month. You can use it with OpenGoal or any agent.",
   "go.how.step1.title": "Create an account",
   "go.how.step1.beforeLink": "follow the",
   "go.how.step1.link": "setup instructions",
@@ -323,7 +327,7 @@ export const dict = {
   "go.faq.a2": "Go includes the models listed below, with generous limits and reliable access.",
   "go.faq.q3": "Is Go the same as Zen?",
   "go.faq.a3":
-    "No. Zen is pay-as-you-go, while Go starts at $5 for your first month, then $10/month, with generous limits and reliable access to open-source models GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, and DeepSeek V4 Flash.",
+    "No. Zen is pay-as-you-go, while Go starts at $5 for your first month, then $10/month, with generous limits and reliable access to a curated model lineup.",
   "go.faq.q4": "How much does Go cost?",
   "go.faq.a4.p1.beforePricing": "Go costs",
   "go.faq.a4.p1.pricingLink": "$5 first month",
@@ -332,8 +336,19 @@ export const dict = {
   "go.faq.a4.p2.accountLink": "account",
   "go.faq.a4.p3": "Cancel any time.",
   "go.faq.q5": "What about data and privacy?",
-  "go.faq.a5.body":
-    "The plan is designed primarily for international users, with models hosted in the US, EU, and Singapore for stable global access. Our providers follow a zero-retention policy and do not use your data for model training.",
+  "go.faq.a5.model": "Model",
+  "go.faq.a5.training": "Model training",
+  "go.faq.a5.retention": "Data retention",
+  "go.faq.a5.retention30": "30 days",
+  "go.faq.a5.retention0": "0 days",
+  "go.faq.a5.used": "Used",
+  "go.faq.a5.notUsed": "Not used",
+  "go.faq.a5.noAgreement": "No agreement",
+  "go.faq.a5.grokRetention":
+    "ZDR disables important API features that depend on stored data, including the stateful Responses API, Files and Collections, and the Batch API.",
+  "go.faq.a5.gptRetention":
+    "Abuse monitoring logs are generated for all API feature usage and retained for up to 30 days.",
+  "go.faq.a5.learnMore": "Learn more",
 
   "go.faq.a5.beforeExceptions":
     "Go models are hosted in the US. Providers follow a zero-retention policy and do not use your data for model training, with the",
@@ -347,7 +362,7 @@ export const dict = {
 
   "go.faq.q9": "What is the difference between free models and Go?",
   "go.faq.a9":
-    "Free models include Big Pickle plus promotional models available at the time, with a quota of 200 requests/day. Go includes GLM-5.1, GLM-5, Kimi K2.7 Code, Kimi K2.6, MiMo-V2.5-Pro, MiMo-V2.5, Qwen3.7 Max, Qwen3.7 Plus, Qwen3.6 Plus, MiniMax M2.7, MiniMax M3, DeepSeek V4 Pro, and DeepSeek V4 Flash with higher request quotas enforced across rolling windows (5-hour, weekly, and monthly), roughly equivalent to $12 per 5 hours, $30 per week, and $60 per month (actual request counts vary by model and usage).",
+    "Free models include Big Pickle plus promotional models available at the time, with a quota of 200 requests/day. Go offers a curated model lineup with higher request quotas enforced across rolling windows (5-hour, weekly, and monthly), roughly equivalent to $12 per 5 hours, $30 per week, and $60 per month (actual request counts vary by model and usage).",
 
   "zen.api.error.rateLimitExceeded": "Rate limit exceeded. Please try again later.",
   "zen.api.error.modelNotSupported": "Model {{model}} is not supported",
@@ -356,6 +371,7 @@ export const dict = {
   "zen.api.error.providerNotSupported": "Provider {{provider}} not supported",
   "zen.api.error.missingApiKey": "Missing API key.",
   "zen.api.error.invalidApiKey": "Invalid API key.",
+  "zen.api.error.requestBlockedByUpstreamProvider": "Request blocked by upstream provider.",
   "zen.api.error.subscriptionQuotaExceeded": "Subscription quota exceeded. Retry in {{retryIn}}.",
   "zen.api.error.goSubscriptionRollingLimitExceeded":
     "5-hour usage limit reached. Resets in {{retryIn}}. To continue using this model now, enable usage from your available balance: {{consoleGoUrl}}",
@@ -370,14 +386,16 @@ export const dict = {
   "zen.api.error.userMonthlyLimitReached":
     "You have reached your monthly spending limit of ${{amount}}. Manage your limits here: {{membersUrl}}",
   "zen.api.error.modelDisabled": "Model is disabled",
+  "zen.api.error.regionNotAllowed":
+    "The latest version of this model is only available hosted in China and requires explicit opt in: {{consoleGoUrl}}",
   "zen.api.error.trialEnded":
     "Free promotion has ended for {{model}}. You can continue using the model by subscribing to OpenCode Go - {{link}}",
 
-  "black.meta.title": "OpenCode Black | Access all the world's best coding models",
-  "black.meta.description": "Get access to Claude, GPT, Gemini and more with OpenCode Black subscription plans.",
+  "black.meta.title": "OpenGoal Black | Access all the world's best coding models",
+  "black.meta.description": "Get access to Claude, GPT, Gemini and more with OpenGoal Black subscription plans.",
   "black.hero.title": "Access all the world's best coding models",
   "black.hero.subtitle": "Including Claude, GPT, Gemini and more",
-  "black.title": "OpenCode Black | Pricing",
+  "black.title": "OpenGoal Black | Pricing",
   "black.paused": "Black plan enrollment is temporarily paused.",
   "black.plan.icon20": "Black 20 plan",
   "black.plan.icon100": "Black 100 plan",
@@ -396,10 +414,10 @@ export const dict = {
   "black.action.continue": "Continue",
   "black.finePrint.beforeTerms": "Prices shown don't include applicable tax",
   "black.finePrint.terms": "Terms of Service",
-  "black.workspace.title": "OpenCode Black | Select Workspace",
+  "black.workspace.title": "OpenGoal Black | Select Workspace",
   "black.workspace.selectPlan": "Select a workspace for this plan",
   "black.workspace.name": "Workspace {{n}}",
-  "black.subscribe.title": "Subscribe to OpenCode Black",
+  "black.subscribe.title": "Subscribe to OpenGoal Black",
   "black.subscribe.paymentMethod": "Payment method",
   "black.subscribe.loadingPaymentForm": "Loading payment form...",
   "black.subscribe.selectWorkspaceToContinue": "Select a workspace to continue",
@@ -411,9 +429,9 @@ export const dict = {
   "black.subscribe.processing": "Processing...",
   "black.subscribe.submit": "Subscribe ${{plan}}",
   "black.subscribe.form.chargeNotice": "You will only be charged when your subscription is activated",
-  "black.subscribe.success.title": "You're on the OpenCode Black waitlist",
+  "black.subscribe.success.title": "You're on the OpenGoal Black waitlist",
   "black.subscribe.success.subscriptionPlan": "Subscription plan",
-  "black.subscribe.success.planName": "OpenCode Black {{plan}}",
+  "black.subscribe.success.planName": "OpenGoal Black {{plan}}",
   "black.subscribe.success.amount": "Amount",
   "black.subscribe.success.amountValue": "${{plan}} per month",
   "black.subscribe.success.paymentMethod": "Payment method",
@@ -614,15 +632,15 @@ export const dict = {
   "workspace.black.time.minutes": "minutes",
   "workspace.black.time.fewSeconds": "a few seconds",
   "workspace.black.subscription.title": "Subscription",
-  "workspace.black.subscription.message": "You are subscribed to OpenCode Black for ${{plan}} per month.",
+  "workspace.black.subscription.message": "You are subscribed to OpenGoal Black for ${{plan}} per month.",
   "workspace.black.subscription.manage": "Manage Subscription",
   "workspace.black.subscription.rollingUsage": "5-hour Usage",
   "workspace.black.subscription.weeklyUsage": "Weekly Usage",
   "workspace.black.subscription.resetsIn": "Resets in",
   "workspace.black.subscription.useBalance": "Use your available balance after reaching the usage limits",
   "workspace.black.waitlist.title": "Waitlist",
-  "workspace.black.waitlist.joined": "You are on the waitlist for the ${{plan}} per month OpenCode Black plan.",
-  "workspace.black.waitlist.ready": "We're ready to enroll you into the ${{plan}} per month OpenCode Black plan.",
+  "workspace.black.waitlist.joined": "You are on the waitlist for the ${{plan}} per month OpenGoal Black plan.",
+  "workspace.black.waitlist.ready": "We're ready to enroll you into the ${{plan}} per month OpenGoal Black plan.",
   "workspace.black.waitlist.leave": "Leave Waitlist",
   "workspace.black.waitlist.leaving": "Leaving...",
   "workspace.black.waitlist.left": "Left",
@@ -649,8 +667,11 @@ export const dict = {
   "workspace.lite.subscription.useBalance": "Use your available balance after reaching the usage limits",
   "workspace.lite.subscription.selectProvider":
     'Select "OpenCode Go" as the provider in your opencode configuration to use Go models.',
+  "workspace.lite.providers.title": "Providers",
+  "workspace.lite.providers.description": "Control which providers are used for routing.",
+  "workspace.lite.providers.useChina": "Enable models hosted in China",
   "workspace.lite.black.message":
-    "You're currently subscribed to OpenCode Black or on the waitlist. Please unsubscribe first if you'd like to switch to Go.",
+    "You're currently subscribed to OpenGoal Black or on the waitlist. Please unsubscribe first if you'd like to switch to Go.",
   "workspace.lite.other.message":
     "Another member in this workspace is already subscribed to OpenCode Go. Only one member per workspace can subscribe.",
   "workspace.lite.promo.description":
@@ -658,7 +679,7 @@ export const dict = {
   "workspace.lite.promo.price": "$5 for your first month",
   "workspace.lite.promo.modelsTitle": "What's Included",
   "workspace.lite.promo.footer":
-    "The plan is designed primarily for international users, with models hosted in the US, EU, and Singapore for stable global access. Pricing and usage limits may change as we learn from early usage and feedback.",
+    "The plan is designed primarily for international users and provides stable global access. Pricing and usage limits may change as we learn from early usage and feedback.",
   "workspace.lite.promo.subscribe": "Subscribe to Go",
   "workspace.lite.promo.subscribing": "Redirecting...",
   "workspace.lite.promo.otherMethods": "Other payment methods",
@@ -697,15 +718,15 @@ export const dict = {
   "workspace.referral.apply.confirmBody": "Apply {{amount}} to reduce this workspace's current usage.",
   "workspace.referral.apply.confirmAction": "Apply",
 
-  "download.title": "OpenCode | Download",
-  "download.meta.description": "Download OpenCode for macOS, Windows, and Linux",
-  "download.hero.title": "Download OpenCode",
+  "download.title": "OpenGoal | Download",
+  "download.meta.description": "Download OpenGoal for macOS, Windows, and Linux",
+  "download.hero.title": "Download OpenGoal Desktop",
   "download.hero.subtitle": "Available in Beta for macOS, Windows, and Linux",
   "download.hero.button": "Download for {{os}}",
-  "download.section.terminal": "OpenCode Terminal",
-  "download.section.desktop": "OpenCode Desktop (Beta)",
-  "download.section.extensions": "OpenCode Extensions",
-  "download.section.integrations": "OpenCode Integrations",
+  "download.section.terminal": "OpenGoal Terminal",
+  "download.section.desktop": "OpenGoal Desktop",
+  "download.section.extensions": "OpenGoal Extensions",
+  "download.section.integrations": "OpenGoal Integrations",
   "download.action.download": "Download",
   "download.action.install": "Install",
 
@@ -716,25 +737,25 @@ export const dict = {
   "download.platform.linuxRpm": "Linux (.rpm)",
 
   "download.faq.a3.beforeLocal":
-    "Not necessarily, but probably. You'll need an AI subscription if you want to connect OpenCode to a paid provider, although you can work with",
+    "Not necessarily, but probably. You'll need an AI subscription if you want to connect OpenGoal to a paid provider, although you can work with",
   "download.faq.a3.localLink": "local models",
   "download.faq.a3.afterLocal.beforeZen": "for free. While we encourage users to use",
-  "download.faq.a3.afterZen": ", OpenCode works with all popular providers such as OpenAI, Anthropic, xAI etc.",
+  "download.faq.a3.afterZen": ", OpenGoal works with all popular providers such as OpenAI, Anthropic, xAI etc.",
 
-  "download.faq.a5.p1": "OpenCode is 100% free to use.",
+  "download.faq.a5.p1": "OpenGoal is 100% free to use.",
   "download.faq.a5.p2.beforeZen":
-    "Any additional costs will come from your subscription to a model provider. While OpenCode works with any model provider, we recommend using",
+    "Any additional costs will come from your subscription to a model provider. While OpenGoal works with any model provider, we recommend using",
   "download.faq.a5.p2.afterZen": ".",
 
-  "download.faq.a6.p1": "Your data and information is only stored when you create sharable links in OpenCode.",
+  "download.faq.a6.p1": "Your data and information is only stored when you create sharable links in OpenGoal.",
   "download.faq.a6.p2.beforeShare": "Learn more about",
   "download.faq.a6.shareLink": "share pages",
 
-  "enterprise.title": "OpenCode | Enterprise solutions for your organisation",
-  "enterprise.meta.description": "Contact OpenCode for enterprise solutions",
+  "enterprise.title": "OpenGoal | Enterprise solutions for your organisation",
+  "enterprise.meta.description": "Contact OpenGoal for enterprise solutions",
   "enterprise.hero.title": "Your code is yours",
   "enterprise.hero.body1":
-    "OpenCode operates securely inside your organization with no data or context stored and no licensing restrictions or ownership claims. Start a trial with your team, then deploy it across your organization by integrating it with your SSO and internal AI gateway.",
+    "OpenGoal operates securely inside your organization with no data or context stored and no licensing restrictions or ownership claims. Start a trial with your team, then deploy it across your organization by integrating it with your SSO and internal AI gateway.",
   "enterprise.hero.body2": "Let us know how we can help.",
   "enterprise.form.name.label": "Full name",
   "enterprise.form.name.placeholder": "Jeff Bezos",
@@ -756,29 +777,33 @@ export const dict = {
   "enterprise.form.error.invalidEmailFormat": "Invalid email format.",
   "enterprise.form.error.internalServer": "Internal server error.",
   "enterprise.faq.title": "FAQ",
-  "enterprise.faq.q1": "What is OpenCode Enterprise?",
+  "enterprise.faq.q1": "What is OpenGoal Enterprise?",
   "enterprise.faq.a1":
-    "OpenCode Enterprise is for organizations that want to ensure that their code and data never leaves their infrastructure. It can do this by using a centralized config that integrates with your SSO and internal AI gateway.",
-  "enterprise.faq.q2": "How do I get started with OpenCode Enterprise?",
+    "OpenGoal Enterprise is for organizations that want to ensure that their code and data never leaves their infrastructure. It can do this by using a centralized config that integrates with your SSO and internal AI gateway.",
+  "enterprise.faq.q2": "How do I get started with OpenGoal Enterprise?",
   "enterprise.faq.a2":
-    "Simply start with an internal trial with your team. OpenCode by default does not store your code or context data, making it easy to get started. Then contact us to discuss pricing and implementation options.",
+    "Simply start with an internal trial with your team. OpenGoal by default does not store your code or context data, making it easy to get started. Then contact us to discuss pricing and implementation options.",
   "enterprise.faq.q3": "How does enterprise pricing work?",
   "enterprise.faq.a3":
     "We offer per-seat enterprise pricing. If you have your own LLM gateway, we do not charge for tokens used. For further details, contact us for a custom quote based on your organization's needs.",
-  "enterprise.faq.q4": "Is my data secure with OpenCode Enterprise?",
+  "enterprise.faq.q4": "Is my data secure with OpenGoal Enterprise?",
   "enterprise.faq.a4":
-    "Yes. OpenCode does not store your code or context data. All processing happens locally or through direct API calls to your AI provider. With central config and SSO integration, your data remains secure within your organization's infrastructure.",
+    "Yes. OpenGoal does not store your code or context data. All processing happens locally or through direct API calls to your AI provider. With central config and SSO integration, your data remains secure within your organization's infrastructure.",
+  "enterprise.faq.q5": "Where can I find your security and compliance documentation?",
+  "enterprise.faq.a5.before":
+    "Our Trust Center has everything: SOC 2 Type 2 report, security policies, subprocessor list, and answers to common security questions. Visit",
+  "enterprise.faq.a5.after": "to review or request documents under NDA.",
 
-  "brand.title": "OpenCode | Brand",
-  "brand.meta.description": "OpenCode brand guidelines",
+  "brand.title": "OpenGoal | Brand",
+  "brand.meta.description": "OpenGoal brand guidelines",
   "brand.heading": "Brand guidelines",
-  "brand.subtitle": "Resources and assets to help you work with the OpenCode brand.",
+  "brand.subtitle": "Resources and assets to help you work with the OpenGoal brand.",
   "brand.downloadAll": "Download all assets",
 
-  "changelog.title": "OpenCode | Changelog",
-  "changelog.meta.description": "OpenCode release notes and changelog",
+  "changelog.title": "OpenGoal | Changelog",
+  "changelog.meta.description": "OpenGoal release notes and changelog",
   "changelog.hero.title": "Changelog",
-  "changelog.hero.subtitle": "New updates and improvements to OpenCode",
+  "changelog.hero.subtitle": "New updates and improvements to OpenGoal",
   "changelog.empty": "No changelog entries found.",
   "changelog.viewJson": "View JSON",
 

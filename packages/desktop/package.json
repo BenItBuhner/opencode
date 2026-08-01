@@ -1,13 +1,13 @@
 {
   "name": "@opencode-ai/desktop",
   "private": true,
-  "version": "1.17.7",
+  "version": "1.18.10",
   "type": "module",
   "license": "MIT",
-  "homepage": "https://opencode.ai",
+  "homepage": "https://github.com/BenItBuhner/opengoal",
   "author": {
-    "name": "OpenCode",
-    "email": "hello@opencode.ai"
+    "name": "OpenGoal",
+    "email": "BenItBuhner@users.noreply.github.com"
   },
   "scripts": {
     "typecheck": "tsgo -b",
@@ -30,8 +30,7 @@
     "electron-log": "^5",
     "electron-store": "11.0.2",
     "electron-updater": "6.8.9",
-    "electron-window-state": "^5.0.3",
-    "marked": "^15"
+    "electron-window-state": "^5.0.3"
   },
   "devDependencies": {
     "@actions/artifact": "4.0.0",

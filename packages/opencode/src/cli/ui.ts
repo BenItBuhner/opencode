@@ -2,12 +2,17 @@ import { EOL } from "os"
 import { Schema } from "effect"
 import { logo as glyphs } from "./logo"
 
-const wordmark = [
-  `⠀                                ▄     `,
-  `█▀▀█ █▀▀█ █▀▀█ █▀▀▄ █▀▀▀ █▀▀█ █▀▀█ █▀▀█`,
-  `█  █ █  █ █▀▀▀ █  █ █    █  █ █  █ █▀▀▀`,
-  `▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀  ▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀`,
-]
+const plain = (line: string) =>
+  [...line]
+    .map((char) => {
+      if (char === "_" || char === "." || char === " ") return " "
+      if (char === "^" || char === "~") return "▀"
+      if (char === ",") return "▄"
+      return char
+    })
+    .join("")
+
+const wordmark = glyphs.left.map((line, index) => `${plain(line)} ${plain(glyphs.right[index] ?? "")}`)
 
 export class CancelledError extends Schema.TaggedErrorClass<CancelledError>()("UICancelledError", {}) {}
 
@@ -82,6 +87,14 @@ export function logo(pad?: string) {
       }
       if (char === "~") {
         parts.push(shadow, "▀", reset)
+        continue
+      }
+      if (char === ",") {
+        parts.push(shadow, "▄", reset)
+        continue
+      }
+      if (char === ".") {
+        parts.push(" ")
         continue
       }
       if (char === " ") {

@@ -2,6 +2,7 @@ import { expect, mock, test } from "bun:test"
 import type { TuiPluginApi } from "@opencode-ai/plugin/tui"
 import { createTestRenderer } from "@opentui/core/testing"
 import { Effect } from "effect"
+import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { Global } from "@opencode-ai/core/global"
 import { createTuiResolvedConfig } from "./fixture/tui-runtime"
 import { createEventSource, createFetch, directory, json } from "./fixture/tui-sdk"
@@ -43,13 +44,15 @@ test("SIGHUP clears title and disposes scoped resources once", async () => {
             disposes++
           },
         },
-      }).pipe(Effect.provide(Global.defaultLayer)),
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
     )
     await ready
     process.emit("SIGHUP")
     await task
 
     expect(setup.renderer.isDestroyed).toBe(true)
+    expect(titles).toContain("OpenGoal")
+    expect(titles).not.toContain("OpenCode")
     expect(titles.at(-1)).toBe("")
     expect(disposes).toBe(1)
     expect(process.listeners("SIGHUP").every((listener) => listeners.has(listener))).toBe(true)
@@ -108,7 +111,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
           },
           async dispose() {},
         },
-      }).pipe(Effect.provide(Global.defaultLayer)),
+      }).pipe(Effect.provide(AppNodeBuilder.build(Global.node))),
     )
 
     await ready
@@ -118,7 +121,7 @@ test("app.exit prints the session epilogue after scoped cleanup", async () => {
     await task
 
     expect(stdout).toContain("Demo session")
-    expect(stdout).toContain("opencode -s dummy")
+    expect(stdout).toContain("opengoal -s dummy")
   } finally {
     process.stdout.write = originalWrite
     if (!setup.renderer.isDestroyed) setup.renderer.destroy()

@@ -1,10 +1,13 @@
 import { describe, expect } from "bun:test"
+import { makeGlobalNode } from "@opencode-ai/core/effect/app-node"
+import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Effect, Layer, Stream } from "effect"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { Installation } from "../../src/installation"
 import { InstallationChannel } from "@opencode-ai/core/installation/version"
-import { AppProcess } from "@opencode-ai/core/process"
+import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { testEffect } from "../lib/effect"
 
 const encoder = new TextEncoder()
@@ -52,8 +55,15 @@ function testLayer(
   httpHandler: (request: HttpClientRequest.HttpClientRequest) => Response,
   spawnHandler?: (cmd: string, args: readonly string[]) => string | { code: number; stdout?: string; stderr?: string },
 ) {
-  const appProcess = AppProcess.layer.pipe(Layer.provide(mockSpawner(spawnHandler)))
-  return Installation.layer.pipe(Layer.provide(mockHttpClient(httpHandler)), Layer.provide(appProcess))
+  const spawnerNode = makeGlobalNode({
+    service: ChildProcessSpawner.ChildProcessSpawner,
+    layer: mockSpawner(spawnHandler),
+    deps: [],
+  })
+  return LayerNode.compile(Installation.node, [
+    [httpClient, mockHttpClient(httpHandler)],
+    [CrossSpawnSpawner.node, spawnerNode],
+  ])
 }
 
 describe("installation", () => {
@@ -86,7 +96,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const result = yield* Installation.use.latest("npm")
         expect(result).toBe("1.5.0")
-        expect(npmCalls).toContain(`https://registry.npmjs.org/opencode-ai/${InstallationChannel}`)
+        expect(npmCalls).toContain(`https://registry.npmjs.org/%40benitbuhner%2Fopengoal/${InstallationChannel}`)
       }),
     )
 
@@ -100,7 +110,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const result = yield* Installation.use.latest("bun")
         expect(result).toBe("1.6.0")
-        expect(bunCalls).toContain(`https://registry.npmjs.org/opencode-ai/${InstallationChannel}`)
+        expect(bunCalls).toContain(`https://registry.npmjs.org/%40benitbuhner%2Fopengoal/${InstallationChannel}`)
       }),
     )
 
@@ -114,7 +124,7 @@ describe("installation", () => {
       Effect.gen(function* () {
         const result = yield* Installation.use.latest("pnpm")
         expect(result).toBe("1.7.0")
-        expect(pnpmCalls).toContain(`https://registry.npmjs.org/opencode-ai/${InstallationChannel}`)
+        expect(pnpmCalls).toContain(`https://registry.npmjs.org/%40benitbuhner%2Fopengoal/${InstallationChannel}`)
       }),
     )
 

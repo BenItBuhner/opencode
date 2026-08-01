@@ -24,23 +24,6 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
       "description": "The command to execute",
       "type": "string",
     },
-    "description": {
-      "description": 
-"Clear, concise description of what this command does in 5-10 words. Examples:
-Input: ls
-Output: Lists files in current directory
-
-Input: git status
-Output: Shows working tree status
-
-Input: npm install
-Output: Installs package dependencies
-
-Input: mkdir foo
-Output: Creates directory 'foo'"
-,
-      "type": "string",
-    },
     "timeout": {
       "description": "Optional timeout in milliseconds",
       "exclusiveMinimum": 0,
@@ -55,7 +38,6 @@ Output: Creates directory 'foo'"
   },
   "required": [
     "command",
-    "description",
   ],
   "type": "object",
 }
@@ -263,6 +245,12 @@ exports[`tool parameters JSON Schema (wire shape) question 1`] = `
       },
       "type": "array",
     },
+    "timeout": {
+      "description": "Optional timeout in seconds. Defaults to 300 and may not exceed 600.",
+      "exclusiveMinimum": 0,
+      "maximum": 600,
+      "type": "number",
+    },
   },
   "required": [
     "questions",
@@ -330,6 +318,14 @@ exports[`tool parameters JSON Schema (wire shape) task 1`] = `
     "description": {
       "description": "A short (3-5 words) description of the task",
       "type": "string",
+    },
+    "goal": {
+      "description": "Optional child-specific goal text for goal_mode. If omitted, the parent session's active goal text is inherited.",
+      "type": "string",
+    },
+    "goal_mode": {
+      "description": "Enable goal-mode harness behavior for this child session. Use only when the subagent must autonomously keep working toward a durable goal until it completes, pauses, or blocks.",
+      "type": "boolean",
     },
     "prompt": {
       "description": "The task for the agent to perform",

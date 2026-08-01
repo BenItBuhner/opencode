@@ -1,22 +1,41 @@
 import path from "path"
 import fs from "fs/promises"
+import { existsSync, readdirSync } from "fs"
 import { xdgData, xdgCache, xdgConfig, xdgState } from "xdg-basedir"
 import os from "os"
 import { Context, Effect, Layer } from "effect"
 import { Flock } from "./util/flock"
 import { Flag } from "./flag/flag"
-import { LayerNode } from "./effect/layer-node"
+import { makeGlobalNode } from "./effect/app-node"
 
-const app = "opencode"
-const data = path.join(xdgData!, app)
-const cache = path.join(xdgCache!, app)
-const config = path.join(xdgConfig!, app)
-const state = path.join(xdgState!, app)
+const app = "opengoal"
+const legacyApp = "opencode"
+
+function hasContents(dir: string) {
+  try {
+    return readdirSync(dir).length > 0
+  } catch {
+    return false
+  }
+}
+
+function appPath(root: string) {
+  const next = path.join(root, app)
+  const legacy = path.join(root, legacyApp)
+  if (!existsSync(next) && existsSync(legacy)) return legacy
+  if (existsSync(legacy) && !hasContents(next)) return legacy
+  return next
+}
+
+const data = appPath(xdgData!)
+const cache = appPath(xdgCache!)
+const config = appPath(xdgConfig!)
+const state = appPath(xdgState!)
 const tmp = path.join(os.tmpdir(), app)
 
 const paths = {
   get home() {
-    return process.env.OPENCODE_TEST_HOME ?? os.homedir()
+    return process.env.OPENGOAL_TEST_HOME ?? process.env.OPENCODE_TEST_HOME ?? os.homedir()
   },
   data,
   bin: path.join(cache, "bin"),
@@ -71,13 +90,12 @@ export function make(input: Partial<Interface> = {}): Interface {
   }
 }
 
-export const layer = Layer.effect(
+const layer = Layer.effect(
   Service,
   Effect.sync(() => Service.of(make())),
 )
 
-export const defaultLayer = layer
-export const node = LayerNode.make(layer, [])
+export const node = makeGlobalNode({ service: Service, layer: layer, deps: [] })
 
 export const layerWith = (input: Partial<Interface>) =>
   Layer.effect(
