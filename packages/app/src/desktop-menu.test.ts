@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { DESKTOP_MENU } from "./desktop-menu"
 
 describe("desktop menu", () => {
+  test("uses the OpenGoal product name", () => {
+    expect(DESKTOP_MENU.find((menu) => menu.id === "app")?.label).toBe("OpenGoal")
+  })
+
   test("navigates between tabs", () => {
     const items = DESKTOP_MENU.flatMap((menu) => menu.items ?? []).filter(
       (item) => item.type === "item" && (item.label === "Previous Tab" || item.label === "Next Tab"),
