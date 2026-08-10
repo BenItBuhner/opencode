@@ -12,6 +12,7 @@ import { ApplicationTools } from "./application-tools"
 import { definition, permission, settle, validateName, type AnyTool, type RegistrationError } from "./tool"
 import { Tools } from "./tools"
 import { makeLocationNode } from "../effect/app-node"
+import { appendFileSync } from "node:fs"
 
 export type ExecuteInput = {
   readonly sessionID: SessionSchema.ID
@@ -111,8 +112,29 @@ const registryLayer = Layer.effect(
         }
         for (const [name, registration] of registrations)
           if (whollyDisabled(permission(registration.tool, name), permissions)) registrations.delete(name)
+        const definitions = Array.from(registrations, ([name, registration]) => definition(name, registration.tool))
+        // #region agent log
+        yield* Effect.sync(() =>
+          appendFileSync(
+            "/opt/cursor/logs/debug.log",
+            `${JSON.stringify({
+              hypothesisId: "D",
+              location: "packages/core/src/tool/registry.ts:ToolRegistry.materialize",
+              message: "Tool materialization result",
+              data: {
+                registrationNames: Array.from(registrations.keys()).sort(),
+                definitionNames: definitions.map((tool) => tool.name).sort(),
+                goalPermissionRules: permissions
+                  .filter((rule) => rule.action.startsWith("goal_"))
+                  .map((rule) => ({ action: rule.action, resource: rule.resource, effect: rule.effect })),
+              },
+              timestamp: Date.now(),
+            })}\n`,
+          ),
+        ).pipe(Effect.ignore)
+        // #endregion
         return {
-          definitions: Array.from(registrations, ([name, registration]) => definition(name, registration.tool)),
+          definitions,
           settle: (input) => {
             const registration = registrations.get(input.call.name)
             if (registration) return settleWith(input, registration.identity)

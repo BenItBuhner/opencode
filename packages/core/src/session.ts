@@ -37,6 +37,7 @@ import { SessionRevert } from "./session/revert"
 import { Revert } from "@opencode-ai/schema/revert"
 import { FSUtil } from "./fs-util"
 import { SessionDurable } from "@opencode-ai/schema/durable-event-manifest"
+import { appendFileSync } from "node:fs"
 
 export const RevertState = Revert.State
 export type RevertState = Revert.State
@@ -365,6 +366,28 @@ const layer = Layer.effect(
             const messageID = input.id ?? SessionMessage.ID.create()
             const delivery = input.delivery ?? "steer"
             const expected = { sessionID: input.sessionID, messageID, prompt, delivery }
+            // #region agent log
+            yield* Effect.sync(() =>
+              appendFileSync(
+                "/opt/cursor/logs/debug.log",
+                `${JSON.stringify({
+                  hypothesisId: "A,C",
+                  location: "packages/core/src/session.ts:V2Session.prompt",
+                  message: "V2 prompt admission input",
+                  data: {
+                    sessionID: input.sessionID,
+                    messageID,
+                    delivery,
+                    resume: input.resume,
+                    promptTextLength: prompt.text.length,
+                    fileCount: prompt.files?.length ?? 0,
+                    agentCount: prompt.agents?.length ?? 0,
+                  },
+                  timestamp: Date.now(),
+                })}\n`,
+              ),
+            ).pipe(Effect.ignore)
+            // #endregion
             const admitted = yield* SessionInput.admit(db, events, {
               id: messageID,
               sessionID: input.sessionID,
