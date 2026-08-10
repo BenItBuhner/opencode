@@ -83,6 +83,7 @@ import { getRevertDiffFiles } from "../../util/revert-diff"
 import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap } from "../../keymap"
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
+import { useData } from "../../context/data"
 
 addDefaultParsers(parsers.parsers)
 
@@ -186,6 +187,7 @@ export function Session() {
   const route = useRouteData("session")
   const { navigate } = useRoute()
   const sync = useSync()
+  const data = useData()
   const event = useEvent()
   const project = useProject()
   const paths = useTuiPaths()
@@ -211,6 +213,9 @@ export function Session() {
       .toSorted((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
   })
   const messages = createMemo(() => sync.data.message[route.sessionID] ?? [])
+  const queuedInputs = createMemo(
+    () => data.session.admitted.list(route.sessionID)?.filter((item) => item.delivery === "queue") ?? [],
+  )
   const foregroundTasks = createMemo(() =>
     sync.data.capabilities.experimentalBackgroundSubagents
       ? messages().flatMap((message) =>
@@ -1265,6 +1270,24 @@ export function Session() {
                         />
                       </Match>
                     </Switch>
+                  )}
+                </For>
+                <For each={queuedInputs()}>
+                  {(item) => (
+                    <box paddingLeft={3} marginTop={1} flexShrink={0}>
+                      <text fg={theme.textMuted}>
+                        <span
+                          style={{
+                            bg: theme.accent,
+                            fg: selectedForeground(theme, theme.accent),
+                            bold: true,
+                          }}
+                        >
+                          {" QUEUED "}
+                        </span>{" "}
+                        {Locale.truncate(item.prompt.text, 100)}
+                      </text>
+                    </box>
                   )}
                 </For>
               </scrollbox>
