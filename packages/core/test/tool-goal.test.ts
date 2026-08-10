@@ -13,6 +13,7 @@ import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionGoal } from "@opencode-ai/core/session/goal"
 import { SessionEvent } from "@opencode-ai/core/session/event"
+import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { GoalTool } from "@opencode-ai/core/tool/goal"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
@@ -37,7 +38,15 @@ const permission = Layer.succeed(
 )
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, SessionGoal.node, ToolRegistry.node, ToolRegistry.toolsNode, GoalTool.node]),
+    LayerNode.group([
+      Database.node,
+      EventV2.node,
+      SessionProjector.node,
+      SessionGoal.node,
+      ToolRegistry.node,
+      ToolRegistry.toolsNode,
+      GoalTool.node,
+    ]),
     [
       [PermissionV2.node, permission],
       [ToolOutputStore.node, ToolOutputStore.nodeWithoutConfig],

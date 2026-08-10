@@ -2,7 +2,7 @@ export * as SessionGoal from "./goal"
 
 import { eq } from "drizzle-orm"
 import { Context, DateTime, Effect, Layer, Option, Schema } from "effect"
-import { Info, Progress, Status, Summary } from "@opencode-ai/schema/session-goal"
+import { SessionGoal } from "@opencode-ai/schema/session-goal"
 import { Database } from "../database/database"
 import { EventV2 } from "../event"
 import { makeLocationNode } from "../effect/app-node"
@@ -12,11 +12,14 @@ import { SessionProjector } from "./projector"
 import { SessionSchema } from "./schema"
 import { SessionTable } from "./sql"
 
-export { Info, Progress, Status, Summary }
-export type Status = typeof Status.Type
-export type Progress = typeof Progress.Type
-export type Summary = typeof Summary.Type
-export type Info = typeof Info.Type
+export const Status = SessionGoal.Status
+export type Status = SessionGoal.Status
+export const Progress = SessionGoal.Progress
+export type Progress = SessionGoal.Progress
+export const Summary = SessionGoal.Summary
+export type Summary = SessionGoal.Summary
+export const Info = SessionGoal.Info
+export type Info = SessionGoal.Info
 
 type UpdateInput = {
   sessionID: SessionSchema.ID
