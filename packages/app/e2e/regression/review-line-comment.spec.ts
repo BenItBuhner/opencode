@@ -35,14 +35,19 @@ test("opens the comment editor for a line number range", async ({ page }) => {
   const end = review.locator('[data-column-number="3"]').last()
   await expectAppVisible(start)
   await expectAppVisible(end)
+  await start.scrollIntoViewIfNeeded()
+  await end.scrollIntoViewIfNeeded()
 
-  const from = await start.boundingBox()
-  const to = await end.boundingBox()
-  if (!from || !to) throw new Error("Missing line number bounds")
-  await page.mouse.move(from.x + from.width / 2, from.y + from.height / 2)
-  await page.mouse.down()
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2)
-  await page.mouse.up()
+  // Wait for stable gutter layout before dragging. The diff can remount after
+  // expand, so a one-shot boundingBox() race returns null in CI.
+  await expect
+    .poll(async () => {
+      const from = await start.boundingBox()
+      const to = await end.boundingBox()
+      return !!from && !!to && from.width > 0 && from.height > 0 && to.width > 0 && to.height > 0
+    })
+    .toBe(true)
+  await start.dragTo(end)
 
   await expect(review.getByRole("textbox")).toBeVisible()
 })
