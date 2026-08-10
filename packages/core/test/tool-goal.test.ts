@@ -12,6 +12,7 @@ import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionGoal } from "@opencode-ai/core/session/goal"
+import { fromRow } from "@opencode-ai/core/session/info"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { SessionTable } from "@opencode-ai/core/session/sql"
@@ -161,14 +162,18 @@ describe("GoalTool", () => {
       yield* settleTool(registry, call("goal_complete", {}))
 
       expect(yield* goals.get(sessionID)).toBeUndefined()
-      expect(
-        (yield* db
-          .select({ metadata: SessionTable.metadata })
-          .from(SessionTable)
-          .where(eq(SessionTable.id, sessionID))
-          .get()
-          .pipe(Effect.orDie))?.metadata?.completed_goal,
-      ).toMatchObject({ status: "completed", progress: 80 })
+      const completedRow = yield* db
+        .select()
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
+      expect(completedRow?.metadata?.completed_goal).toMatchObject({ status: "completed", progress: 80 })
+      expect(completedRow?.metadata?.goal).toBeUndefined()
+      if (!completedRow) return yield* Effect.die("Completed Goal row missing")
+      const completed = fromRow(completedRow)
+      expect(completed.completedGoal).toMatchObject({ status: "completed", progress: 80 })
+      expect(completed.goal).toBeUndefined()
       expect(assertions.map((item) => item.action)).toEqual([
         "goal_set",
         "goal_summarize_state",
