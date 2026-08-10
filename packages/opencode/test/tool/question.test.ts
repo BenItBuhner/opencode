@@ -90,6 +90,30 @@ describe("tool.question", () => {
     }),
   )
 
+  it.instance("returns the configured timeout answer and clears the pending request", () =>
+    Effect.gen(function* () {
+      const question = yield* Question.Service
+      const toolInfo = yield* QuestionTool
+      const tool = yield* toolInfo.init()
+      const result = yield* tool.execute(
+        {
+          timeout: 1,
+          questions: [
+            {
+              question: "Continue?",
+              header: "Continue",
+              options: [{ label: "Yes", description: "Continue working" }],
+            },
+          ],
+        },
+        ctx,
+      )
+
+      expect(result.output).toContain("User failed to answer in time (1s)")
+      expect(yield* question.list()).toEqual([])
+    }),
+  )
+
   // intentionally removed the zod validation due to tool call errors, hoping prompting is gonna be good enough
   //   test("should throw an Error for header exceeding 30 characters", async () => {
   //     const tool = await QuestionTool.init()
