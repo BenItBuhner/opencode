@@ -267,11 +267,6 @@ export const TaskTool = Tool.define(
           },
           variant: next.model ? undefined : variant,
           agent: next.name,
-          ...(goalMode
-            ? {
-                tools: Object.fromEntries(GOAL_TOOL_PERMISSIONS.map((permission) => [permission, true])),
-              }
-            : {}),
           parts,
         })
         return result.parts.findLast((item) => item.type === "text")?.text ?? ""
