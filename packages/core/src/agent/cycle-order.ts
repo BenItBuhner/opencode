@@ -1,4 +1,4 @@
-export const PRIMARY_AGENT_CYCLE_ORDER = ["build", "plan", "goal"] as const
+export const PRIMARY_AGENT_CYCLE_ORDER = ["build", "plan", "goal", "ask"] as const
 
 type AgentLike = { name: string }
 

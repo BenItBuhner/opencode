@@ -10,6 +10,7 @@ import { Auth } from "../auth"
 import { ProviderTransform } from "@/provider/transform"
 
 import PROMPT_GENERATE from "./generate.txt"
+import PROMPT_ASK from "./prompt/ask.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_GOAL from "./prompt/goal.txt"
@@ -209,6 +210,49 @@ const layer = Layer.effect(
             mode: "primary",
             native: true,
             color: "accent",
+          },
+          ask: {
+            name: "ask",
+            description:
+              "Ask mode. Read-only Q&A with file inspection, simple terminal commands, and web search. No edits.",
+            options: {},
+            prompt: PROMPT_ASK,
+            color: "info",
+            permission: Permission.merge(
+              defaults,
+              Permission.fromConfig({
+                "*": "deny",
+                read: "allow",
+                grep: "allow",
+                glob: "allow",
+                list: "allow",
+                webfetch: "allow",
+                websearch: "allow",
+                question: "allow",
+                bash: {
+                  "*": "deny",
+                  "git status*": "allow",
+                  "git diff*": "allow",
+                  "git log*": "allow",
+                  "git show*": "allow",
+                  "git branch*": "allow",
+                  "git remote*": "allow",
+                  "git rev-parse*": "allow",
+                  ls: "allow",
+                  "ls *": "allow",
+                  pwd: "allow",
+                  "pwd *": "allow",
+                  "which *": "allow",
+                  whoami: "allow",
+                  uname: "allow",
+                  "uname *": "allow",
+                },
+                external_directory: readonlyExternalDirectory,
+              }),
+              user,
+            ),
+            mode: "primary",
+            native: true,
           },
           general: {
             name: "general",

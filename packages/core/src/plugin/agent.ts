@@ -12,6 +12,18 @@ const TRUNCATION_GLOB = path.join(Global.Path.data, "tool-output", "*")
 const BUILD_SYSTEM =
   "You are an AI coding agent. Help the user accomplish software engineering tasks by inspecting the workspace, making targeted changes, and using tools according to the configured permissions."
 
+const PROMPT_ASK = `You are the Ask agent. Your job is to answer questions by inspecting the workspace and the web — never by changing anything.
+
+Core rules:
+- This is a read-only mode. Do not edit, write, create, delete, move, or patch files.
+- Do not offer to apply edits, generate patches for the user to paste, or propose that another agent make changes on your behalf.
+- Do not delegate work with the task tool, load skills, or use plan/goal lifecycle tools.
+- Prefer the read, grep, glob, and list tools for file inspection.
+- You may use only simple, non-mutating terminal commands (for example: ls, pwd, git status, git diff, git log). Never run commands that change system or repository state.
+- You may use websearch and webfetch to look up external information.
+- Use the question tool when you need clarification from the user.
+- Answer clearly and cite the files, commands, or sources you used. Do not pretend you made changes.`
+
 const PROMPT_EXPLORE = `You are a file search specialist. You excel at thoroughly navigating and exploring codebases.
 
 Your strengths:
@@ -192,6 +204,46 @@ export const Plugin = define({
             { action: "goal_status", resource: "*", effect: "allow" },
             { action: "goal_summarize_state", resource: "*", effect: "allow" },
           ]),
+        )
+      })
+
+      draft.update(AgentV2.ID.make("ask"), (item) => {
+        item.description =
+          "Ask mode. Read-only Q&A with file inspection, simple terminal commands, and web search. No edits."
+        item.system = PROMPT_ASK
+        item.mode = "primary"
+        item.color = "info"
+        item.permissions.push(
+          ...PermissionV2.merge(
+            defaults,
+            [
+              { action: "*", resource: "*", effect: "deny" },
+              { action: "read", resource: "*", effect: "allow" },
+              { action: "grep", resource: "*", effect: "allow" },
+              { action: "glob", resource: "*", effect: "allow" },
+              { action: "list", resource: "*", effect: "allow" },
+              { action: "webfetch", resource: "*", effect: "allow" },
+              { action: "websearch", resource: "*", effect: "allow" },
+              { action: "question", resource: "*", effect: "allow" },
+              { action: "bash", resource: "*", effect: "deny" },
+              { action: "bash", resource: "git status*", effect: "allow" },
+              { action: "bash", resource: "git diff*", effect: "allow" },
+              { action: "bash", resource: "git log*", effect: "allow" },
+              { action: "bash", resource: "git show*", effect: "allow" },
+              { action: "bash", resource: "git branch*", effect: "allow" },
+              { action: "bash", resource: "git remote*", effect: "allow" },
+              { action: "bash", resource: "git rev-parse*", effect: "allow" },
+              { action: "bash", resource: "ls", effect: "allow" },
+              { action: "bash", resource: "ls *", effect: "allow" },
+              { action: "bash", resource: "pwd", effect: "allow" },
+              { action: "bash", resource: "pwd *", effect: "allow" },
+              { action: "bash", resource: "which *", effect: "allow" },
+              { action: "bash", resource: "whoami", effect: "allow" },
+              { action: "bash", resource: "uname", effect: "allow" },
+              { action: "bash", resource: "uname *", effect: "allow" },
+            ],
+            readonlyExternalDirectory,
+          ),
         )
       })
 
