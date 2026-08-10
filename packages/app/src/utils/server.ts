@@ -92,7 +92,7 @@ export function createApiForServer(input: {
           model: {
             id: value.model.modelID,
             providerID: value.model.providerID,
-            variant: value.variant,
+            variant: value.variant ?? undefined,
           },
         },
         requestOptions,
