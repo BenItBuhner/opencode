@@ -137,6 +137,9 @@ beforeAll(async () => {
     Toast: { Region: () => null },
     showToast: () => 0,
   }))
+  mock.module("@/utils/toast", () => ({
+    showToast: () => 0,
+  }))
 
   mock.module("@opencode-ai/core/util/encode", () => ({
     base64Encode: (value: string) => value,
@@ -497,7 +500,7 @@ describe("prompt submit worktree selection", () => {
   })
 
   test("submits durable queued followups without optimistic user projection", async () => {
-    const api = clientFor("/repo/main").api.session
+    const api = clientFor("/repo/main").api.session as unknown as Parameters<typeof sendFollowupDraft>[0]["api"]
 
     await sendFollowupDraft({
       api,
@@ -505,7 +508,7 @@ describe("prompt submit worktree selection", () => {
         session: {
           set: () => undefined,
         },
-      } as Parameters<typeof sendFollowupDraft>[0]["serverSync"],
+      } as unknown as Parameters<typeof sendFollowupDraft>[0]["serverSync"],
       sync: {
         data: { command: [] },
         session: {
@@ -514,12 +517,12 @@ describe("prompt submit worktree selection", () => {
             remove: () => undefined,
           },
         },
-      } as Parameters<typeof sendFollowupDraft>[0]["sync"],
+      } as unknown as Parameters<typeof sendFollowupDraft>[0]["sync"],
       draft: {
         sessionID: "session-1",
         sessionDirectory: "/repo/main",
         prompt: [{ type: "text", content: "queued", start: 0, end: 6 }],
-        context: { items: [] },
+        context: [],
         agent: "agent",
         model: { providerID: "provider", modelID: "model" },
       },

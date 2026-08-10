@@ -4,7 +4,7 @@ import { ToolFailure } from "@opencode-ai/llm"
 import { Effect, Layer, Schema } from "effect"
 import { makeLocationNode } from "../effect/app-node"
 import { PermissionV2 } from "../permission"
-import { SessionV2 } from "../session"
+import { SessionGoal } from "../session/goal"
 import { ToolRegistry } from "./registry"
 import { Tool } from "./tool"
 import { Tools } from "./tools"
@@ -14,7 +14,7 @@ const SetInput = Schema.Struct({
   text: Schema.String.annotate({ description: "The durable session goal to work toward." }),
 })
 const SummarizeStateInput = Schema.Struct({
-  progress: SessionV2.GoalProgress.annotate({
+  progress: SessionGoal.Progress.annotate({
     description: "Estimated goal completion percentage as an integer from 0 to 100.",
   }),
   summary: Schema.String.annotate({
@@ -28,8 +28,8 @@ const SummarizeStateInput = Schema.Struct({
 const Output = Schema.Struct({
   title: Schema.String,
   output: Schema.String,
-  goal: SessionV2.Goal.pipe(Schema.optional),
-  summary: SessionV2.GoalSummary.pipe(Schema.optional),
+  goal: SessionGoal.Info.pipe(Schema.optional),
+  summary: SessionGoal.Summary.pipe(Schema.optional),
 })
 
 const names = {
@@ -45,8 +45,10 @@ const REQUIRED_SUMMARY_SECTIONS = ["Progress", "Current State", "Blockers", "Nex
 const layer = Layer.effectDiscard(
   Effect.gen(function* () {
     const tools = yield* Tools.Service
-    const sessions = yield* SessionV2.Service
+    const goals = yield* SessionGoal.Service
     const permission = yield* PermissionV2.Service
+    const failure = (error: unknown) =>
+      error instanceof ToolFailure ? error : new ToolFailure({ message: "Unable to update session goal" })
 
     const ask = (action: string, context: Tool.Context) =>
       permission
@@ -70,9 +72,9 @@ const layer = Layer.effectDiscard(
           execute: (input, context) =>
             Effect.gen(function* () {
               yield* ask(names.set, context)
-              const goal = yield* sessions.setGoal({ sessionID: context.sessionID, text: input.text, status: "active" })
+              const goal = yield* goals.set({ sessionID: context.sessionID, text: input.text, status: "active" })
               return { title: "Goal set", output: formatGoal(goal), goal }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
         [names.pause]: Tool.make({
           description: "Pause the active session goal. This does not switch agents.",
@@ -82,9 +84,9 @@ const layer = Layer.effectDiscard(
           execute: (_input, context) =>
             Effect.gen(function* () {
               yield* ask(names.pause, context)
-              const goal = yield* sessions.updateGoal({ sessionID: context.sessionID, status: "paused" })
+              const goal = yield* goals.update({ sessionID: context.sessionID, status: "paused" })
               return { title: goal ? "Goal paused" : "No goal", output: formatGoal(goal), goal }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
         [names.resume]: Tool.make({
           description: "Resume a paused session goal and mark it active. This does not switch agents by itself.",
@@ -94,9 +96,9 @@ const layer = Layer.effectDiscard(
           execute: (_input, context) =>
             Effect.gen(function* () {
               yield* ask(names.resume, context)
-              const goal = yield* sessions.updateGoal({ sessionID: context.sessionID, status: "active" })
+              const goal = yield* goals.update({ sessionID: context.sessionID, status: "active" })
               return { title: goal ? "Goal resumed" : "No goal", output: formatGoal(goal), goal }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
         [names.complete]: Tool.make({
           description: "Mark the current session goal as completed and clear it from the session.",
@@ -106,10 +108,10 @@ const layer = Layer.effectDiscard(
           execute: (_input, context) =>
             Effect.gen(function* () {
               yield* ask(names.complete, context)
-              const goal = yield* sessions.updateGoal({ sessionID: context.sessionID, status: "completed" })
-              if (goal) yield* sessions.clearGoal(context.sessionID)
+              const goal = yield* goals.update({ sessionID: context.sessionID, status: "completed" })
+              if (goal) yield* goals.clear(context.sessionID)
               return { title: goal ? "Goal completed" : "No goal", output: formatGoal(goal), goal }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
         [names.status]: Tool.make({
           description: "Read the current durable session goal and status.",
@@ -119,9 +121,9 @@ const layer = Layer.effectDiscard(
           execute: (_input, context) =>
             Effect.gen(function* () {
               yield* ask(names.status, context)
-              const goal = yield* sessions.getGoal(context.sessionID)
+              const goal = yield* goals.get(context.sessionID)
               return { title: goal ? "Goal status" : "No goal", output: formatGoal(goal), goal }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
         [names.summarizeState]: Tool.make({
           description:
@@ -134,7 +136,7 @@ const layer = Layer.effectDiscard(
               yield* ask(names.summarizeState, context)
               const validation = validateSummaryFormat(input.summary)
               if (validation) return yield* Effect.fail(new ToolFailure({ message: validation }))
-              const goal = yield* sessions.addGoalSummary({
+              const goal = yield* goals.addSummary({
                 sessionID: context.sessionID,
                 progress: input.progress,
                 summary: input.summary,
@@ -149,7 +151,7 @@ const layer = Layer.effectDiscard(
                 goal,
                 summary,
               }
-            }),
+            }).pipe(Effect.mapError(failure)),
         }),
       })
       .pipe(Effect.orDie)
@@ -159,10 +161,10 @@ const layer = Layer.effectDiscard(
 export const node = makeLocationNode({
   name: "tool/goal",
   layer,
-  deps: [ToolRegistry.node, PermissionV2.node, SessionV2.node],
+  deps: [ToolRegistry.node, PermissionV2.node, SessionGoal.node],
 })
 
-function formatGoal(goal: SessionV2.Goal | undefined) {
+function formatGoal(goal: SessionGoal.Info | undefined) {
   if (!goal) return "No session goal is currently set."
   return [
     `Goal: ${goal.text}`,

@@ -1,7 +1,7 @@
 export * as SessionV2 from "./session"
 export * from "./session/schema"
 
-import { DateTime, Effect, Layer, Schema, Context, Option, Stream } from "effect"
+import { DateTime, Effect, Layer, Schema, Context, Stream } from "effect"
 import { ListAnchor } from "@opencode-ai/schema/session"
 import { and, asc, desc, eq, gt, like, lt, or, type SQL } from "drizzle-orm"
 import { ProjectV2 } from "./project"
@@ -107,50 +107,6 @@ export class PromptConflictError extends Schema.TaggedErrorClass<PromptConflictE
 }) {}
 export const MessageNotFoundError = SessionRevert.MessageNotFoundError
 export type MessageNotFoundError = SessionRevert.MessageNotFoundError
-export const GoalStatus = Schema.Literals(["active", "paused", "completed"])
-export type GoalStatus = typeof GoalStatus.Type
-export const GoalProgress = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100))
-export type GoalProgress = typeof GoalProgress.Type
-export const GoalSummary = Schema.Struct({
-  id: Schema.String,
-  created: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  progress: GoalProgress,
-  summary: Schema.String,
-  headline: Schema.String.pipe(Schema.optional),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-})
-export type GoalSummary = typeof GoalSummary.Type
-export const Goal = Schema.Struct({
-  text: Schema.String,
-  status: GoalStatus,
-  created: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  updated: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  completed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-  progress: GoalProgress.pipe(Schema.optional),
-  summaries: Schema.Array(GoalSummary).pipe(Schema.optional),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-})
-export type Goal = typeof Goal.Type
-
-type GoalUpdateInput = {
-  sessionID: SessionSchema.ID
-  text?: string
-  status?: GoalStatus
-}
-type GoalSummaryInput = {
-  sessionID: SessionSchema.ID
-  progress: GoalProgress
-  summary: string
-  headline?: string
-}
-const GOAL_SUMMARY_LIMIT = 6
-const decodeGoal = Schema.decodeUnknownOption(Goal)
-
-export function goalFromMetadata(metadata: Record<string, unknown> | undefined): Goal | undefined {
-  const goal = Option.getOrUndefined(decodeGoal(metadata?.goal))
-  if (!goal) return undefined
-  return { ...goal, summaries: goal.summaries?.map((summary) => ({ ...summary })) }
-}
 
 export type Error = NotFoundError | MessageDecodeError | OperationUnavailableError | PromptConflictError
 
@@ -212,15 +168,6 @@ export interface Interface {
   readonly active: Effect.Effect<ReadonlySet<SessionSchema.ID>>
   readonly resume: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError | SessionRunner.RunError>
   readonly interrupt: (sessionID: SessionSchema.ID) => Effect.Effect<void>
-  readonly getGoal: (sessionID: SessionSchema.ID) => Effect.Effect<Goal | undefined, NotFoundError>
-  readonly setGoal: (input: {
-    sessionID: SessionSchema.ID
-    text: string
-    status?: GoalStatus
-  }) => Effect.Effect<Goal, NotFoundError>
-  readonly updateGoal: (input: GoalUpdateInput) => Effect.Effect<Goal | undefined, NotFoundError>
-  readonly addGoalSummary: (input: GoalSummaryInput) => Effect.Effect<Goal | undefined, NotFoundError>
-  readonly clearGoal: (sessionID: SessionSchema.ID) => Effect.Effect<void, NotFoundError>
   readonly revert: {
     readonly stage: (input: {
       sessionID: SessionSchema.ID
@@ -256,94 +203,6 @@ const layer = Layer.effect(
             }),
         ),
       )
-    const row = Effect.fn("V2Session.row")(function* (sessionID: SessionSchema.ID) {
-      const current = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
-      if (!current) return yield* new NotFoundError({ sessionID })
-      return current
-    })
-    const writeGoalMetadata = Effect.fn("V2Session.writeGoalMetadata")(function* (input: {
-      sessionID: SessionSchema.ID
-      goal?: Goal
-    }) {
-      const current = yield* row(input.sessionID)
-      const metadata = { ...(current.metadata ?? {}) }
-      if (input.goal) metadata.goal = input.goal
-      else delete metadata.goal
-      yield* db
-        .update(SessionTable)
-        .set({ metadata, time_updated: Date.now() })
-        .where(eq(SessionTable.id, input.sessionID))
-        .run()
-        .pipe(Effect.orDie)
-    })
-    const getGoal = Effect.fn("V2Session.getGoal")(function* (sessionID: SessionSchema.ID) {
-      return goalFromMetadata((yield* row(sessionID)).metadata)
-    })
-    const setGoal = Effect.fn("V2Session.setGoal")(function* (input: {
-      sessionID: SessionSchema.ID
-      text: string
-      status?: GoalStatus
-    }) {
-      const existing = yield* getGoal(input.sessionID)
-      const now = Date.now()
-      const status = input.status ?? "active"
-      const goal: Goal = {
-        text: input.text.trim(),
-        status,
-        created: existing?.created ?? now,
-        updated: now,
-        completed: status === "completed" ? (existing?.completed ?? now) : undefined,
-        revision: (existing?.revision ?? 0) + 1,
-      }
-      yield* writeGoalMetadata({ sessionID: input.sessionID, goal })
-      return goal
-    })
-    const updateGoal = Effect.fn("V2Session.updateGoal")(function* (input: GoalUpdateInput) {
-      const existing = yield* getGoal(input.sessionID)
-      if (!existing) {
-        if (input.text === undefined) return undefined
-        return yield* setGoal({ sessionID: input.sessionID, text: input.text, status: input.status })
-      }
-      const now = Date.now()
-      const status = input.status ?? existing.status
-      const goal: Goal = {
-        ...existing,
-        text: input.text === undefined ? existing.text : input.text.trim(),
-        status,
-        updated: now,
-        completed: status === "completed" ? (existing.completed ?? now) : undefined,
-        revision: (existing.revision ?? 0) + 1,
-      }
-      yield* writeGoalMetadata({ sessionID: input.sessionID, goal })
-      return goal
-    })
-    const addGoalSummary = Effect.fn("V2Session.addGoalSummary")(function* (input: GoalSummaryInput) {
-      const existing = yield* getGoal(input.sessionID)
-      if (!existing) return undefined
-      const now = Date.now()
-      const revision = (existing.revision ?? 0) + 1
-      const summary: GoalSummary = {
-        id: `${now}-${revision}`,
-        created: now,
-        progress: input.progress,
-        summary: input.summary.trim(),
-        headline: input.headline?.trim() || undefined,
-        revision,
-      }
-      const goal: Goal = {
-        ...existing,
-        progress: input.progress,
-        summaries: [...(existing.summaries ?? []), summary].slice(-GOAL_SUMMARY_LIMIT),
-        updated: now,
-        revision,
-      }
-      yield* writeGoalMetadata({ sessionID: input.sessionID, goal })
-      return goal
-    })
-    const clearGoal = Effect.fn("V2Session.clearGoal")(function* (sessionID: SessionSchema.ID) {
-      yield* writeGoalMetadata({ sessionID })
-    })
-
     const result = Service.of({
       create: Effect.fn("V2Session.create")(function* (input) {
         const sessionID = input.id ?? SessionSchema.ID.create()
@@ -570,11 +429,6 @@ const layer = Layer.effect(
       interrupt: Effect.fn("V2Session.interrupt")((sessionID) =>
         Effect.uninterruptible(execution.interrupt(sessionID)),
       ),
-      getGoal,
-      setGoal,
-      updateGoal,
-      addGoalSummary,
-      clearGoal,
       revert: {
         stage: Effect.fn("V2Session.revert.stage")(function* (input) {
           const session = yield* result.get(input.sessionID)

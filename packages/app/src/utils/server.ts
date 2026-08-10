@@ -4,10 +4,15 @@ import type { ServerConnection } from "@/context/server"
 import { decode64 } from "@/utils/base64"
 
 type CurrentPromptInput = SessionPromptInput & {
-  delivery?: "steer" | "queue"
-  resume?: boolean
-  files?: Array<{ uri: string; name?: string; mention?: { start: number; end: number; text: string } }>
-  agents?: Array<{ name: string; mention?: { start: number; end: number; text: string } }>
+  delivery?: "steer" | "queue" | null
+  resume?: boolean | null
+  files?: ReadonlyArray<{
+    uri: string
+    name?: string
+    description?: string
+    mention?: { start: number; end: number; text: string }
+  }>
+  agents?: ReadonlyArray<{ name: string; mention?: { start: number; end: number; text: string } }>
 }
 
 export function authTokenFromCredentials(input: { username?: string; password: string }) {
@@ -69,7 +74,7 @@ export function createApiForServer(input: {
     ...client,
     session: {
       ...client.session,
-      async prompt(value: CurrentPromptInput): Promise<SessionPromptOutput> {
+      async prompt(value: CurrentPromptInput, _requestOptions?: unknown): Promise<SessionPromptOutput> {
         const response = await (input.fetch ?? globalThis.fetch)(
           `${input.server.url}/api/session/${encodeURIComponent(value.sessionID)}/prompt`,
           {
@@ -93,8 +98,8 @@ export function createApiForServer(input: {
                   source: agent.mention,
                 })),
               },
-              delivery: value.delivery,
-              resume: value.resume,
+              delivery: value.delivery ?? undefined,
+              resume: value.resume ?? undefined,
             }),
           },
         )
