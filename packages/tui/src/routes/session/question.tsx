@@ -23,12 +23,16 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
-  const [remaining, setRemaining] = createSignal(props.request.timeout)
+  const initialTimeout =
+    typeof props.request.timeout === "number" && Number.isFinite(props.request.timeout)
+      ? props.request.timeout
+      : undefined
+  const [remaining, setRemaining] = createSignal<number | undefined>(initialTimeout)
 
   const timer =
-    props.request.timeout === undefined
+    initialTimeout === undefined
       ? undefined
-      : setInterval(() => setRemaining((value) => Math.max(0, (value ?? 0) - 1)), 1_000)
+      : setInterval(() => setRemaining((value) => Math.max(0, (value ?? initialTimeout) - 1)), 1_000)
   onCleanup(() => {
     if (timer !== undefined) clearInterval(timer)
   })

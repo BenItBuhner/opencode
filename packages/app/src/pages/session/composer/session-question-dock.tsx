@@ -72,11 +72,18 @@ export const SessionQuestionDock: Component<{ request: QuestionRequest; onSubmit
   const serverSDK = useServerSDK()
   const language = useLanguage()
   const cacheKey = ScopedKey.from(serverSDK().scope, props.request.id)
-  const [remaining, setRemaining] = createSignal(props.request.timeout)
+  const initialTimeout =
+    typeof props.request.timeout === "number" && Number.isFinite(props.request.timeout)
+      ? props.request.timeout
+      : undefined
+  const [remaining, setRemaining] = createSignal<number | undefined>(initialTimeout)
 
   createEffect(() => {
     props.request.id
-    const timeout = props.request.timeout
+    const timeout =
+      typeof props.request.timeout === "number" && Number.isFinite(props.request.timeout)
+        ? props.request.timeout
+        : undefined
     setRemaining(timeout)
     if (timeout === undefined) return
     const started = Date.now()
