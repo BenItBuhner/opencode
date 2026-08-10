@@ -215,6 +215,10 @@ export const SettingsGeneral: Component = () => {
       label: language.label(locale),
     })),
   )
+  const followupOptions = createMemo(() => [
+    { value: "steer" as const, label: language.t("settings.general.row.followup.option.steer") },
+    { value: "queue" as const, label: language.t("settings.general.row.followup.option.queue") },
+  ])
 
   const noneSound = { id: "none", label: "sound.option.none" } as const
   const soundOptions = [noneSound, ...SOUND_OPTIONS]
@@ -357,6 +361,23 @@ export const SettingsGeneral: Component = () => {
               onChange={(checked) => settings.general.setShowReasoningSummaries(checked)}
             />
           </div>
+        </SettingsRow>
+
+        <SettingsRow
+          title={language.t("settings.general.row.followup.title")}
+          description={language.t("settings.general.row.followup.description")}
+        >
+          <Select
+            data-action="settings-followup"
+            options={followupOptions()}
+            current={followupOptions().find((option) => option.value === settings.general.followup())}
+            value={(option) => option.value}
+            label={(option) => option.label}
+            onSelect={(option) => option && settings.general.setFollowup(option.value)}
+            variant="secondary"
+            size="small"
+            triggerVariant="settings"
+          />
         </SettingsRow>
 
         <SettingsRow
