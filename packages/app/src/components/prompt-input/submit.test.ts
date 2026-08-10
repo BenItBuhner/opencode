@@ -4,6 +4,7 @@ import type { Prompt, PromptStore } from "@/context/prompt"
 import type { ModelSelection } from "@/context/local"
 
 let createPromptSubmit: typeof import("./submit").createPromptSubmit
+let sendFollowupDraft: typeof import("./submit").sendFollowupDraft
 
 const createdClients: string[] = []
 const createdSessions: string[] = []
@@ -276,6 +277,7 @@ beforeAll(async () => {
 
   const mod = await import("./submit")
   createPromptSubmit = mod.createPromptSubmit
+  sendFollowupDraft = mod.sendFollowupDraft
 })
 
 beforeEach(() => {
@@ -492,6 +494,42 @@ describe("prompt submit worktree selection", () => {
     expect((promptInputs[0] as { legacyParts?: { id: string; type: string; text?: string }[] }).legacyParts).toEqual([
       { id: expect.stringMatching(/^prt_/), type: "text", text: "ls" },
     ])
+  })
+
+  test("submits durable queued followups without optimistic user projection", async () => {
+    const api = clientFor("/repo/main").api.session
+
+    await sendFollowupDraft({
+      api,
+      serverSync: {
+        session: {
+          set: () => undefined,
+        },
+      } as Parameters<typeof sendFollowupDraft>[0]["serverSync"],
+      sync: {
+        data: { command: [] },
+        session: {
+          optimistic: {
+            add: (value: (typeof optimistic)[number]) => optimistic.push(value),
+            remove: () => undefined,
+          },
+        },
+      } as Parameters<typeof sendFollowupDraft>[0]["sync"],
+      draft: {
+        sessionID: "session-1",
+        sessionDirectory: "/repo/main",
+        prompt: [{ type: "text", content: "queued", start: 0, end: 6 }],
+        context: { items: [] },
+        agent: "agent",
+        model: { providerID: "provider", modelID: "model" },
+      },
+      delivery: "queue",
+      optimistic: false,
+      optimisticBusy: true,
+    })
+
+    expect(promptInputs[0]).toMatchObject({ sessionID: "session-1", text: "queued", delivery: "queue" })
+    expect(optimistic).toEqual([])
   })
 
   test("submits slash commands through the current session API", async () => {

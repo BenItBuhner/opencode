@@ -1715,7 +1715,13 @@ export default function Page() {
   })
 
   const followupMutation = useMutation(() => ({
-    mutationFn: async (input: { sessionID: string; id: string; manual?: boolean }) => {
+    mutationFn: async (input: {
+      sessionID: string
+      id: string
+      manual?: boolean
+      delivery?: "steer" | "queue"
+      optimistic?: boolean
+    }) => {
       const owner = sessionOwnership.capture()
       const item = (followup.items[input.sessionID] ?? []).find((entry) => entry.id === input.id)
       if (!item) return
@@ -1728,6 +1734,8 @@ export default function Page() {
         sync: sync(),
         serverSync: serverSync(),
         draft: item,
+        delivery: input.delivery,
+        optimistic: input.optimistic,
         optimisticBusy: item.sessionDirectory === sdk().directory,
       }).catch((err) => {
         setFollowup("failed", input.sessionID, input.id)
@@ -1775,12 +1783,20 @@ export default function Page() {
   }
 
   const queueFollowup = (draft: FollowupDraft) => {
+    const item = { id: Identifier.ascending("message"), ...draft }
     setFollowup("items", draft.sessionID, (items) => [
       ...(items ?? []),
-      { id: Identifier.ascending("message"), ...draft },
+      item,
     ])
     setFollowup("failed", draft.sessionID, undefined)
     setFollowup("paused", draft.sessionID, undefined)
+    if (serverSDK().protocolKind() !== "v2") return
+    void followupMutation.mutateAsync({
+      sessionID: draft.sessionID,
+      id: item.id,
+      delivery: "queue",
+      optimistic: false,
+    })
   }
 
   const followupDock = createMemo(() => queuedFollowups().map((item) => ({ id: item.id, text: followupText(item) })))

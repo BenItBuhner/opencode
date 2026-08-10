@@ -1,5 +1,4 @@
 import { describe, expect, test } from "bun:test"
-import { appendFileSync } from "node:fs"
 import { createApiForServer, createSdkForServer } from "./server"
 import { createCompatibleApi } from "./server-compat"
 
@@ -130,7 +129,7 @@ describe("createCompatibleApi", () => {
     ])
   })
 
-  test("debug logs current prompt request payload shape", async () => {
+  test("sends current prompts with the current nested prompt contract", async () => {
     const { api, requests } = setup("v2")
     await api.session.prompt({
       sessionID: "ses_1",
@@ -138,30 +137,23 @@ describe("createCompatibleApi", () => {
       text: "hello",
       files: [{ uri: "data:text/plain;base64,aGVsbG8=", name: "notes.txt" }],
       agents: [{ name: "goal" }],
+      delivery: "queue",
+      resume: false,
     })
     const body = await requests[0]!.json()
 
-    // #region agent log
-    appendFileSync(
-      "/opt/cursor/logs/debug.log",
-      `${JSON.stringify({
-        hypothesisId: "A",
-        location: "packages/app/src/utils/server-compat.test.ts:debug-current-prompt",
-        message: "Current API prompt request payload shape",
-        data: {
-          path: new URL(requests[0]!.url).pathname,
-          topLevelKeys: Object.keys(body).sort(),
-          hasPromptObject: typeof body.prompt === "object" && body.prompt !== null,
-          hasFlatText: typeof body.text === "string",
-          hasDelivery: "delivery" in body,
-        },
-        timestamp: Date.now(),
-      })}\n`,
-    )
-    // #endregion
-
-    expect(body).toHaveProperty("text", "hello")
-    expect(body).not.toHaveProperty("prompt")
+    expect(new URL(requests[0]!.url).pathname).toBe("/api/session/ses_1/prompt")
+    expect(body).toEqual({
+      id: "msg_1",
+      prompt: {
+        text: "hello",
+        files: [{ uri: "data:text/plain;base64,aGVsbG8=", mime: "text/plain", name: "notes.txt" }],
+        agents: [{ name: "goal" }],
+      },
+      delivery: "queue",
+      resume: false,
+    })
+    expect(body).not.toHaveProperty("text")
   })
 
   test("resolves protocol detection once across implementation methods", async () => {

@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test"
-import { appendFileSync } from "node:fs"
 import type { OpenCodeEvent, SessionMessageInfo } from "@opencode-ai/client/promise"
+import { Event } from "@opencode-ai/schema/event"
+import { Model } from "@opencode-ai/schema/model"
+import { Provider } from "@opencode-ai/schema/provider"
+import { SessionEvent } from "@opencode-ai/schema/session-event"
+import { SessionID } from "@opencode-ai/schema/session-id"
+import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { createV2SessionReducer } from "./server-session-v2-reducer"
 
 const event = (input: object) => input as OpenCodeEvent
@@ -155,88 +160,90 @@ describe("v2 session reducer", () => {
     expect(result).toMatchObject({ sessionID: "ses_1", missing: "msg_user", touched: [] })
   })
 
-  test("debug logs current session.next event projection", () => {
+  test("projects current session.next prompt and streaming assistant events", () => {
     const reducer = createV2SessionReducer()
     let messages: SessionMessageInfo[] = []
-    const reductions = [
+    const currentBase = {
+      location: { directory: "/repo" },
+      durable: { aggregateID: "ses_1", seq: 1, version: 1 },
+    }
+    const currentSessionID = SessionID.make("ses_1")
+    const userMessageID = SessionMessage.ID.make("msg_user")
+    const assistantMessageID = SessionMessage.ID.make("msg_assistant")
+    const events: Array<
+      | typeof SessionEvent.PromptAdmitted.Encoded
+      | typeof SessionEvent.Prompted.Encoded
+      | typeof SessionEvent.Step.Started.Encoded
+      | typeof SessionEvent.Text.Started.Encoded
+      | typeof SessionEvent.Text.Ended.Encoded
+    > = [
       {
-        ...base,
-        id: "evt_admitted",
+        ...currentBase,
+        id: Event.ID.make("evt_admitted"),
         type: "session.next.prompt.admitted",
         data: {
           timestamp: 1,
-          sessionID: "ses_1",
-          messageID: "msg_user",
-          prompt: { text: "hello" },
+          sessionID: currentSessionID,
+          messageID: userMessageID,
+          prompt: { text: "hello", files: [], agents: [] },
           delivery: "steer",
         },
       },
       {
-        ...base,
-        id: "evt_prompted",
+        ...currentBase,
+        id: Event.ID.make("evt_prompted"),
         type: "session.next.prompted",
         data: {
           timestamp: 1,
-          sessionID: "ses_1",
-          messageID: "msg_user",
-          prompt: { text: "hello" },
+          sessionID: currentSessionID,
+          messageID: userMessageID,
+          prompt: { text: "hello", files: [], agents: [] },
           delivery: "steer",
         },
       },
       {
-        ...base,
-        id: "evt_step",
+        ...currentBase,
+        id: Event.ID.make("evt_step"),
         type: "session.next.step.started",
         data: {
           timestamp: 2,
-          sessionID: "ses_1",
-          assistantMessageID: "msg_assistant",
+          sessionID: currentSessionID,
+          assistantMessageID,
           agent: "build",
-          model: { id: "model", providerID: "provider" },
+          model: { id: Model.ID.make("model"), providerID: Provider.ID.make("provider") },
         },
       },
       {
-        ...base,
-        id: "evt_text",
+        ...currentBase,
+        id: Event.ID.make("evt_text"),
         type: "session.next.text.started",
-        data: { timestamp: 3, sessionID: "ses_1", assistantMessageID: "msg_assistant", textID: "prt_text" },
+        data: { timestamp: 3, sessionID: currentSessionID, assistantMessageID, textID: "prt_text" },
       },
       {
-        ...base,
-        id: "evt_text_end",
+        ...currentBase,
+        id: Event.ID.make("evt_text_end"),
         type: "session.next.text.ended",
         data: {
           timestamp: 4,
-          sessionID: "ses_1",
-          assistantMessageID: "msg_assistant",
+          sessionID: currentSessionID,
+          assistantMessageID,
           textID: "prt_text",
           text: "hello",
         },
       },
-    ].map((input) => {
-      const result = reducer.reduce(messages, event(input))
+    ]
+    const reductions = events.map((input) => {
+      const result = reducer.reduce(messages, input)
       if (result) messages = result.messages
       return result
     })
 
-    // #region agent log
-    appendFileSync(
-      "/opt/cursor/logs/debug.log",
-      `${JSON.stringify({
-        hypothesisId: "B",
-        location: "packages/app/src/context/server-session-v2-reducer.test.ts:debug-current-events",
-        message: "Reducer projection of current session.next events",
-        data: {
-          reductionKinds: reductions.map((result) =>
-            result ? { messages: result.messages.length, touched: result.touched, missing: result.missing } : null,
-          ),
-          projectedMessages: messages.length,
-        },
-        timestamp: Date.now(),
-      })}\n`,
-    )
-    // #endregion
-
-    expect(messages).toEqual([])
+    expect(reductions.every((result) => result !== undefined)).toBe(true)
+    expect(messages[0]).toMatchObject({ id: "msg_user", type: "user", text: "hello" })
+    expect(messages[1]).toMatchObject({
+      id: "msg_assistant",
+      type: "assistant",
+      content: [{ type: "text", text: "hello" }],
+    })
   })
 })

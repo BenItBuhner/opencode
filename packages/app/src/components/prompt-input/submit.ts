@@ -46,6 +46,8 @@ type FollowupSendInput = {
   sync: DirectorySync
   draft: FollowupDraft
   messageID?: string
+  delivery?: "steer" | "queue"
+  optimistic?: boolean
   optimisticBusy?: boolean
   before?: () => Promise<boolean> | boolean
 }
@@ -58,11 +60,13 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
   const text = draftText(input.draft.prompt)
   const images = draftImages(input.draft.prompt)
   const setBusy = () => {
+    if (input.optimistic === false) return
     if (!input.optimisticBusy) return
     input.serverSync.session.set("session_status", input.draft.sessionID, { type: "busy" })
   }
 
   const setIdle = () => {
+    if (input.optimistic === false) return
     if (!input.optimisticBusy) return
     input.serverSync.session.set("session_status", input.draft.sessionID, { type: "idle" })
   }
@@ -128,19 +132,23 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
   }
 
   const add = () =>
-    input.sync.session.optimistic.add({
-      directory: input.draft.sessionDirectory,
-      sessionID: input.draft.sessionID,
-      message,
-      parts: optimisticParts,
-    })
+    input.optimistic === false
+      ? undefined
+      : input.sync.session.optimistic.add({
+          directory: input.draft.sessionDirectory,
+          sessionID: input.draft.sessionID,
+          message,
+          parts: optimisticParts,
+        })
 
   const remove = () =>
-    input.sync.session.optimistic.remove({
-      directory: input.draft.sessionDirectory,
-      sessionID: input.draft.sessionID,
-      messageID,
-    })
+    input.optimistic === false
+      ? undefined
+      : input.sync.session.optimistic.remove({
+          directory: input.draft.sessionDirectory,
+          sessionID: input.draft.sessionID,
+          messageID,
+        })
 
   batch(() => {
     setBusy()
@@ -164,6 +172,7 @@ export async function sendFollowupDraft(input: FollowupSendInput) {
       variant: input.draft.variant,
       legacyParts: requestParts,
       text: requestParts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n"),
+      delivery: input.delivery,
       files: requestParts.flatMap((part) => {
         if (part.type !== "file") return []
         const text = part.source?.text
