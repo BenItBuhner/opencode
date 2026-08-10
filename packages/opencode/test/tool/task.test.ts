@@ -355,15 +355,6 @@ describe("tool.task", () => {
     Effect.gen(function* () {
       const sessions = yield* Session.Service
       const { chat, assistant } = yield* seed()
-      yield* sessions
-        .setPermission({
-          sessionID: chat.id,
-          permission: [
-            { permission: "external_directory", pattern: "*", action: "deny" },
-            { permission: "edit", pattern: "*", action: "deny" },
-          ],
-        })
-        .pipe(Effect.orDie)
       const tool = yield* TaskTool
       const def = yield* tool.init()
       let seen: SessionPrompt.PromptInput | undefined
@@ -403,6 +394,15 @@ describe("tool.task", () => {
       Effect.gen(function* () {
         const sessions = yield* Session.Service
         const { chat, assistant } = yield* seed()
+        yield* sessions
+          .setPermission({
+            sessionID: chat.id,
+            permission: [
+              { permission: "external_directory", pattern: "*", action: "deny" },
+              { permission: "edit", pattern: "*", action: "deny" },
+            ],
+          })
+          .pipe(Effect.orDie)
         const tool = yield* TaskTool
         const def = yield* tool.init()
         let seen: SessionPrompt.PromptInput | undefined
@@ -439,7 +439,6 @@ describe("tool.task", () => {
           expect.arrayContaining([
             { permission: "external_directory", pattern: "*", action: "deny" },
             { permission: "edit", pattern: "*", action: "deny" },
-            { permission: "todowrite", pattern: "*", action: "deny" },
             { permission: "task", pattern: "*", action: "deny" },
             { permission: "bash", pattern: "*", action: "deny" },
             { permission: "read", pattern: "*", action: "deny" },

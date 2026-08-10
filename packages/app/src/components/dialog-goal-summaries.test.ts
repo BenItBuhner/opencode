@@ -19,6 +19,7 @@ describe("goalFromSessionMetadata", () => {
       status: "active",
       created: undefined,
       progress: 75,
+      headline: "Branding restored",
       summaries: [
         { id: "first", created: undefined, progress: 25, summary: undefined, headline: undefined },
         {
