@@ -180,14 +180,32 @@ describe("query keys", () => {
     const api = {
       list: async (input: unknown) => {
         calls.push(input)
-        return { location: {}, data: [] }
+        return {
+          location: {},
+          data: [
+            {
+              id: "build",
+              mode: "primary",
+              hidden: false,
+              request: { headers: {}, body: { temperature: 0.4 } },
+              permissions: [],
+            },
+          ],
+        }
       },
     } as unknown as AgentApi
 
     const result = await new QueryClient().fetchQuery(loadAgentsQuery(ServerScope.local, "/repo", api))
 
     expect(calls).toEqual([{ location: { directory: "/repo" } }])
-    expect(result).toEqual([])
+    expect(result).toEqual([
+      expect.objectContaining({
+        name: "build",
+        mode: "primary",
+        temperature: 0.4,
+        options: { temperature: 0.4 },
+      }),
+    ])
   })
 
   test("loads commands from the current location-scoped endpoint", async () => {
