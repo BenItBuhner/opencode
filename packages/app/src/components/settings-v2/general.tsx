@@ -28,7 +28,7 @@ import {
 import "./settings-v2.css"
 
 const schemeOptions: ("system" | "light" | "dark")[] = ["system", "light", "dark"]
-const followupOptions = ["steer", "queue"] as const
+const followupOptions: ("steer" | "queue")[] = ["steer", "queue"]
 const fontSettings = {
   ui: {
     action: "settings-ui-font",
