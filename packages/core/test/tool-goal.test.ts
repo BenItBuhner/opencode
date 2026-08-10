@@ -1,14 +1,18 @@
 import { describe, expect } from "bun:test"
 import { Effect, Layer } from "effect"
+import { and, eq } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { PermissionV2 } from "@opencode-ai/core/permission"
 import { Project } from "@opencode-ai/core/project"
+import { EventV2 } from "@opencode-ai/core/event"
+import { EventTable } from "@opencode-ai/core/event/sql"
 import { ProjectTable } from "@opencode-ai/core/project/sql"
 import { AbsolutePath } from "@opencode-ai/core/schema"
 import { SessionV2 } from "@opencode-ai/core/session"
 import { SessionGoal } from "@opencode-ai/core/session/goal"
+import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { GoalTool } from "@opencode-ai/core/tool/goal"
 import { ToolRegistry } from "@opencode-ai/core/tool/registry"
@@ -75,8 +79,10 @@ describe("GoalTool", () => {
   it.effect("registers goal tools and persists goal state", () =>
     Effect.gen(function* () {
       yield* setup
+      const { db } = yield* Database.Service
       const registry = yield* ToolRegistry.Service
       const goals = yield* SessionGoal.Service
+      const events = yield* EventV2.Service
 
       expect((yield* toolDefinitions(registry)).map((tool) => tool.name)).toEqual(names)
       expect(yield* settleTool(registry, call("goal_set", { text: "Ship V2 recovery" }))).toMatchObject({
@@ -88,6 +94,101 @@ describe("GoalTool", () => {
         revision: 1,
       })
       expect(assertions).toMatchObject([{ sessionID, action: "goal_set", resources: ["*"], save: ["*"] }])
+
+      const recorded = yield* db
+        .select()
+        .from(EventTable)
+        .where(eq(EventTable.aggregate_id, sessionID))
+        .all()
+        .pipe(Effect.orDie)
+      yield* events.remove(sessionID)
+      yield* db
+        .update(SessionTable)
+        .set({ metadata: null })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+      yield* events.replayAll(
+        recorded.map((event) => ({
+          id: event.id,
+          aggregateID: event.aggregate_id,
+          seq: event.seq,
+          type: event.type,
+          data: event.data,
+        })),
+      )
+      expect(yield* goals.get(sessionID)).toMatchObject({
+        text: "Ship V2 recovery",
+        status: "active",
+        revision: 1,
+      })
+    }),
+  )
+
+  it.effect("persists the complete goal lifecycle as durable Session events", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const registry = yield* ToolRegistry.Service
+      const goals = yield* SessionGoal.Service
+      const summary = [
+        "## Progress",
+        "- Restored current protocol",
+        "## Current State",
+        "- Queue semantics pass",
+        "## Blockers",
+        "- None",
+        "## Next Steps",
+        "- Ship",
+      ].join("\n")
+
+      yield* settleTool(registry, call("goal_set", { text: "Ship V2 recovery" }))
+      yield* settleTool(registry, call("goal_summarize_state", { progress: 80, summary, headline: "Ready" }))
+      yield* settleTool(registry, call("goal_pause", {}))
+      yield* settleTool(registry, call("goal_resume", {}))
+      expect(yield* settleTool(registry, call("goal_status", {}))).toMatchObject({
+        result: { type: "text", value: expect.stringContaining("Progress: 80%") },
+      })
+      yield* settleTool(registry, call("goal_complete", {}))
+
+      expect(yield* goals.get(sessionID)).toBeUndefined()
+      expect(assertions.map((item) => item.action)).toEqual([
+        "goal_set",
+        "goal_summarize_state",
+        "goal_pause",
+        "goal_resume",
+        "goal_status",
+        "goal_complete",
+      ])
+      expect(
+        yield* db
+          .select()
+          .from(EventTable)
+          .where(
+            and(
+              eq(EventTable.aggregate_id, sessionID),
+              eq(EventTable.type, EventV2.versionedType(SessionEvent.GoalUpdated.type, 1)),
+            ),
+          )
+          .all()
+          .pipe(Effect.orDie),
+      ).toHaveLength(6)
+    }),
+  )
+
+  it.effect("rejects malformed summaries without changing goal state", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const registry = yield* ToolRegistry.Service
+      const goals = yield* SessionGoal.Service
+      yield* settleTool(registry, call("goal_set", { text: "Ship V2 recovery" }))
+
+      expect(
+        yield* settleTool(registry, call("goal_summarize_state", { progress: 80, summary: "# Wrong\n- format" })),
+      ).toMatchObject({
+        result: { type: "error", value: expect.stringContaining("size 2 markdown headers") },
+      })
+      expect(yield* goals.get(sessionID)).toMatchObject({ revision: 1, summaries: undefined })
     }),
   )
 })

@@ -1,4 +1,5 @@
-import { DateTime } from "effect"
+import { DateTime, Option, Schema } from "effect"
+import { SessionGoal } from "@opencode-ai/schema"
 import { AgentV2 } from "../agent"
 import { Location } from "../location"
 import { ModelV2 } from "../model"
@@ -11,7 +12,10 @@ import { SessionTable } from "./sql"
 import { SessionMessage } from "./message"
 import { Snapshot } from "../snapshot"
 
+const decodeGoal = Schema.decodeUnknownOption(SessionGoal.Info)
+
 export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.Info {
+  const goal = Option.getOrUndefined(decodeGoal(row.metadata?.goal))
   return SessionSchema.Info.make({
     id: SessionSchema.ID.make(row.id),
     projectID: ProjectV2.ID.make(row.project_id),
@@ -41,6 +45,7 @@ export function fromRow(row: typeof SessionTable.$inferSelect): SessionSchema.In
     }),
     subpath: row.path ? RelativePath.make(row.path) : undefined,
     revert: row.revert ? { ...row.revert, messageID: SessionMessage.ID.make(row.revert.messageID) } : undefined,
+    goal,
     time: {
       created: DateTime.makeUnsafe(row.time_created),
       updated: DateTime.makeUnsafe(row.time_updated),

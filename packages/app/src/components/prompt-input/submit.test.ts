@@ -33,6 +33,7 @@ const sentPrompts: string[] = []
 const promptInputs: unknown[] = []
 const sentCommands: unknown[] = []
 const commands: Array<{ name: string }> = []
+const selectedAgents: string[] = []
 let serverSessionSyncs = 0
 
 let params: { id?: string } = {}
@@ -153,6 +154,7 @@ beforeAll(async () => {
       },
       agent: {
         current: () => ({ name: "agent" }),
+        set: (name: string) => selectedAgents.push(name),
       },
       session: {
         promote(directory: string, sessionID: string) {
@@ -296,6 +298,7 @@ beforeEach(() => {
   promptInputs.length = 0
   sentCommands.length = 0
   commands.length = 0
+  selectedAgents.length = 0
   promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
   params = {}
   search = {}
@@ -572,6 +575,33 @@ describe("prompt submit worktree selection", () => {
       },
     ])
     expect(serverSessionSyncs).toBe(0)
+  })
+
+  test("switches goal commands to the goal agent before submission", async () => {
+    params = { id: "session-1" }
+    commands.push({ name: "goal" })
+    promptValue = [{ type: "text", content: "/goal set Restore V2", start: 0, end: 20 }]
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(selectedAgents).toEqual(["goal"])
+    expect(sentCommands).toMatchObject([{ command: "goal", arguments: "set Restore V2", agent: "goal" }])
   })
 
   test("uses an injected model selection", async () => {

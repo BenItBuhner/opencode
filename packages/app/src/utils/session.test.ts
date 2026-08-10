@@ -16,7 +16,10 @@ describe("normalizeSessionInfo", () => {
       location: { directory: "/repo/worktree", workspaceID: "workspace-1" },
       subpath: "worktree",
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot", files: [] },
-    } as SessionInfo)
+      goal: { text: "Restore V2", status: "active", created: 1, updated: 2, revision: 1 },
+    } as SessionInfo & {
+      goal: { text: string; status: "active"; created: number; updated: number; revision: number }
+    })
 
     expect(result).toEqual({
       id: "session-1",
@@ -33,6 +36,9 @@ describe("normalizeSessionInfo", () => {
       model: { id: "gpt-5", providerID: "openai", variant: "high" },
       version: "",
       time: { created: 1, updated: 1 },
+      metadata: {
+        goal: { text: "Restore V2", status: "active", created: 1, updated: 2, revision: 1 },
+      },
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot" },
     })
   })

@@ -24,12 +24,17 @@ type CurrentSessionEvent =
   | typeof SessionEvent.Reasoning.Delta.Encoded
   | typeof SessionEvent.Tool.Input.Delta.Encoded
   | typeof SessionEvent.Compaction.Delta.Encoded
+  | typeof SessionEvent.GoalUpdated.Encoded
 export type ServerEvent = Event & { current?: OpenCodeEvent | CurrentSessionEvent }
 type QueuedServerEvent = { directory: string; payload: ServerEvent }
-type CurrentDelta = Extract<
-  OpenCodeEvent,
-  { type: "session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta" | "session.compaction.delta" }
-> | CurrentSessionEvent
+type CurrentDelta =
+  | Extract<
+      OpenCodeEvent,
+      {
+        type: "session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta" | "session.compaction.delta"
+      }
+    >
+  | CurrentSessionEvent
 
 export function adaptServerEvent(event: OpenCodeEvent | CurrentSessionEvent): ServerEvent {
   if (event.type === "permission.v2.asked") {

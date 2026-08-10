@@ -515,9 +515,8 @@ export function createPromptSubmit(input: PromptSubmitInput) {
       const customCommand = sync().data.command.find((c) => c.name === commandName)
       if (customCommand) {
         const goalAction = commandName === "goal" ? args[0]?.toLowerCase() : undefined
-        if (goalAction === "set" || goalAction === "edit" || goalAction === "resume") {
-          local.agent.set("goal")
-        }
+        const commandAgent = goalAction === "set" || goalAction === "edit" || goalAction === "resume" ? "goal" : agent
+        if (commandAgent === "goal") local.agent.set("goal")
         clearInput()
         const messageID = Identifier.ascending("message")
         serverSync().session.set("session_status", session.id, { type: "busy" })
@@ -527,7 +526,7 @@ export function createPromptSubmit(input: PromptSubmitInput) {
             id: messageID,
             command: commandName,
             arguments: args.join(" "),
-            agent,
+            agent: commandAgent,
             model: { id: model.modelID, providerID: model.providerID, variant },
             files: images.map((attachment) => ({
               uri: attachment.dataUrl,

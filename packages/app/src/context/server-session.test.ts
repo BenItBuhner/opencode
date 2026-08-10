@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import type { retry } from "@opencode-ai/core/util/retry"
 import type { OpenCodeEvent, SessionApi } from "@opencode-ai/client/promise"
 import type { Message, OpencodeClient, Part, Session } from "@opencode-ai/sdk/v2/client"
+import { SessionEvent } from "@opencode-ai/schema/session-event"
 import { createServerSession } from "./server-session"
 import type { ServerApi } from "@/utils/server"
 
@@ -162,6 +163,30 @@ function setup(sessions: Record<string, Session>) {
 }
 
 describe("server session", () => {
+  test("projects current goal updates into app session metadata", () => {
+    const ctx = setup({ child: session("child") })
+    ctx.store.remember(session("child"))
+    const goal = { text: "Restore V2", status: "active" as const, created: 1, updated: 2, revision: 1 }
+
+    ctx.store.applyV2({
+      id: "evt_goal",
+      type: "session.next.goal.updated",
+      durable: { aggregateID: "child", seq: 1, version: 1 },
+      data: { sessionID: "child", timestamp: 2, goal },
+    } satisfies typeof SessionEvent.GoalUpdated.Encoded)
+
+    expect(ctx.store.data.info.child).toMatchObject({ metadata: { goal }, time: { updated: 2 } })
+
+    ctx.store.applyV2({
+      id: "evt_goal_clear",
+      type: "session.next.goal.updated",
+      durable: { aggregateID: "child", seq: 2, version: 1 },
+      data: { sessionID: "child", timestamp: 3 },
+    } satisfies typeof SessionEvent.GoalUpdated.Encoded)
+
+    expect(ctx.store.data.info.child?.metadata).toEqual({})
+  })
+
   test("projects V2 session events into current and legacy message state", () => {
     const ctx = setup({ child: session("child") })
     ctx.store.remember(session("child"))

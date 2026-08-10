@@ -11,6 +11,7 @@ import { FileAttachment, Prompt } from "./prompt"
 import { SessionID } from "./session-id"
 import { Location } from "./location"
 import { SessionMessage } from "./session-message"
+import { SessionGoal } from "./session-goal"
 import { Revert } from "./revert"
 
 export { FileAttachment }
@@ -431,6 +432,16 @@ export namespace Compaction {
   export type Ended = typeof Ended.Type
 }
 
+export const GoalUpdated = Event.define({
+  type: "session.next.goal.updated",
+  ...options,
+  schema: {
+    ...Base,
+    goal: SessionGoal.Info.pipe(optional),
+  },
+})
+export type GoalUpdated = typeof GoalUpdated.Type
+
 export namespace RevertEvent {
   export const Staged = Event.define({
     type: "session.next.revert.staged",
@@ -471,6 +482,7 @@ export const DurableDefinitions = Event.inventory(
   Retried,
   Compaction.Started,
   Compaction.Ended,
+  GoalUpdated,
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,
@@ -506,6 +518,7 @@ export const Definitions = Event.inventory(
   Compaction.Started,
   Compaction.Delta,
   Compaction.Ended,
+  GoalUpdated,
   RevertEvent.Staged,
   RevertEvent.Cleared,
   RevertEvent.Committed,

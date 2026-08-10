@@ -957,6 +957,12 @@ export function createServerSession(
       })
     if (event.type === "session.usage.updated" && info)
       remember({ ...info, cost: event.data.cost, tokens: event.data.tokens })
+    if (event.type === "session.next.goal.updated" && info) {
+      const metadata = { ...(info.metadata ?? {}) }
+      if (event.data.goal) metadata.goal = event.data.goal
+      else delete metadata.goal
+      remember({ ...info, metadata, time: { ...info.time, updated: event.data.timestamp } })
+    }
     // if (event.type === "session.archived") {
     //   if (info) remember({ ...info, time: { ...info.time, archived: event.created, updated: event.created } })
     //   evict([sessionID])

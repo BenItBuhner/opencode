@@ -1,5 +1,10 @@
 import { createOpencodeClient } from "@opencode-ai/sdk/v2/client"
-import { OpenCode, type OpenCodeClient, type SessionPromptInput, type SessionPromptOutput } from "@opencode-ai/client/promise"
+import {
+  OpenCode,
+  type OpenCodeClient,
+  type SessionPromptInput,
+  type SessionPromptOutput,
+} from "@opencode-ai/client/promise"
 import type { ServerConnection } from "@/context/server"
 import { decode64 } from "@/utils/base64"
 
@@ -14,6 +19,7 @@ type CurrentPromptInput = SessionPromptInput & {
   }>
   agents?: ReadonlyArray<{ name: string; mention?: { start: number; end: number; text: string } }>
 }
+type CurrentPromptOptions = Parameters<OpenCodeClient["session"]["prompt"]>[1]
 
 export function authTokenFromCredentials(input: { username?: string; password: string }) {
   return btoa(`${input.username ?? "opencode"}:${input.password}`)
@@ -70,50 +76,95 @@ export function createApiForServer(input: {
     fetch: input.fetch,
     headers,
   })
+  const prompt = async (
+    value: CurrentPromptInput,
+    requestOptions?: CurrentPromptOptions,
+  ): Promise<SessionPromptOutput> => {
+    if (value.agent)
+      await client.session.switchAgent({ sessionID: value.sessionID, agent: value.agent }, requestOptions)
+    if (value.model)
+      await client.session.switchModel(
+        {
+          sessionID: value.sessionID,
+          model: {
+            id: value.model.modelID,
+            providerID: value.model.providerID,
+            variant: value.variant,
+          },
+        },
+        requestOptions,
+      )
+    const requestHeaders = new Headers(headers)
+    for (const [key, value] of new Headers(requestOptions?.headers)) requestHeaders.set(key, value)
+    requestHeaders.set("content-type", "application/json")
+    const response = await (input.fetch ?? globalThis.fetch)(
+      `${input.server.url}/api/session/${encodeURIComponent(value.sessionID)}/prompt`,
+      {
+        method: "POST",
+        signal: requestOptions?.signal,
+        headers: requestHeaders,
+        body: JSON.stringify({
+          id: value.id,
+          prompt: {
+            text: value.text,
+            files: value.files?.map((file) => ({
+              uri: file.uri,
+              mime: file.mention ? "text/plain" : mime(file.uri),
+              name: file.name,
+              description: file.description,
+              source: file.mention,
+            })),
+            agents: value.agents?.map((agent) => ({
+              name: agent.name,
+              source: agent.mention,
+            })),
+          },
+          delivery: value.delivery ?? undefined,
+          resume: value.resume ?? undefined,
+        }),
+      },
+    )
+    if (!response.ok) throw new Error((await response.text()) || `Prompt failed with status ${response.status}`)
+    const admitted = (await response.json()) as {
+      data: {
+        admittedSeq: number
+        id: string
+        sessionID: string
+        timeCreated: number
+        delivery: "steer" | "queue"
+      }
+    }
+    return {
+      admittedSeq: admitted.data.admittedSeq,
+      id: admitted.data.id,
+      sessionID: admitted.data.sessionID,
+      timeCreated: admitted.data.timeCreated,
+      type: "user",
+      data: { text: value.text },
+      delivery: admitted.data.delivery,
+    }
+  }
   return {
     ...client,
     session: {
       ...client.session,
-      async prompt(value: CurrentPromptInput, _requestOptions?: unknown): Promise<SessionPromptOutput> {
-        const response = await (input.fetch ?? globalThis.fetch)(
-          `${input.server.url}/api/session/${encodeURIComponent(value.sessionID)}/prompt`,
+      prompt,
+      command: (value, requestOptions) =>
+        prompt(
           {
-            method: "POST",
-            headers: {
-              "content-type": "application/json",
-              ...headers,
-            },
-            body: JSON.stringify({
-              id: value.id,
-              prompt: {
-                text: value.text,
-                files: value.files?.map((file) => ({
-                  uri: file.uri,
-                  mime: file.mention ? "text/plain" : mime(file.uri),
-                  name: file.name,
-                  source: file.mention,
-                })),
-                agents: value.agents?.map((agent) => ({
-                  name: agent.name,
-                  source: agent.mention,
-                })),
-              },
-              delivery: value.delivery ?? undefined,
-              resume: value.resume ?? undefined,
-            }),
+            sessionID: value.sessionID,
+            id: value.id,
+            text: `/${value.command} ${value.arguments ?? ""}`.trim(),
+            agent: value.agent ?? undefined,
+            model: value.model ? { providerID: value.model.providerID, modelID: value.model.id } : undefined,
+            variant: value.model?.variant,
+            files: value.files,
+            agents: value.agents,
+            delivery: value.delivery,
+            resume: value.resume,
           },
-        )
-        if (!response.ok) throw new Error((await response.text()) || `Prompt failed with status ${response.status}`)
-        return {
-          admittedSeq: 0,
-          id: value.id ?? "",
-          sessionID: value.sessionID,
-          timeCreated: Date.now(),
-          type: "user",
-          data: { text: value.text },
-          delivery: value.delivery ?? "steer",
-        }
-      },
+          requestOptions,
+        ),
     },
   }
 }

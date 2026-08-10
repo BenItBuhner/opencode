@@ -4,7 +4,10 @@ import type { SessionEvent } from "@opencode-ai/schema/session-event"
 type Assistant = Extract<SessionMessageInfo, { type: "assistant" }>
 type Compaction = Extract<SessionMessageInfo, { type: "compaction" }>
 type Shell = Extract<SessionMessageInfo, { type: "shell" }>
-type ToolContent = Extract<Extract<Assistant["content"][number], { type: "tool" }>["state"], { status: "completed" }>["content"]
+type ToolContent = Extract<
+  Extract<Assistant["content"][number], { type: "tool" }>["state"],
+  { status: "completed" }
+>["content"]
 export type CurrentSessionEvent =
   | typeof SessionEvent.AgentSwitched.Encoded
   | typeof SessionEvent.ModelSwitched.Encoded
@@ -31,6 +34,7 @@ export type CurrentSessionEvent =
   | typeof SessionEvent.Compaction.Started.Encoded
   | typeof SessionEvent.Compaction.Delta.Encoded
   | typeof SessionEvent.Compaction.Ended.Encoded
+  | typeof SessionEvent.GoalUpdated.Encoded
 
 export type V2SessionReduction = {
   sessionID: string
@@ -167,7 +171,11 @@ export function createV2SessionReducer() {
           tokens: event.data.tokens,
           snapshot:
             event.data.snapshot || event.data.files
-              ? { ...item.snapshot, end: event.data.snapshot, files: event.data.files ? [...event.data.files] : undefined }
+              ? {
+                  ...item.snapshot,
+                  end: event.data.snapshot,
+                  files: event.data.files ? [...event.data.files] : undefined,
+                }
               : item.snapshot,
           time: { ...item.time, completed: event.data.timestamp },
         }))
@@ -318,7 +326,9 @@ export function createV2SessionReducer() {
             state: {
               status: "error",
               input: typeof tool.state.input === "string" ? {} : tool.state.input,
-              metadata: jsonRecord(event.data.provider.metadata) ?? (tool.state.status === "running" ? tool.state.metadata : {}),
+              metadata:
+                jsonRecord(event.data.provider.metadata) ??
+                (tool.state.status === "running" ? tool.state.metadata : {}),
               error: event.data.error,
             },
             time: { ...tool.time, completed: event.data.timestamp },
@@ -371,6 +381,8 @@ export function createV2SessionReducer() {
           [current.id],
         )
       }
+      case "session.next.goal.updated":
+        return result([...source])
       case "session.input.admitted":
         pending.set(key(sessionID, event.data.inputID), event.data.input)
         return result([...source])
@@ -784,7 +796,9 @@ function finishReason(value: string) {
 
 function jsonRecord(value: Readonly<Record<string, unknown>> | undefined) {
   if (!value) return undefined
-  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, JsonValue] => isJsonValue(entry[1])))
+  return Object.fromEntries(
+    Object.entries(value).filter((entry): entry is [string, JsonValue] => isJsonValue(entry[1])),
+  )
 }
 
 function isJsonValue(value: unknown): value is JsonValue {

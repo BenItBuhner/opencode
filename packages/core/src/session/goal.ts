@@ -1,35 +1,21 @@
 export * as SessionGoal from "./goal"
 
 import { eq } from "drizzle-orm"
-import { Context, Effect, Layer, Option, Schema } from "effect"
+import { Context, DateTime, Effect, Layer, Option, Schema } from "effect"
+import { Info, Progress, Status, Summary } from "@opencode-ai/schema/session-goal"
 import { Database } from "../database/database"
+import { EventV2 } from "../event"
 import { makeLocationNode } from "../effect/app-node"
+import { KeyedMutex } from "../effect/keyed-mutex"
+import { SessionEvent } from "./event"
+import { SessionProjector } from "./projector"
 import { SessionSchema } from "./schema"
 import { SessionTable } from "./sql"
 
-export const Status = Schema.Literals(["active", "paused", "completed"])
+export { Info, Progress, Status, Summary }
 export type Status = typeof Status.Type
-export const Progress = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0), Schema.isLessThanOrEqualTo(100))
 export type Progress = typeof Progress.Type
-export const Summary = Schema.Struct({
-  id: Schema.String,
-  created: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  progress: Progress,
-  summary: Schema.String,
-  headline: Schema.String.pipe(Schema.optional),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-})
 export type Summary = typeof Summary.Type
-export const Info = Schema.Struct({
-  text: Schema.String,
-  status: Status,
-  created: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  updated: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  completed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-  progress: Progress.pipe(Schema.optional),
-  summaries: Schema.Array(Summary).pipe(Schema.optional),
-  revision: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)).pipe(Schema.optional),
-})
 export type Info = typeof Info.Type
 
 type UpdateInput = {
@@ -68,30 +54,33 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const { db } = yield* Database.Service
+    const events = yield* EventV2.Service
+    const mutex = KeyedMutex.makeUnsafe<SessionSchema.ID>()
 
     const row = Effect.fn("SessionGoal.row")(function* (sessionID: SessionSchema.ID) {
-      const current = yield* db.select().from(SessionTable).where(eq(SessionTable.id, sessionID)).get().pipe(Effect.orDie)
+      const current = yield* db
+        .select()
+        .from(SessionTable)
+        .where(eq(SessionTable.id, sessionID))
+        .get()
+        .pipe(Effect.orDie)
       if (!current) return yield* new NotFoundError({ sessionID })
       return current
     })
     const write = Effect.fn("SessionGoal.write")(function* (input: { sessionID: SessionSchema.ID; goal?: Info }) {
-      const current = yield* row(input.sessionID)
-      const metadata = { ...(current.metadata ?? {}) }
-      if (input.goal) metadata.goal = input.goal
-      else delete metadata.goal
-      yield* db
-        .update(SessionTable)
-        .set({ metadata, time_updated: Date.now() })
-        .where(eq(SessionTable.id, input.sessionID))
-        .run()
-        .pipe(Effect.orDie)
+      yield* row(input.sessionID)
+      yield* events.publish(SessionEvent.GoalUpdated, {
+        sessionID: input.sessionID,
+        timestamp: yield* DateTime.now,
+        goal: input.goal,
+      })
     })
     const get = Effect.fn("SessionGoal.get")(function* (sessionID: SessionSchema.ID) {
       const goal = Option.getOrUndefined(decode((yield* row(sessionID)).metadata?.goal))
       if (!goal) return undefined
       return { ...goal, summaries: goal.summaries?.map((summary) => ({ ...summary })) }
     })
-    const set = Effect.fn("SessionGoal.set")(function* (input: {
+    const setUnlocked = Effect.fnUntraced(function* (input: {
       sessionID: SessionSchema.ID
       text: string
       status?: Status
@@ -110,11 +99,14 @@ const layer = Layer.effect(
       yield* write({ sessionID: input.sessionID, goal })
       return goal
     })
-    const update = Effect.fn("SessionGoal.update")(function* (input: UpdateInput) {
+    const set = Effect.fn("SessionGoal.set")((input: Parameters<typeof setUnlocked>[0]) =>
+      mutex.withLock(input.sessionID)(setUnlocked(input)),
+    )
+    const updateUnlocked = Effect.fnUntraced(function* (input: UpdateInput) {
       const existing = yield* get(input.sessionID)
       if (!existing) {
         if (input.text === undefined) return undefined
-        return yield* set({ sessionID: input.sessionID, text: input.text, status: input.status })
+        return yield* setUnlocked({ sessionID: input.sessionID, text: input.text, status: input.status })
       }
       const now = Date.now()
       const status = input.status ?? existing.status
@@ -129,7 +121,10 @@ const layer = Layer.effect(
       yield* write({ sessionID: input.sessionID, goal })
       return goal
     })
-    const addSummary = Effect.fn("SessionGoal.addSummary")(function* (input: SummaryInput) {
+    const update = Effect.fn("SessionGoal.update")((input: UpdateInput) =>
+      mutex.withLock(input.sessionID)(updateUnlocked(input)),
+    )
+    const addSummaryUnlocked = Effect.fnUntraced(function* (input: SummaryInput) {
       const existing = yield* get(input.sessionID)
       if (!existing) return undefined
       const now = Date.now()
@@ -152,12 +147,19 @@ const layer = Layer.effect(
       yield* write({ sessionID: input.sessionID, goal })
       return goal
     })
-    const clear = Effect.fn("SessionGoal.clear")(function* (sessionID: SessionSchema.ID) {
-      yield* write({ sessionID })
-    })
+    const addSummary = Effect.fn("SessionGoal.addSummary")((input: SummaryInput) =>
+      mutex.withLock(input.sessionID)(addSummaryUnlocked(input)),
+    )
+    const clear = Effect.fn("SessionGoal.clear")((sessionID: SessionSchema.ID) =>
+      mutex.withLock(sessionID)(write({ sessionID })),
+    )
 
     return Service.of({ get, set, update, addSummary, clear })
   }),
 )
 
-export const node = makeLocationNode({ service: Service, layer, deps: [Database.node] })
+export const node = makeLocationNode({
+  service: Service,
+  layer,
+  deps: [Database.node, EventV2.node, SessionProjector.node],
+})
