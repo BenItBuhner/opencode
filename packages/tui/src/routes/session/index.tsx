@@ -163,7 +163,6 @@ const context = createContext<{
   showThinking: () => boolean
   showTimestamps: () => boolean
   showDetails: () => boolean
-  showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
@@ -259,7 +258,6 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
-  const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -735,15 +733,6 @@ export function Session() {
       },
     },
     {
-      title: showGenericToolOutput() ? "Hide generic tool output" : "Show generic tool output",
-      value: "session.toggle.generic_tool_output",
-      category: "Session",
-      run: () => {
-        setShowGenericToolOutput((prev) => !prev)
-        dialog.clear()
-      },
-    },
-    {
       title: "Page up",
       value: "session.page.up",
       category: "Session",
@@ -1156,7 +1145,6 @@ export function Session() {
           showThinking,
           showTimestamps,
           showDetails,
-          showGenericToolOutput,
           diffWrapMode,
           providers,
           sync,
@@ -1620,9 +1608,7 @@ function CompactionSummary(props: { message: AssistantMessage; parts: Part[] }) 
     <box paddingLeft={3} marginTop={1} gap={1} flexShrink={0} onMouseUp={toggle}>
       <Show
         when={done() || failed()}
-        fallback={
-          <Spinner color={theme.textMuted}>{(expanded() ? "- " : "+ ") + "Compacting context…"}</Spinner>
-        }
+        fallback={<Spinner color={theme.textMuted}>{(expanded() ? "- " : "+ ") + "Compacting context…"}</Spinner>}
       >
         <text fg={theme.textMuted}>
           {expanded() ? "- " : "+ "}Compacted context summary
@@ -2169,7 +2155,9 @@ function ToolOutputPreview(props: {
       >
         <text fg={props.color ?? theme.text}>{limited()}</text>
         <Show when={collapsed().overflow}>
-          <text fg={theme.textMuted}>{expanded() ? "Click to collapse output" : "Output truncated · click to expand"}</text>
+          <text fg={theme.textMuted}>
+            {expanded() ? "Click to collapse output" : "Output truncated · click to expand"}
+          </text>
         </Show>
       </box>
     </Show>
