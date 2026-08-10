@@ -1801,6 +1801,7 @@ function TextPart(props: { last: boolean; part: TextPart; message: AssistantMess
 function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMessage }) {
   const ctx = use()
   const display = createMemo(() => toolDisplay(props.part.tool))
+  const metadata = () => (props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {}))
 
   // Hide tool if showDetails is false and tool completed successfully
   const shouldHide = createMemo(() => {
@@ -1811,13 +1812,13 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
 
   const toolprops = {
     get metadata() {
-      return props.part.state.status === "pending" ? {} : (props.part.state.metadata ?? {})
+      return metadata()
     },
     get input() {
       return props.part.state.input ?? {}
     },
     get output() {
-      return props.part.state.status === "completed" ? props.part.state.output : undefined
+      return toolOutput(props.part, metadata())
     },
     get tool() {
       return props.part.tool
@@ -1887,39 +1888,37 @@ type ToolProps = {
   output?: string
   part: ToolPart
 }
+
+export function toolOutput(part: { state: unknown }, metadata: Record<string, unknown> = {}) {
+  const state = recordValue(part.state)
+  if (!state) return nonEmptyString(stringValue(metadata.output))
+  return firstOutput([
+    stringValue(state.output),
+    stringValue(metadata.output),
+    stringValue(recordValue(state.structured)?.output),
+    toolContentOutput(state.content),
+    toolResultOutput(state.result),
+  ])
+}
+
+export function boundedToolOutput(output: string, width: number, maxLines: number) {
+  return collapseToolOutput(stripAnsi(output.trim()), maxLines, maxLines * Math.max(20, width - 6))
+}
+
 function GenericTool(props: ToolProps) {
-  const { theme } = useTheme()
-  const ctx = use()
   const output = createMemo(() => props.output?.trim() ?? "")
-  const [expanded, setExpanded] = createSignal(false)
-  const maxLines = 3
-  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
-  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
-  const limited = createMemo(() => {
-    if (expanded() || !collapsed().overflow) return output()
-    return collapsed().output
-  })
 
   return (
     <Show
-      when={props.output && ctx.showGenericToolOutput()}
+      when={output()}
       fallback={
         <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
           {props.tool} {input(props.input)}
         </InlineTool>
       }
     >
-      <BlockTool
-        title={`# ${props.tool} ${input(props.input)}`}
-        part={props.part}
-        onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
-      >
-        <box gap={1}>
-          <text fg={theme.text}>{limited()}</text>
-          <Show when={collapsed().overflow}>
-            <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
-          </Show>
-        </box>
+      <BlockTool title={`# ${props.tool} ${input(props.input)}`} part={props.part}>
+        <ToolOutputPreview output={output()} maxLines={3} />
       </BlockTool>
     </Show>
   )
@@ -2135,20 +2134,53 @@ function BlockTool(props: {
   )
 }
 
-function Shell(props: ToolProps) {
-  const { theme } = useTheme()
-  const pathFormatter = usePathFormatter()
+function ToolOutputPreview(props: {
+  output?: string
+  maxLines: number
+  color?: RGBA
+  separate?: boolean
+  inline?: boolean
+}) {
   const ctx = use()
-  const isRunning = createMemo(() => props.part.state.status === "running")
-  const output = createMemo(() => stripAnsi(stringValue(props.metadata.output)?.trim() ?? ""))
+  const { theme } = useTheme()
+  const renderer = useRenderer()
   const [expanded, setExpanded] = createSignal(false)
-  const maxLines = 10
-  const maxChars = createMemo(() => maxLines * Math.max(20, ctx.width - 6))
-  const collapsed = createMemo(() => collapseToolOutput(output(), maxLines, maxChars()))
+  const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
+  const collapsed = createMemo(() => boundedToolOutput(output(), ctx.width, props.maxLines))
   const limited = createMemo(() => {
     if (expanded() || !collapsed().overflow) return output()
     return collapsed().output
   })
+  const toggle = () => {
+    if (!collapsed().overflow) return
+    if (renderer.getSelection()?.getSelectedText()) return
+    setExpanded((prev) => !prev)
+  }
+
+  return (
+    <Show when={output()}>
+      <box
+        paddingLeft={props.inline ? 3 : 0}
+        gap={1}
+        onMouseUp={toggle}
+        ref={(el: BoxRenderable) => {
+          if (props.separate) alwaysSeparate.add(el)
+        }}
+      >
+        <text fg={props.color ?? theme.text}>{limited()}</text>
+        <Show when={collapsed().overflow}>
+          <text fg={theme.textMuted}>{expanded() ? "Click to collapse output" : "Output truncated · click to expand"}</text>
+        </Show>
+      </box>
+    </Show>
+  )
+}
+
+function Shell(props: ToolProps) {
+  const { theme } = useTheme()
+  const pathFormatter = usePathFormatter()
+  const isRunning = createMemo(() => props.part.state.status === "running")
+  const output = createMemo(() => props.output?.trim() ?? "")
 
   const workdirDisplay = createMemo(() => {
     const workdir = stringValue(props.input.workdir)
@@ -2166,22 +2198,13 @@ function Shell(props: ToolProps) {
 
   return (
     <Switch>
-      <Match when={stringValue(props.metadata.output) !== undefined}>
-        <BlockTool
-          title={title()}
-          part={props.part}
-          onClick={collapsed().overflow ? () => setExpanded((prev) => !prev) : undefined}
-        >
+      <Match when={output() || isRunning()}>
+        <BlockTool title={title()} part={props.part}>
           <box gap={1}>
             <Show when={isRunning()} fallback={<text fg={theme.text}>$ {stringValue(props.input.command)}</text>}>
               <Spinner color={theme.text}>{stringValue(props.input.command)}</Spinner>
             </Show>
-            <Show when={output()}>
-              <text fg={theme.text}>{limited()}</text>
-            </Show>
-            <Show when={collapsed().overflow}>
-              <text fg={theme.textMuted}>{expanded() ? "Click to collapse" : "Click to expand"}</text>
-            </Show>
+            <ToolOutputPreview output={output()} maxLines={10} />
           </box>
         </BlockTool>
       </Match>
@@ -2234,13 +2257,16 @@ function Write(props: ToolProps) {
 function Glob(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
-      Glob "{stringValue(props.input.pattern)}"{" "}
-      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-      <Show when={numberValue(props.metadata.count)}>
-        ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
-      </Show>
-    </InlineTool>
+    <>
+      <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
+        Glob "{stringValue(props.input.pattern)}"{" "}
+        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+        <Show when={numberValue(props.metadata.count)}>
+          ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
+        </Show>
+      </InlineTool>
+      <ToolOutputPreview output={props.output} maxLines={6} inline separate />
+    </>
   )
 }
 
@@ -2275,6 +2301,7 @@ function Read(props: ToolProps) {
           </box>
         )}
       </For>
+      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
     </>
   )
 }
@@ -2282,30 +2309,39 @@ function Read(props: ToolProps) {
 function Grep(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
-      Grep "{stringValue(props.input.pattern)}"{" "}
-      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-      <Show when={numberValue(props.metadata.matches)}>
-        ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
-      </Show>
-    </InlineTool>
+    <>
+      <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
+        Grep "{stringValue(props.input.pattern)}"{" "}
+        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+        <Show when={numberValue(props.metadata.matches)}>
+          ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
+        </Show>
+      </InlineTool>
+      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
+    </>
   )
 }
 
 function WebFetch(props: ToolProps) {
   return (
-    <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
-      WebFetch {stringValue(props.input.url)}
-    </InlineTool>
+    <>
+      <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
+        WebFetch {stringValue(props.input.url)}
+      </InlineTool>
+      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
+    </>
   )
 }
 
 function WebSearch(props: ToolProps) {
   return (
-    <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
-      {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
-      <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
-    </InlineTool>
+    <>
+      <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
+        {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
+        <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
+      </InlineTool>
+      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
+    </>
   )
 }
 
@@ -2386,24 +2422,27 @@ function Task(props: ToolProps) {
   })
 
   return (
-    <InlineTool
-      icon={props.part.state.status === "completed" ? "✓" : "│"}
-      separate={true}
-      color={retry() ? theme.error : undefined}
-      spinner={isRunning()}
-      complete={stringValue(props.input.description)}
-      pending="Delegating..."
-      part={props.part}
-      onClick={() => {
-        if (sessionID()) {
-          navigate({ type: "session", sessionID: sessionID()! })
-        }
-        const status = retry()
-        if (status) void DialogAlert.show(dialog, "Retry Error", status.message)
-      }}
-    >
-      {content()}
-    </InlineTool>
+    <>
+      <InlineTool
+        icon={props.part.state.status === "completed" ? "✓" : "│"}
+        separate={true}
+        color={retry() ? theme.error : undefined}
+        spinner={isRunning()}
+        complete={stringValue(props.input.description)}
+        pending="Delegating..."
+        part={props.part}
+        onClick={() => {
+          if (sessionID()) {
+            navigate({ type: "session", sessionID: sessionID()! })
+          }
+          const status = retry()
+          if (status) void DialogAlert.show(dialog, "Retry Error", status.message)
+        }}
+      >
+        {content()}
+      </InlineTool>
+      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
+    </>
   )
 }
 
@@ -2439,14 +2478,11 @@ function executeCalls(value: unknown): ExecuteCall[] {
 
 // The `execute` tool streams child tool calls through metadata, not a child session like Task.
 function Execute(props: ToolProps) {
-  const ctx = use()
   const { theme } = useTheme()
   const isLoading = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
   const calls = createMemo(() => executeCalls(props.metadata.toolCalls))
   const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
   const hasRuntimeError = createMemo(() => props.metadata.error === true)
-  const outputPreview = createMemo(() => collapseToolOutput(output(), 4, 4 * Math.max(20, ctx.width - 6)).output)
-  const showOutput = createMemo(() => output() && hasRuntimeError())
   const content = createMemo(() => {
     const lines = ["execute"]
     for (const call of calls()) {
@@ -2468,18 +2504,13 @@ function Execute(props: ToolProps) {
       >
         {content()}
       </InlineTool>
-      <Show when={showOutput()}>
-        <box paddingLeft={3}>
-          <For each={outputPreview().split("\n")}>
-            {(line, index) => (
-              <text paddingLeft={3} fg={theme.error}>
-                {index() === 0 ? "↳ " : "  "}
-                {line}
-              </text>
-            )}
-          </For>
-        </box>
-      </Show>
+      <ToolOutputPreview
+        output={output()}
+        maxLines={4}
+        color={hasRuntimeError() || props.part.state.status === "error" ? theme.error : theme.text}
+        inline
+        separate
+      />
     </>
   )
 }
@@ -2724,6 +2755,37 @@ function stringValue(value: unknown) {
 
 function numberValue(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function nonEmptyString(value?: string) {
+  if (!value) return
+  if (!value.trim()) return
+  return value
+}
+
+function firstOutput(values: Array<string | undefined>) {
+  return values.find((value) => nonEmptyString(value))
+}
+
+function toolContentOutput(value: unknown) {
+  if (!Array.isArray(value)) return
+  return nonEmptyString(
+    value
+      .flatMap((item) => {
+        const content = recordValue(item)
+        if (content?.type !== "text") return []
+        const text = stringValue(content.text)
+        return text ? [text] : []
+      })
+      .join("\n"),
+  )
+}
+
+function toolResultOutput(value: unknown) {
+  if (typeof value === "string") return nonEmptyString(value)
+  const result = recordValue(value)
+  if (result?.type !== "text" && result?.type !== "error") return
+  return nonEmptyString(stringValue(result.value))
 }
 
 const toolDisplays = new Set([
