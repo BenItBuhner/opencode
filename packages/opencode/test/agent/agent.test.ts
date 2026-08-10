@@ -44,11 +44,11 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
-it.instance("orders primary agents build, plan, goal for cycling", () =>
+it.instance("orders primary agents build, plan, goal, ask for cycling", () =>
   Effect.gen(function* () {
     const agents = yield* load((svc) => svc.list())
     const primary = agents.filter((a) => a.mode === "primary" && !a.hidden).map((a) => a.name)
-    expect(primary.slice(0, 3)).toEqual(["build", "plan", "goal"])
+    expect(primary.slice(0, 4)).toEqual(["build", "plan", "goal", "ask"])
   }),
 )
 
@@ -59,6 +59,7 @@ it.instance("returns default native agents when no config", () =>
     expect(names).toContain("build")
     expect(names).toContain("plan")
     expect(names).toContain("goal")
+    expect(names).toContain("ask")
     expect(names).toContain("general")
     expect(names).toContain("explore")
     expect(names).toContain("compaction")
@@ -107,6 +108,56 @@ it.instance("goal agent is primary and owns goal lifecycle tools", () =>
     expect(evalPerm(goal, "goal_summarize_state")).toBe("allow")
     expect(evalPerm(build, "goal_set")).toBe("deny")
     expect(evalPerm(build, "goal_summarize_state")).toBe("deny")
+  }),
+)
+
+it.instance("ask agent is read-only and limited to inspection tools", () =>
+  Effect.gen(function* () {
+    const ask = yield* load((svc) => svc.get("ask"))
+    expect(ask).toBeDefined()
+    expect(ask?.mode).toBe("primary")
+    expect(ask?.native).toBe(true)
+    expect(ask?.color).toBe("info")
+    expect(ask?.prompt).toContain("read-only")
+
+    expect(evalPerm(ask, "read")).toBe("allow")
+    expect(evalPerm(ask, "grep")).toBe("allow")
+    expect(evalPerm(ask, "glob")).toBe("allow")
+    expect(evalPerm(ask, "list")).toBe("allow")
+    expect(evalPerm(ask, "websearch")).toBe("allow")
+    expect(evalPerm(ask, "webfetch")).toBe("allow")
+    expect(evalPerm(ask, "question")).toBe("allow")
+
+    expect(evalPerm(ask, "edit")).toBe("deny")
+    expect(evalPerm(ask, "write")).toBe("deny")
+    expect(evalPerm(ask, "task")).toBe("deny")
+    expect(evalPerm(ask, "skill")).toBe("deny")
+    expect(evalPerm(ask, "todowrite")).toBe("deny")
+    expect(evalPerm(ask, "plan_enter")).toBe("deny")
+    expect(evalPerm(ask, "plan_exit")).toBe("deny")
+    expect(evalPerm(ask, "goal_set")).toBe("deny")
+
+    expect(Permission.evaluate("bash", "git status", ask!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "ls -la", ask!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "pwd", ask!.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "npm install", ask!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "rm -rf /", ask!.permission).action).toBe("deny")
+    expect(Permission.evaluate("bash", "git commit -m x", ask!.permission).action).toBe("deny")
+
+    const disabled = Permission.disabled(
+      ["edit", "write", "apply_patch", "task", "skill", "todowrite", "read", "grep", "bash", "websearch"],
+      ask!.permission,
+    )
+    expect(disabled.has("edit")).toBe(true)
+    expect(disabled.has("write")).toBe(true)
+    expect(disabled.has("apply_patch")).toBe(true)
+    expect(disabled.has("task")).toBe(true)
+    expect(disabled.has("skill")).toBe(true)
+    expect(disabled.has("todowrite")).toBe(true)
+    expect(disabled.has("read")).toBe(false)
+    expect(disabled.has("grep")).toBe(false)
+    expect(disabled.has("bash")).toBe(false)
+    expect(disabled.has("websearch")).toBe(false)
   }),
 )
 
@@ -470,8 +521,8 @@ it.instance(
     Effect.gen(function* () {
       const names = (yield* load((svc) => svc.list())).map((a) => a.name)
       expect(names[0]).toBe("plan")
-      expect(names.slice(1, 3)).toEqual(["build", "goal"])
-      expect(names.slice(3)).toEqual(names.slice(3).toSorted((a, b) => a.localeCompare(b)))
+      expect(names.slice(1, 4)).toEqual(["build", "goal", "ask"])
+      expect(names.slice(4)).toEqual(names.slice(4).toSorted((a, b) => a.localeCompare(b)))
     }),
   {
     config: {
@@ -781,6 +832,7 @@ it.instance(
         build: { disable: true },
         plan: { disable: true },
         goal: { disable: true },
+        ask: { disable: true },
       },
     },
   },

@@ -115,6 +115,7 @@ describe("AgentV2", () => {
 
       const agents = yield* agent.all()
       expect(agents.map((item) => String(item.id)).sort()).toEqual([
+        "ask",
         "build",
         "compaction",
         "explore",
@@ -124,7 +125,18 @@ describe("AgentV2", () => {
         "summary",
         "title",
       ])
+      const ask = agents.find((item) => String(item.id) === "ask")
+      expect(ask).toBeDefined()
+      expect(ask?.mode).toBe("primary")
+      expect(ask?.system).toContain("read-only")
+      expect(ask?.permissions.some((rule) => rule.action === "bash" && rule.resource === "git status*" && rule.effect === "allow")).toBe(
+        true,
+      )
+      expect(ask?.permissions.some((rule) => rule.action === "edit" || (rule.action === "*" && rule.effect === "deny"))).toBe(
+        true,
+      )
       for (const item of agents) {
+        if (String(item.id) === "ask") continue
         expect(item.permissions.some((rule) => rule.action === "bash" && rule.effect !== "deny")).toBe(false)
       }
     }),
