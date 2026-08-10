@@ -42,6 +42,29 @@ describe("normalizeSessionInfo", () => {
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot" },
     })
   })
+
+  test("retains the completed goal for the summaries entry point", () => {
+    const completedGoal = {
+      text: "Restore V2",
+      status: "completed" as const,
+      created: 1,
+      updated: 3,
+      completed: 3,
+      progress: 100,
+    }
+    const result = normalizeSessionInfo({
+      id: "session-1",
+      projectID: "project-1",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 1, updated: 3 },
+      title: "Completed goal",
+      location: { directory: "/repo" },
+      completedGoal,
+    } as SessionInfo & { completedGoal: typeof completedGoal })
+
+    expect(result.metadata?.goal).toEqual(completedGoal)
+  })
 })
 
 describe("listAllSessions", () => {

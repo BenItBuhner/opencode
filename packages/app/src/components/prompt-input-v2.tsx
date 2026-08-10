@@ -14,6 +14,12 @@ import { normalizePromptHistoryEntry, promptLength, type PromptHistoryComment } 
 import { createPersistedPromptInputHistory } from "@/components/prompt-input/history-store"
 import { promptDesignPlaceholder, promptPlaceholder } from "@/components/prompt-input/placeholder"
 import { createPromptSubmit } from "@/components/prompt-input/submit"
+import {
+  compactGoalProgressBar,
+  DialogGoalSummaries,
+  goalFromSessionMetadata,
+  type GoalView,
+} from "@/components/dialog-goal-summaries"
 import { selectionFromLines, type SelectedLineRange, useFile } from "@/context/file"
 import { useComments } from "@/context/comments"
 import { useCommand } from "@/context/command"
@@ -42,6 +48,10 @@ export type PromptInputV2ComposerProps = {
 export type PromptInputV2ControllerProps = Omit<PromptInputProps, "class" | "submission">
 export type PromptInputV2ComposerController = PromptInputV2Interaction & {
   readonly model: PromptInputProps["controls"]["model"]
+  readonly goal: {
+    readonly current: () => GoalView | undefined
+    readonly open: () => void
+  }
 }
 
 export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
@@ -51,6 +61,28 @@ export function PromptInputV2Composer(props: PromptInputV2ComposerProps) {
 
   return (
     <div class="flex flex-col gap-3">
+      <Show when={props.controller.goal.current()}>
+        {(goal) => (
+          <div class="flex min-w-0 items-center gap-2 px-1" data-component="prompt-goal-status">
+            <button
+              type="button"
+              data-action="prompt-goal-summaries"
+              class="min-w-0 max-w-[320px] truncate rounded-md border border-v2-border-border-base px-2 py-1 text-xs text-v2-text-text-muted hover:bg-v2-overlay-simple-overlay-hover"
+              onClick={props.controller.goal.open}
+            >
+              Goal {goal().status}: {goal().text}
+            </button>
+            <Show when={goal().progress !== undefined}>
+              <div
+                class="shrink-0 rounded-md border border-v2-border-border-base px-2 py-1 text-xs text-v2-text-text-muted"
+                title={goal().headline}
+              >
+                {goal().progress}% {compactGoalProgressBar(goal().progress ?? 0)}
+              </div>
+            </Show>
+          </div>
+        )}
+      </Show>
       <PromptInputV2
         controller={props.controller}
         borderUnderlay={props.borderUnderlay}
@@ -112,6 +144,7 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
     }, [])
   })
   const info = createMemo(() => (props.controls.session.id ? sync().session.get(props.controls.session.id) : undefined))
+  const sessionGoal = createMemo(() => goalFromSessionMetadata(info()?.metadata))
   const working = createMemo(() => sync().data.session_working(props.controls.session.id ?? ""))
   const attachments = createMemo(() =>
     prompt.current().filter((part): part is ImageAttachmentPart => part.type === "image"),
@@ -404,7 +437,18 @@ export function usePromptInputV2Controller(props: PromptInputV2ControllerProps):
       },
     },
   })
-  Object.defineProperty(controller, "model", { get: () => props.controls.model })
+  Object.defineProperties(controller, {
+    model: { get: () => props.controls.model },
+    goal: {
+      value: {
+        current: sessionGoal,
+        open: () => {
+          const sessionID = props.controls.session.id
+          if (sessionID) dialog.show(() => <DialogGoalSummaries sessionID={sessionID} />)
+        },
+      },
+    },
+  })
 
   command.register("prompt-input", () => [
     {

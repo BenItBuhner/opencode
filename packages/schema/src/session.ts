@@ -43,6 +43,7 @@ export const Info = Schema.Struct({
   subpath: RelativePath.pipe(optional),
   revert: Revert.State.pipe(optional),
   goal: SessionGoal.Info.pipe(optional),
+  completedGoal: SessionGoal.Info.pipe(optional),
 }).annotate({ identifier: "SessionV2.Info" })
 
 export const ListAnchor = Schema.Struct({

@@ -161,6 +161,14 @@ describe("GoalTool", () => {
       yield* settleTool(registry, call("goal_complete", {}))
 
       expect(yield* goals.get(sessionID)).toBeUndefined()
+      expect(
+        (yield* db
+          .select({ metadata: SessionTable.metadata })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, sessionID))
+          .get()
+          .pipe(Effect.orDie))?.metadata?.completed_goal,
+      ).toMatchObject({ status: "completed", progress: 80 })
       expect(assertions.map((item) => item.action)).toEqual([
         "goal_set",
         "goal_summarize_state",

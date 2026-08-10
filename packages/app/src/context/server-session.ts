@@ -959,7 +959,7 @@ export function createServerSession(
       remember({ ...info, cost: event.data.cost, tokens: event.data.tokens })
     if (event.type === "session.next.goal.updated" && info) {
       const metadata = { ...(info.metadata ?? {}) }
-      if (event.data.goal) metadata.goal = event.data.goal
+      if (event.data.goal || event.data.completedGoal) metadata.goal = event.data.goal ?? event.data.completedGoal
       else delete metadata.goal
       remember({ ...info, metadata, time: { ...info.time, updated: event.data.timestamp } })
     }

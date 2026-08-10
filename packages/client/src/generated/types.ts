@@ -279,6 +279,23 @@ export type SessionsListOutput = {
       }>
       readonly revision?: number
     }
+    readonly completedGoal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
   }>
   readonly cursor: { readonly previous?: string | null; readonly next?: string | null }
 }
@@ -358,6 +375,23 @@ export type SessionsCreateOutput = {
       }>
       readonly revision?: number
     }
+    readonly completedGoal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
   }
 }["data"]
 
@@ -397,6 +431,23 @@ export type SessionsGetOutput = {
       }>
     }
     readonly goal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
+    readonly completedGoal?: {
       readonly text: string
       readonly status: "active" | "paused" | "completed"
       readonly created: number
@@ -1169,6 +1220,23 @@ export type SessionsHistoryOutput = {
             }>
             readonly revision?: number
           }
+          readonly completedGoal?: {
+            readonly text: string
+            readonly status: "active" | "paused" | "completed"
+            readonly created: number
+            readonly updated: number
+            readonly completed?: number
+            readonly progress?: number
+            readonly summaries?: ReadonlyArray<{
+              readonly id: string
+              readonly created: number
+              readonly progress: number
+              readonly summary: string
+              readonly headline?: string
+              readonly revision?: number
+            }>
+            readonly revision?: number
+          }
         }
       }
     | {
@@ -1639,6 +1707,23 @@ export type SessionsEventsOutput =
         readonly timestamp: number
         readonly sessionID: string
         readonly goal?: {
+          readonly text: string
+          readonly status: "active" | "paused" | "completed"
+          readonly created: number
+          readonly updated: number
+          readonly completed?: number
+          readonly progress?: number
+          readonly summaries?: ReadonlyArray<{
+            readonly id: string
+            readonly created: number
+            readonly progress: number
+            readonly summary: string
+            readonly headline?: string
+            readonly revision?: number
+          }>
+          readonly revision?: number
+        }
+        readonly completedGoal?: {
           readonly text: string
           readonly status: "active" | "paused" | "completed"
           readonly created: number

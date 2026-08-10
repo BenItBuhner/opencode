@@ -181,10 +181,14 @@ describe("server session", () => {
       id: "evt_goal_clear",
       type: "session.next.goal.updated",
       durable: { aggregateID: "child", seq: 2, version: 1 },
-      data: { sessionID: "child", timestamp: 3 },
+      data: {
+        sessionID: "child",
+        timestamp: 3,
+        completedGoal: { ...goal, status: "completed", updated: 3, completed: 3, revision: 2 },
+      },
     } satisfies typeof SessionEvent.GoalUpdated.Encoded)
 
-    expect(ctx.store.data.info.child?.metadata).toEqual({})
+    expect(ctx.store.data.info.child?.metadata?.goal).toMatchObject({ status: "completed", completed: 3 })
   })
 
   test("projects V2 session events into current and legacy message state", () => {

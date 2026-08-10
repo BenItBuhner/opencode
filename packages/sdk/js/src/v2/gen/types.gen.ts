@@ -45,6 +45,7 @@ export type Event =
   | EventSessionNextCompactionStarted
   | EventSessionNextCompactionDelta
   | EventSessionNextCompactionEnded
+  | EventSessionNextGoalUpdated
   | EventSessionNextRevertStaged
   | EventSessionNextRevertCleared
   | EventSessionNextRevertCommitted
@@ -1168,6 +1169,16 @@ export type GlobalEvent = {
       }
     | {
         id: string
+        type: "session.next.goal.updated"
+        properties: {
+          timestamp: number
+          sessionID: string
+          goal?: SessionGoalInfo
+          completedGoal?: SessionGoalInfo
+        }
+      }
+    | {
+        id: string
         type: "session.next.revert.staged"
         properties: {
           timestamp: number
@@ -1640,6 +1651,7 @@ export type GlobalEvent = {
     | SyncEventSessionNextRetried
     | SyncEventSessionNextCompactionStarted
     | SyncEventSessionNextCompactionEnded
+    | SyncEventSessionNextGoalUpdated
     | SyncEventSessionNextRevertStaged
     | SyncEventSessionNextRevertCleared
     | SyncEventSessionNextRevertCommitted
@@ -2775,6 +2787,7 @@ export type SessionDurableEvent =
   | SessionNextRetried
   | SessionNextCompactionStarted
   | SessionNextCompactionEnded
+  | SessionNextGoalUpdated
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
@@ -2906,6 +2919,7 @@ export type V2Event =
   | SessionNextCompactionStarted
   | SessionNextCompactionDelta
   | SessionNextCompactionEnded
+  | SessionNextGoalUpdated
   | SessionNextRevertStaged
   | SessionNextRevertCleared
   | SessionNextRevertCommitted
@@ -3114,6 +3128,26 @@ export type SessionNextRetryError = {
   metadata?: {
     [key: string]: string
   }
+}
+
+export type SessionGoalSummary = {
+  id: string
+  created: number
+  progress: number
+  summary: string
+  headline?: string
+  revision?: number
+}
+
+export type SessionGoalInfo = {
+  text: string
+  status: "active" | "paused" | "completed"
+  created: number
+  updated: number
+  completed?: number
+  progress?: number
+  summaries?: Array<SessionGoalSummary>
+  revision?: number
 }
 
 export type FileDiff = {
@@ -3789,6 +3823,23 @@ export type SyncEventSessionNextCompactionEnded = {
   }
 }
 
+export type SyncEventSessionNextGoalUpdated = {
+  type: "sync"
+  id: string
+  syncEvent: {
+    type: "session.next.goal.updated.1"
+    id: string
+    seq: number
+    aggregateID: string
+    data: {
+      timestamp: number
+      sessionID: string
+      goal?: SessionGoalInfo
+      completedGoal?: SessionGoalInfo
+    }
+  }
+}
+
 export type SyncEventSessionNextRevertStaged = {
   type: "sync"
   id: string
@@ -3940,6 +3991,8 @@ export type SessionV2Info = {
   location: LocationRef
   subpath?: string
   revert?: RevertState
+  goal?: SessionGoalInfo
+  completedGoal?: SessionGoalInfo
 }
 
 export type PromptInputFileAttachment = {
@@ -4725,6 +4778,26 @@ export type SessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+  }
+}
+
+export type SessionNextGoalUpdated = {
+  id: string
+  metadata?: {
+    [key: string]: unknown
+  }
+  type: "session.next.goal.updated"
+  durable?: {
+    aggregateID: string
+    seq: number
+    version: number
+  }
+  location?: LocationRef
+  data: {
+    timestamp: number
+    sessionID: string
+    goal?: SessionGoalInfo
+    completedGoal?: SessionGoalInfo
   }
 }
 
@@ -6639,6 +6712,17 @@ export type EventSessionNextCompactionEnded = {
     reason: "auto" | "manual"
     text: string
     recent: string
+  }
+}
+
+export type EventSessionNextGoalUpdated = {
+  id: string
+  type: "session.next.goal.updated"
+  properties: {
+    timestamp: number
+    sessionID: string
+    goal?: SessionGoalInfo
+    completedGoal?: SessionGoalInfo
   }
 }
 
@@ -11277,6 +11361,7 @@ export type V2HealthGetResponses = {
    */
   200: {
     healthy: true
+    protocol: "v2"
   }
 }
 

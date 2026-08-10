@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { goalFromSessionMetadata } from "./dialog-goal-summaries"
+import { compactGoalProgressBar, goalFromSessionMetadata } from "./dialog-goal-summaries"
 
 describe("goalFromSessionMetadata", () => {
   test("derives progress from the latest summary", () => {
@@ -35,5 +35,11 @@ describe("goalFromSessionMetadata", () => {
   test("rejects malformed goal metadata", () => {
     expect(goalFromSessionMetadata(undefined)).toBeUndefined()
     expect(goalFromSessionMetadata({ goal: { text: "missing status" } })).toBeUndefined()
+  })
+
+  test("formats compact progress consistently", () => {
+    expect(compactGoalProgressBar(-1)).toBe("-----")
+    expect(compactGoalProgressBar(50)).toBe("###--")
+    expect(compactGoalProgressBar(100)).toBe("#####")
   })
 })

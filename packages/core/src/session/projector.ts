@@ -405,6 +405,8 @@ const layer = Layer.effectDiscard(
         const metadata = { ...(current.metadata ?? {}) }
         if (event.data.goal) metadata.goal = event.data.goal
         else delete metadata.goal
+        if (event.data.completedGoal) metadata.completed_goal = event.data.completedGoal
+        else delete metadata.completed_goal
         yield* db
           .update(SessionTable)
           .set({ metadata, time_updated: DateTime.toEpochMillis(event.data.timestamp) })

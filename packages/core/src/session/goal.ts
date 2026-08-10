@@ -70,12 +70,17 @@ const layer = Layer.effect(
       if (!current) return yield* new NotFoundError({ sessionID })
       return current
     })
-    const write = Effect.fn("SessionGoal.write")(function* (input: { sessionID: SessionSchema.ID; goal?: Info }) {
+    const write = Effect.fn("SessionGoal.write")(function* (input: {
+      sessionID: SessionSchema.ID
+      goal?: Info
+      completedGoal?: Info
+    }) {
       yield* row(input.sessionID)
       yield* events.publish(SessionEvent.GoalUpdated, {
         sessionID: input.sessionID,
         timestamp: yield* DateTime.now,
         goal: input.goal,
+        completedGoal: input.completedGoal,
       })
     })
     const get = Effect.fn("SessionGoal.get")(function* (sessionID: SessionSchema.ID) {
@@ -154,7 +159,12 @@ const layer = Layer.effect(
       mutex.withLock(input.sessionID)(addSummaryUnlocked(input)),
     )
     const clear = Effect.fn("SessionGoal.clear")((sessionID: SessionSchema.ID) =>
-      mutex.withLock(sessionID)(write({ sessionID })),
+      mutex.withLock(sessionID)(
+        Effect.gen(function* () {
+          const goal = yield* get(sessionID)
+          yield* write({ sessionID, completedGoal: goal?.status === "completed" ? goal : undefined })
+        }),
+      ),
     )
 
     return Service.of({ get, set, update, addSummary, clear })

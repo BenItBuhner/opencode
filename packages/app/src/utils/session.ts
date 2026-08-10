@@ -2,7 +2,7 @@ import type { SessionApi, SessionInfo, SessionListInput } from "@opencode-ai/cli
 import type { SessionGoal } from "@opencode-ai/schema"
 import type { Session } from "@opencode-ai/sdk/v2/client"
 
-type CurrentSessionInfo = SessionInfo & { goal?: SessionGoal.Info }
+type CurrentSessionInfo = SessionInfo & { goal?: SessionGoal.Info; completedGoal?: SessionGoal.Info }
 
 export function normalizeSessionInfo(input: CurrentSessionInfo | Session): Session {
   if (!("location" in input)) return input
@@ -21,7 +21,7 @@ export function normalizeSessionInfo(input: CurrentSessionInfo | Session): Sessi
     model: input.model,
     version: "",
     time: input.time,
-    metadata: input.goal ? { goal: input.goal } : undefined,
+    metadata: input.goal || input.completedGoal ? { goal: input.goal ?? input.completedGoal } : undefined,
     revert: input.revert && {
       messageID: input.revert.messageID,
       partID: input.revert.partID,

@@ -438,6 +438,7 @@ export const GoalUpdated = Event.define({
   schema: {
     ...Base,
     goal: SessionGoal.Info.pipe(optional),
+    completedGoal: SessionGoal.Info.pipe(optional),
   },
 })
 export type GoalUpdated = typeof GoalUpdated.Type
