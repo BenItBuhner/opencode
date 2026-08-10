@@ -19,12 +19,12 @@ const isAbortError = (error: unknown) =>
   error !== null && typeof error === "object" && "name" in error && error.name === "AbortError"
 
 const isStreamClosed = (error: unknown, signal?: AbortSignal) => isAbortError(error) || signal?.aborted === true
-type CurrentSessionEvent =
+type CurrentDeltaEvent =
   | typeof SessionEvent.Text.Delta.Encoded
   | typeof SessionEvent.Reasoning.Delta.Encoded
   | typeof SessionEvent.Tool.Input.Delta.Encoded
   | typeof SessionEvent.Compaction.Delta.Encoded
-  | typeof SessionEvent.GoalUpdated.Encoded
+type CurrentSessionEvent = CurrentDeltaEvent | typeof SessionEvent.GoalUpdated.Encoded
 export type ServerEvent = Event & { current?: OpenCodeEvent | CurrentSessionEvent }
 type QueuedServerEvent = { directory: string; payload: ServerEvent }
 type CurrentDelta =
@@ -34,7 +34,7 @@ type CurrentDelta =
         type: "session.text.delta" | "session.reasoning.delta" | "session.tool.input.delta" | "session.compaction.delta"
       }
     >
-  | CurrentSessionEvent
+  | CurrentDeltaEvent
 
 export function adaptServerEvent(event: OpenCodeEvent | CurrentSessionEvent): ServerEvent {
   if (event.type === "permission.v2.asked") {

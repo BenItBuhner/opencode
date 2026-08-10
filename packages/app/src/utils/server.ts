@@ -9,6 +9,9 @@ import type { ServerConnection } from "@/context/server"
 import { decode64 } from "@/utils/base64"
 
 type CurrentPromptInput = SessionPromptInput & {
+  agent?: string | null
+  model?: { providerID: string; modelID: string } | null
+  variant?: string | null
   delivery?: "steer" | "queue" | null
   resume?: boolean | null
   files?: ReadonlyArray<{
