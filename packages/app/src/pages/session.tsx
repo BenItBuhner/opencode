@@ -1735,7 +1735,7 @@ export default function Page() {
         serverSync: serverSync(),
         draft: item,
         messageID: item.id,
-        delivery: input.delivery ?? item.delivery,
+        delivery: input.delivery ?? (serverSDK().protocolKind() === "v2" ? item.delivery : undefined),
         optimistic: input.optimistic,
         optimisticBusy: item.sessionDirectory === sdk().directory,
       }).catch((err) => {

@@ -131,6 +131,20 @@ describe("createCompatibleApi", () => {
     ])
   })
 
+  test("rejects durable queue delivery on V1 instead of reporting a false admission", async () => {
+    const { api, requests } = setup("v1")
+
+    expect(
+      api.session.prompt({
+        sessionID: "ses_1",
+        id: "msg_1",
+        text: "queue me",
+        delivery: "queue",
+      }),
+    ).rejects.toThrow("Queue delivery is unavailable on V1 servers")
+    expect(requests).toEqual([])
+  })
+
   test("sends current prompts with the current nested prompt contract", async () => {
     const { api, requests } = setup("v2")
     await api.session.prompt({
