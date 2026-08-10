@@ -411,9 +411,12 @@ test("tracks queued admitted prompts until they become model-visible", async () 
       },
     })
     expect(sync.session.message.list("session-1") ?? []).toEqual([])
-    expect(sync.session.admitted.list("session-1")).toMatchObject([
-      { messageID: "msg_user_1", prompt: { text: "hello" }, delivery: "queue" },
-    ])
+    expect(sync.session.admitted.list("session-1")).toHaveLength(1)
+    expect(sync.session.admitted.list("session-1")?.[0]).toMatchObject({
+      messageID: "msg_user_1",
+      prompt: { text: "hello" },
+      delivery: "queue",
+    })
 
     emitEvent(events, {
       id: "evt_prompted_1",
