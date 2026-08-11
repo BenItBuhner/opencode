@@ -164,6 +164,7 @@ const context = createContext<{
   showThinking: () => boolean
   showTimestamps: () => boolean
   showDetails: () => boolean
+  showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
@@ -263,6 +264,7 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
+  const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -738,6 +740,15 @@ export function Session() {
       },
     },
     {
+      title: showGenericToolOutput() ? "Hide generic tool output" : "Show generic tool output",
+      value: "session.toggle.generic_tool_output",
+      category: "Session",
+      run: () => {
+        setShowGenericToolOutput((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
       title: "Page up",
       value: "session.page.up",
       category: "Session",
@@ -1150,6 +1161,7 @@ export function Session() {
           showThinking,
           showTimestamps,
           showDetails,
+          showGenericToolOutput,
           diffWrapMode,
           providers,
           sync,
@@ -1915,11 +1927,12 @@ export function boundedToolOutput(output: string, width: number, maxLines: numbe
 }
 
 function GenericTool(props: ToolProps) {
+  const ctx = use()
   const output = createMemo(() => props.output?.trim() ?? "")
 
   return (
     <Show
-      when={output()}
+      when={output() && ctx.showGenericToolOutput()}
       fallback={
         <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
           {props.tool} {input(props.input)}
@@ -2202,9 +2215,11 @@ function Shell(props: ToolProps) {
   })
 
   const title = createMemo(() => {
+    const desc = stringValue(props.input.description) ?? "Shell"
     const wd = workdirDisplay()
-    if (!wd) return
-    return `# Running in ${wd}`
+    if (!wd) return `# ${desc}`
+    if (desc.includes(wd)) return `# ${desc}`
+    return `# ${desc} in ${wd}`
   })
 
   return (
@@ -2268,16 +2283,13 @@ function Write(props: ToolProps) {
 function Glob(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <>
-      <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
-        Glob "{stringValue(props.input.pattern)}"{" "}
-        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-        <Show when={numberValue(props.metadata.count)}>
-          ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
-        </Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={6} inline separate />
-    </>
+    <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
+      Glob "{stringValue(props.input.pattern)}"{" "}
+      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+      <Show when={numberValue(props.metadata.count)}>
+        ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
+      </Show>
+    </InlineTool>
   )
 }
 
@@ -2312,7 +2324,6 @@ function Read(props: ToolProps) {
           </box>
         )}
       </For>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
     </>
   )
 }
@@ -2320,39 +2331,30 @@ function Read(props: ToolProps) {
 function Grep(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <>
-      <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
-        Grep "{stringValue(props.input.pattern)}"{" "}
-        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-        <Show when={numberValue(props.metadata.matches)}>
-          ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
-        </Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
+      Grep "{stringValue(props.input.pattern)}"{" "}
+      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+      <Show when={numberValue(props.metadata.matches)}>
+        ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
+      </Show>
+    </InlineTool>
   )
 }
 
 function WebFetch(props: ToolProps) {
   return (
-    <>
-      <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
-        WebFetch {stringValue(props.input.url)}
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
+      WebFetch {stringValue(props.input.url)}
+    </InlineTool>
   )
 }
 
 function WebSearch(props: ToolProps) {
   return (
-    <>
-      <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
-        {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
-        <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
+      {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
+      <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
+    </InlineTool>
   )
 }
 
@@ -2452,7 +2454,6 @@ function Task(props: ToolProps) {
       >
         {content()}
       </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
     </>
   )
 }
@@ -2489,11 +2490,14 @@ function executeCalls(value: unknown): ExecuteCall[] {
 
 // The `execute` tool streams child tool calls through metadata, not a child session like Task.
 function Execute(props: ToolProps) {
+  const ctx = use()
   const { theme } = useTheme()
   const isLoading = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
   const calls = createMemo(() => executeCalls(props.metadata.toolCalls))
   const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
   const hasRuntimeError = createMemo(() => props.metadata.error === true)
+  const outputPreview = createMemo(() => collapseToolOutput(output(), 4, 4 * Math.max(20, ctx.width - 6)).output)
+  const showOutput = createMemo(() => output() && hasRuntimeError())
   const content = createMemo(() => {
     const lines = ["execute"]
     for (const call of calls()) {
@@ -2515,13 +2519,18 @@ function Execute(props: ToolProps) {
       >
         {content()}
       </InlineTool>
-      <ToolOutputPreview
-        output={output()}
-        maxLines={4}
-        color={hasRuntimeError() || props.part.state.status === "error" ? theme.error : theme.text}
-        inline
-        separate
-      />
+      <Show when={showOutput()}>
+        <box paddingLeft={3}>
+          <For each={outputPreview().split("\n")}>
+            {(line, index) => (
+              <text paddingLeft={3} fg={theme.error}>
+                {index() === 0 ? "↳ " : "  "}
+                {line}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
     </>
   )
 }
