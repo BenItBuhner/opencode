@@ -270,9 +270,11 @@ export function PermissionPrompt(props: { request: PermissionRequest; directory?
 
             if (permission === "bash") {
               const command = typeof data.command === "string" ? data.command : ""
+              const title =
+                typeof data.description === "string" && data.description ? data.description : "Shell command"
               return {
                 icon: "#",
-                title: "Shell command",
+                title,
                 body: (
                   <Show when={command}>
                     <box paddingLeft={1}>

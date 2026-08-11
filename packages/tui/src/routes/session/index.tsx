@@ -27,6 +27,7 @@ import { Spinner } from "../../component/spinner"
 import { createSyntaxStyleMemo, generateSubtleSyntax, selectedForeground, useTheme } from "../../context/theme"
 import { BoxRenderable, ScrollBoxRenderable, addDefaultParsers, TextAttributes, RGBA } from "@opentui/core"
 import { Prompt, type PromptRef } from "../../component/prompt"
+import { lifecyclePromptText, lifecycleQueue, type LifecycleQueuedPrompt } from "../../component/prompt/lifecycle-queue"
 import type {
   AssistantMessage,
   CompactionPart,
@@ -84,6 +85,8 @@ import { OPENCODE_BASE_MODE, useBindings, useCommandShortcut, useOpencodeKeymap 
 import { usePathFormatter } from "../../context/path-format"
 import { LocationProvider } from "../../context/location"
 import { useData } from "../../context/data"
+import { DialogSelect } from "../../ui/dialog-select"
+import { BTW_METADATA, btwSessions, createBtwTitle, isBtwSession } from "../../util/session"
 
 addDefaultParsers(parsers.parsers)
 
@@ -120,6 +123,8 @@ const sessionBindingCommands = [
   "session.rename",
   "session.timeline",
   "session.fork",
+  "session.btw",
+  "session.btw.resume",
   "session.compact",
   "session.unshare",
   "session.undo",
@@ -164,6 +169,7 @@ const context = createContext<{
   showThinking: () => boolean
   showTimestamps: () => boolean
   showDetails: () => boolean
+  showGenericToolOutput: () => boolean
   diffWrapMode: () => "word" | "none"
   providers: () => ReadonlyMap<string, Provider>
   sync: ReturnType<typeof useSync>
@@ -246,6 +252,24 @@ export function Session() {
       ?.id
   })
 
+  const lifecycleQueued = createMemo(() => {
+    const sessionID = route.sessionID
+    if (!sessionID) return []
+    return lifecycleQueue.store.queues[sessionID] ?? []
+  })
+
+  const steerQueuedMessages = createMemo(() => {
+    const pendingID = pending()
+    if (!pendingID) return []
+    return messages().filter((message): message is UserMessage => message.role === "user" && message.id > pendingID)
+  })
+
+  const steerQueuedIDs = createMemo(() => new Set(steerQueuedMessages().map((message) => message.id)))
+
+  const hasStickyQueuedPrompts = createMemo(() => {
+    return steerQueuedMessages().length > 0 || lifecycleQueued().length > 0 || queuedInputs().length > 0
+  })
+
   const lastAssistant = createMemo(() => {
     return messages().findLast((x) => x.role === "assistant")
   })
@@ -263,6 +287,7 @@ export function Session() {
   const [showScrollbar, setShowScrollbar] = kv.signal("scrollbar_visible", false)
   const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
   const [_animationsEnabled, _setAnimationsEnabled] = kv.signal("animations_enabled", true)
+  const [showGenericToolOutput, setShowGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
@@ -444,8 +469,9 @@ export function Session() {
   function moveChild(direction: number) {
     if (children().length === 1) return
 
-    const sessions = children().filter((x) => !!x.parentID)
-    let next = sessions.findIndex((x) => x.id === session()?.id) - direction
+    const current = session()
+    const sessions = children().filter((x) => !!x.parentID && (!current || isBtwSession(x) === isBtwSession(current)))
+    let next = sessions.findIndex((x) => x.id === current?.id) - direction
 
     if (next >= sessions.length) next = 0
     if (next < 0) next = sessions.length - 1
@@ -553,6 +579,34 @@ export function Session() {
             sessionID={route.sessionID}
           />
         ))
+      },
+    },
+    {
+      title: "Ask BTW",
+      description: "Ask a quick question in a child chat",
+      value: "session.btw",
+      category: "Session",
+      enabled: !session()?.parentID,
+      slash: {
+        name: "btw",
+      },
+      run: () => {
+        dialog.setSize("xlarge")
+        dialog.replace(() => <DialogBtw parentSessionID={route.sessionID} />)
+      },
+    },
+    {
+      title: "Resume BTW chat",
+      description: "Resume a previous BTW child chat",
+      value: "session.btw.resume",
+      category: "Session",
+      enabled: !session()?.parentID,
+      slash: {
+        name: "btw-resume",
+      },
+      run: () => {
+        dialog.setSize("large")
+        dialog.replace(() => <DialogBtwResume parentSessionID={route.sessionID} />)
       },
     },
     {
@@ -734,6 +788,15 @@ export function Session() {
       category: "Session",
       run: () => {
         setShowScrollbar((prev) => !prev)
+        dialog.clear()
+      },
+    },
+    {
+      title: showGenericToolOutput() ? "Hide generic tool output" : "Show generic tool output",
+      value: "session.toggle.generic_tool_output",
+      category: "Session",
+      run: () => {
+        setShowGenericToolOutput((prev) => !prev)
         dialog.clear()
       },
     },
@@ -1150,6 +1213,7 @@ export function Session() {
           showThinking,
           showTimestamps,
           showDetails,
+          showGenericToolOutput,
           diffWrapMode,
           providers,
           sync,
@@ -1244,6 +1308,9 @@ export function Session() {
                       <Match when={revert()?.messageID && message.id >= revert()!.messageID}>
                         <></>
                       </Match>
+                      <Match when={message.role === "user" && steerQueuedIDs().has(message.id)}>
+                        <></>
+                      </Match>
                       <Match when={message.role === "user"}>
                         <UserMessage
                           index={index()}
@@ -1272,24 +1339,6 @@ export function Session() {
                     </Switch>
                   )}
                 </For>
-                <For each={queuedInputs()}>
-                  {(item) => (
-                    <box paddingLeft={3} marginTop={1} flexShrink={0}>
-                      <text fg={theme.textMuted}>
-                        <span
-                          style={{
-                            bg: theme.accent,
-                            fg: selectedForeground(theme, theme.accent),
-                            bold: true,
-                          }}
-                        >
-                          {" QUEUED "}
-                        </span>{" "}
-                        {Locale.truncate(item.prompt.text, 100)}
-                      </text>
-                    </box>
-                  )}
-                </For>
               </scrollbox>
               <box flexShrink={0}>
                 <Show when={permissions().length > 0}>
@@ -1306,6 +1355,38 @@ export function Session() {
                 </Show>
                 <Show when={session()?.parentID}>
                   <SubagentFooter />
+                </Show>
+                <Show when={hasStickyQueuedPrompts()}>
+                  <box paddingBottom={1}>
+                    <For each={steerQueuedMessages()}>
+                      {(message, index) => (
+                        <StickyQueuedMessage
+                          text={messagePartsText(sync.data.part[message.id] ?? [])}
+                          badge="steer"
+                          color={local.agent.color(message.agent)}
+                          index={index()}
+                        />
+                      )}
+                    </For>
+                    <For each={queuedInputs()}>
+                      {(item, index) => (
+                        <StickyQueuedMessage
+                          text={item.prompt.text}
+                          badge="queue"
+                          color={theme.secondary}
+                          index={steerQueuedMessages().length + index()}
+                        />
+                      )}
+                    </For>
+                    <For each={lifecycleQueued()}>
+                      {(item, index) => (
+                        <LifecycleQueuedMessage
+                          item={item}
+                          index={steerQueuedMessages().length + queuedInputs().length + index()}
+                        />
+                      )}
+                    </For>
+                  </box>
                 </Show>
                 <Show when={visible()}>
                   <pluginRuntime.Slot
@@ -1326,6 +1407,7 @@ export function Session() {
                       }}
                       sessionID={route.sessionID}
                       hideContextUsage={sidebarVisible()}
+                      hideGoalInfo={sidebarVisible()}
                       right={<pluginRuntime.Slot name="session_prompt_right" session_id={route.sessionID} />}
                     />
                   </pluginRuntime.Slot>
@@ -1353,6 +1435,348 @@ export function Session() {
                 </box>
               </Match>
             </Switch>
+          </Show>
+        </box>
+      </context.Provider>
+    </LocationProvider>
+  )
+}
+
+function messagePartsText(parts: Part[]) {
+  return parts.flatMap((part) => (part.type === "text" && !part.synthetic ? [part.text] : [])).join("\n\n")
+}
+
+function StickyQueuedMessage(props: {
+  text: string
+  badge: "steer" | "queue"
+  color: RGBA
+  index: number
+  shell?: boolean
+}) {
+  const { theme } = useTheme()
+  const badgeFg = createMemo(() => selectedForeground(theme, props.color))
+
+  return (
+    <Show when={props.text.trim()}>
+      <box
+        border={["left"]}
+        borderColor={props.color}
+        customBorderChars={SplitBorder.customBorderChars}
+        marginTop={props.index === 0 ? 0 : 1}
+      >
+        <box paddingTop={1} paddingBottom={1} paddingLeft={2} backgroundColor={theme.backgroundPanel} flexShrink={0}>
+          <Show when={props.shell} fallback={<text fg={theme.text}>{props.text}</text>}>
+            <text fg={theme.text}>
+              <span style={{ fg: theme.textMuted }}>$ </span>
+              {props.text}
+            </text>
+          </Show>
+          <text fg={theme.textMuted}>
+            <span style={{ bg: props.color, fg: badgeFg(), bold: true }}> {props.badge} </span>
+          </text>
+        </box>
+      </box>
+    </Show>
+  )
+}
+
+function LifecycleQueuedMessage(props: { item: LifecycleQueuedPrompt; index: number }) {
+  const { theme } = useTheme()
+  const text = createMemo(() => lifecyclePromptText(props.item.prompt))
+
+  return (
+    <StickyQueuedMessage
+      text={text()}
+      badge="queue"
+      color={theme.secondary}
+      index={props.index}
+      shell={props.item.mode === "shell"}
+    />
+  )
+}
+
+function DialogBtwResume(props: { parentSessionID: string }) {
+  const dialog = useDialog()
+  const sync = useSync()
+
+  const options = createMemo(() => {
+    const sessions = btwSessions(props.parentSessionID, sync.data.session)
+    if (sessions.length === 0) {
+      return [
+        {
+          title: "Start a new BTW chat",
+          value: "new",
+          description: "No previous BTW chats for this session",
+        },
+      ]
+    }
+    return sessions.map((session) => ({
+      title: session.title,
+      value: session.id,
+      description: Locale.todayTimeOrDateTime(session.time.updated),
+    }))
+  })
+
+  onMount(() => {
+    dialog.setSize("large")
+    void sync.session.refresh()
+  })
+
+  return (
+    <DialogSelect
+      title="Resume BTW"
+      options={options()}
+      onSelect={(option) => {
+        dialog.replace(() => (
+          <DialogBtw
+            parentSessionID={props.parentSessionID}
+            sessionID={option.value === "new" ? undefined : option.value}
+          />
+        ))
+      }}
+    />
+  )
+}
+
+function DialogBtw(props: { parentSessionID: string; sessionID?: string }) {
+  const dialog = useDialog()
+  const sync = useSync()
+  const sdk = useSDK()
+  const local = useLocal()
+  const toast = useToast()
+  const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
+  const tuiConfig = useTuiConfig()
+  const thinking = useThinkingMode()
+  const kv = useKV()
+  const [timestamps] = kv.signal<"hide" | "show">("timestamps", "hide")
+  const [showDetails] = kv.signal("tool_details_visibility", true)
+  const [showScrollbar] = kv.signal("scrollbar_visible", false)
+  const [diffWrapMode] = kv.signal<"word" | "none">("diff_wrap_mode", "word")
+  const [showGenericToolOutput] = kv.signal("generic_tool_output_visibility", false)
+  const [sessionID, setSessionID] = createSignal(props.sessionID)
+  const [loading, setLoading] = createSignal(!props.sessionID)
+  const session = createMemo(() => {
+    const id = sessionID()
+    return id ? sync.session.get(id) : undefined
+  })
+  const messages = createMemo(() => {
+    const id = sessionID()
+    return id ? (sync.data.message[id] ?? []) : []
+  })
+  const lastAssistant = createMemo(() => messages().findLast((message) => message.role === "assistant"))
+  const pending = createMemo(() => {
+    const completed = messages().findLast((message) => message.role === "assistant" && message.time.completed)?.id
+    return messages().findLast(
+      (message) => message.role === "assistant" && !message.time.completed && (!completed || message.id > completed),
+    )?.id
+  })
+  const permissions = createMemo(() => {
+    const id = sessionID()
+    return id ? (sync.data.permission[id] ?? []) : []
+  })
+  const questions = createMemo(() => {
+    const id = sessionID()
+    return id ? (sync.data.question[id] ?? []) : []
+  })
+  const providers = createMemo(() => Model.index(sync.data.provider))
+  const showThinking = createMemo(() => true)
+  const showTimestamps = createMemo(() => timestamps() === "show")
+  const btwLocation = createMemo(() => {
+    const current = session()
+    return current ? { directory: current.directory, workspaceID: current.workspaceID } : undefined
+  })
+  const contentWidth = createMemo(() => Math.min(108, Math.max(40, dimensions().width - 8)))
+  const scrollAcceleration = createMemo(() => getScrollAcceleration(tuiConfig))
+  const promptVisible = createMemo(() => !!sessionID() && permissions().length === 0 && questions().length === 0)
+
+  let scroll: ScrollBoxRenderable
+
+  function toBottom() {
+    setTimeout(() => {
+      if (!scroll || scroll.isDestroyed) return
+      scroll.scrollTo(scroll.scrollHeight)
+    }, 50)
+  }
+
+  async function syncBtwSession(id: string) {
+    await sync.session.sync(id)
+    toBottom()
+  }
+
+  onMount(() => {
+    dialog.setSize("xlarge")
+    void (async () => {
+      const existing = props.sessionID
+      if (existing) {
+        await syncBtwSession(existing)
+        setLoading(false)
+        return
+      }
+
+      const selectedModel = local.model.current()
+      const result = await sdk.client.session.create({
+        parentID: props.parentSessionID,
+        title: createBtwTitle(),
+        agent: local.agent.current()?.name,
+        model: selectedModel
+          ? {
+              providerID: selectedModel.providerID,
+              id: selectedModel.modelID,
+              variant: local.model.variant.current(),
+            }
+          : undefined,
+        metadata: BTW_METADATA,
+      })
+      if (result.error || !result.data) {
+        toast.show({
+          title: "Failed to create BTW chat",
+          message: errorMessage(result.error ?? "no response"),
+          variant: "error",
+        })
+        dialog.clear()
+        return
+      }
+
+      setSessionID(result.data.id)
+      await sync.session.refresh()
+      await syncBtwSession(result.data.id)
+      setLoading(false)
+    })().catch((error) => {
+      toast.show({
+        title: "Failed to open BTW chat",
+        message: errorMessage(error),
+        variant: "error",
+      })
+      dialog.clear()
+    })
+  })
+
+  createEffect(
+    on(
+      () => messages().length,
+      () => toBottom(),
+    ),
+  )
+
+  return (
+    <LocationProvider location={btwLocation()}>
+      <context.Provider
+        value={{
+          get width() {
+            return contentWidth()
+          },
+          get sessionID() {
+            return sessionID() ?? props.parentSessionID
+          },
+          conceal: () => true,
+          thinkingMode: thinking.mode,
+          showThinking,
+          showTimestamps,
+          showDetails,
+          showGenericToolOutput,
+          diffWrapMode,
+          providers,
+          sync,
+          tui: tuiConfig,
+        }}
+      >
+        <box paddingLeft={2} paddingRight={2} paddingBottom={1} gap={1}>
+          <box flexDirection="row" justifyContent="space-between">
+            <text fg={theme.text}>
+              <b>BTW</b>
+              <span style={{ fg: theme.textMuted }}> quick chat</span>
+            </text>
+            <text fg={theme.textMuted}>Esc closes</text>
+          </box>
+          <Show
+            when={!loading()}
+            fallback={
+              <box paddingTop={1} paddingBottom={1}>
+                <Spinner />
+                <text fg={theme.textMuted}> Opening BTW chat...</text>
+              </box>
+            }
+          >
+            <box height={Math.max(10, dimensions().height - 10)} minHeight={10}>
+              <scrollbox
+                ref={(r) => (scroll = r)}
+                viewportOptions={{
+                  paddingRight: showScrollbar() ? 1 : 0,
+                }}
+                verticalScrollbarOptions={{
+                  paddingLeft: 1,
+                  visible: showScrollbar(),
+                  trackOptions: {
+                    backgroundColor: theme.backgroundElement,
+                    foregroundColor: theme.border,
+                  },
+                }}
+                stickyScroll={true}
+                stickyStart="bottom"
+                flexGrow={1}
+                scrollAcceleration={scrollAcceleration()}
+              >
+                <box height={1} />
+                <For each={messages()}>
+                  {(message, index) => (
+                    <Switch>
+                      <Match when={message.role === "user"}>
+                        <UserMessage
+                          index={index()}
+                          onMouseUp={() => {}}
+                          message={message as UserMessage}
+                          parts={sync.data.part[message.id] ?? []}
+                          pending={pending()}
+                        />
+                      </Match>
+                      <Match when={message.role === "assistant"}>
+                        <AssistantMessage
+                          last={lastAssistant()?.id === message.id}
+                          message={message as AssistantMessage}
+                          parts={sync.data.part[message.id] ?? []}
+                        />
+                      </Match>
+                    </Switch>
+                  )}
+                </For>
+              </scrollbox>
+              <box flexShrink={0}>
+                <Show when={permissions().length > 0}>
+                  <PermissionPrompt
+                    request={permissions()[0]}
+                    directory={sync.session.get(permissions()[0].sessionID)?.directory}
+                  />
+                </Show>
+                <Show when={permissions().length === 0 && questions().length > 0}>
+                  <QuestionPrompt
+                    request={questions()[0]}
+                    directory={sync.session.get(questions()[0].sessionID)?.directory}
+                  />
+                </Show>
+                <Show when={promptVisible()}>
+                  <Prompt
+                    sessionID={sessionID()}
+                    visible={promptVisible()}
+                    disabled={!sessionID()}
+                    allowDialogFocus={true}
+                    closeDialogOnSubmit={false}
+                    bindingMode="modal"
+                    onSubmit={toBottom}
+                    hideContextUsage={true}
+                    placeholders={{
+                      normal: ["Ask a quick BTW question"],
+                      shell: ["Run a BTW shell command"],
+                    }}
+                    right={
+                      <Show when={session()}>
+                        {(item) => <text fg={theme.textMuted}>{isBtwSession(item()) ? "child chat" : "chat"}</text>}
+                      </Show>
+                    }
+                  />
+                </Show>
+              </box>
+            </box>
           </Show>
         </box>
       </context.Provider>
@@ -1446,7 +1870,7 @@ function UserMessage(props: {
               }
             >
               <text fg={theme.textMuted}>
-                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> QUEUED </span>
+                <span style={{ bg: color(), fg: queuedFg(), bold: true }}> steer </span>
               </text>
             </Show>
           </box>
@@ -1915,11 +2339,12 @@ export function boundedToolOutput(output: string, width: number, maxLines: numbe
 }
 
 function GenericTool(props: ToolProps) {
+  const ctx = use()
   const output = createMemo(() => props.output?.trim() ?? "")
 
   return (
     <Show
-      when={output()}
+      when={output() && ctx.showGenericToolOutput()}
       fallback={
         <InlineTool icon="⚙" pending="Writing command..." complete={true} part={props.part}>
           {props.tool} {input(props.input)}
@@ -2202,9 +2627,11 @@ function Shell(props: ToolProps) {
   })
 
   const title = createMemo(() => {
+    const desc = stringValue(props.input.description) ?? "Shell"
     const wd = workdirDisplay()
-    if (!wd) return
-    return `# Running in ${wd}`
+    if (!wd) return `# ${desc}`
+    if (desc.includes(wd)) return `# ${desc}`
+    return `# ${desc} in ${wd}`
   })
 
   return (
@@ -2268,16 +2695,13 @@ function Write(props: ToolProps) {
 function Glob(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <>
-      <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
-        Glob "{stringValue(props.input.pattern)}"{" "}
-        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-        <Show when={numberValue(props.metadata.count)}>
-          ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
-        </Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={6} inline separate />
-    </>
+    <InlineTool icon="✱" pending="Finding files..." complete={stringValue(props.input.pattern)} part={props.part}>
+      Glob "{stringValue(props.input.pattern)}"{" "}
+      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+      <Show when={numberValue(props.metadata.count)}>
+        ({numberValue(props.metadata.count)} {numberValue(props.metadata.count) === 1 ? "match" : "matches"})
+      </Show>
+    </InlineTool>
   )
 }
 
@@ -2312,7 +2736,6 @@ function Read(props: ToolProps) {
           </box>
         )}
       </For>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
     </>
   )
 }
@@ -2320,39 +2743,30 @@ function Read(props: ToolProps) {
 function Grep(props: ToolProps) {
   const pathFormatter = usePathFormatter()
   return (
-    <>
-      <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
-        Grep "{stringValue(props.input.pattern)}"{" "}
-        <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
-        <Show when={numberValue(props.metadata.matches)}>
-          ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
-        </Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="✱" pending="Searching content..." complete={stringValue(props.input.pattern)} part={props.part}>
+      Grep "{stringValue(props.input.pattern)}"{" "}
+      <Show when={stringValue(props.input.path)}>in {pathFormatter.format(stringValue(props.input.path))} </Show>
+      <Show when={numberValue(props.metadata.matches)}>
+        ({numberValue(props.metadata.matches)} {numberValue(props.metadata.matches) === 1 ? "match" : "matches"})
+      </Show>
+    </InlineTool>
   )
 }
 
 function WebFetch(props: ToolProps) {
   return (
-    <>
-      <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
-        WebFetch {stringValue(props.input.url)}
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="%" pending="Fetching from the web..." complete={stringValue(props.input.url)} part={props.part}>
+      WebFetch {stringValue(props.input.url)}
+    </InlineTool>
   )
 }
 
 function WebSearch(props: ToolProps) {
   return (
-    <>
-      <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
-        {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
-        <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
-      </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
-    </>
+    <InlineTool icon="◈" pending="Searching web..." complete={stringValue(props.input.query)} part={props.part}>
+      {webSearchProviderLabel(props.metadata.provider)} "{stringValue(props.input.query)}"{" "}
+      <Show when={numberValue(props.metadata.numResults)}>({numberValue(props.metadata.numResults)} results)</Show>
+    </InlineTool>
   )
 }
 
@@ -2452,7 +2866,6 @@ function Task(props: ToolProps) {
       >
         {content()}
       </InlineTool>
-      <ToolOutputPreview output={props.output} maxLines={8} inline separate />
     </>
   )
 }
@@ -2489,11 +2902,14 @@ function executeCalls(value: unknown): ExecuteCall[] {
 
 // The `execute` tool streams child tool calls through metadata, not a child session like Task.
 function Execute(props: ToolProps) {
+  const ctx = use()
   const { theme } = useTheme()
   const isLoading = createMemo(() => props.part.state.status === "pending" || props.part.state.status === "running")
   const calls = createMemo(() => executeCalls(props.metadata.toolCalls))
   const output = createMemo(() => stripAnsi(props.output?.trim() ?? ""))
   const hasRuntimeError = createMemo(() => props.metadata.error === true)
+  const outputPreview = createMemo(() => collapseToolOutput(output(), 4, 4 * Math.max(20, ctx.width - 6)).output)
+  const showOutput = createMemo(() => output() && hasRuntimeError())
   const content = createMemo(() => {
     const lines = ["execute"]
     for (const call of calls()) {
@@ -2515,13 +2931,18 @@ function Execute(props: ToolProps) {
       >
         {content()}
       </InlineTool>
-      <ToolOutputPreview
-        output={output()}
-        maxLines={4}
-        color={hasRuntimeError() || props.part.state.status === "error" ? theme.error : theme.text}
-        inline
-        separate
-      />
+      <Show when={showOutput()}>
+        <box paddingLeft={3}>
+          <For each={outputPreview().split("\n")}>
+            {(line, index) => (
+              <text paddingLeft={3} fg={theme.error}>
+                {index() === 0 ? "↳ " : "  "}
+                {line}
+              </text>
+            )}
+          </For>
+        </box>
+      </Show>
     </>
   )
 }
