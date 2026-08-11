@@ -170,6 +170,7 @@ const inputCommands = [
   "input.delete.word.backward",
   "input.select.all",
   "input.submit",
+  "input.submit.steer",
 ] as const
 
 function hasManagedTextareaFocus(renderer: CliRenderer) {

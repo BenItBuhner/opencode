@@ -38,7 +38,7 @@ import { DialogStash } from "../dialog-stash"
 import { DialogGoalSummaries, type GoalSummariesView, type GoalSummaryView } from "../dialog-goal-summaries"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, PromptInput, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
 import { formatDuration } from "../../util/format"
@@ -156,6 +156,8 @@ function formatEditorContext(selection: EditorSelection) {
 }
 
 let stashed: { prompt: PromptInfo; cursor: number } | undefined
+
+type SubmitDelivery = "steer" | "queue"
 
 export function Prompt(props: PromptProps) {
   let input: TextareaRenderable
@@ -284,6 +286,8 @@ export function Prompt(props: PromptProps) {
   const stash = usePromptStash()
   const keymap = useOpencodeKeymap()
   const agentShortcut = useCommandShortcut("agent.cycle")
+  const steerSubmitShortcut = useCommandShortcut("input.submit.steer")
+  const queueSubmitShortcut = useCommandShortcut("input.submit")
   const paletteShortcut = useCommandShortcut("command.palette.show")
   const exit = useExit()
   const dimensions = useTerminalDimensions()
@@ -471,7 +475,7 @@ export function Prompt(props: PromptProps) {
         hidden: true,
         run: async () => {
           if (!input.focused) return
-          const handled = await submit()
+          const handled = await submit({ delivery: "queue" })
           if (!handled) return
 
           dialog.clear()
@@ -728,7 +732,7 @@ export function Prompt(props: PromptProps) {
       setStore("extmarkToPartIndex", new Map())
     },
     submit() {
-      void submit()
+      void submit({ delivery: "queue" })
     },
   }
 
@@ -1047,8 +1051,30 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  useBindings(() => {
+    return {
+      target: inputTarget,
+      enabled: (() => {
+        cursorVersion()
+        return inputTarget() !== undefined && !props.disabled && !auto()?.visible && input !== undefined
+      })(),
+      commands: [
+        {
+          name: "input.submit.steer",
+          title: "Steer after current response",
+          category: "Prompt",
+          hidden: true,
+          run: async () => {
+            await submit({ delivery: "steer" })
+          },
+        },
+      ],
+      bindings: tuiConfig.keybinds.get("input.submit.steer"),
+    }
+  })
+
   let submitting = false
-  async function submit() {
+  async function submit(options?: { delivery?: SubmitDelivery }) {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
     // a second call slips past the empty-input check before the first call
@@ -1058,13 +1084,13 @@ export function Prompt(props: PromptProps) {
     if (submitting) return false
     submitting = true
     try {
-      return await submitInner()
+      return await submitInner(options?.delivery ?? "steer")
     } finally {
       submitting = false
     }
   }
 
-  async function submitInner() {
+  async function submitInner(delivery: SubmitDelivery = "steer") {
     workspace.clearNotice()
 
     // IME: double-defer may fire before onContentChange flushes the last
@@ -1214,6 +1240,49 @@ export function Prompt(props: PromptProps) {
         variant,
         parts: nonTextParts.filter((x) => x.type === "file"),
       })
+    } else if (delivery === "queue" && props.sessionID && status().type !== "idle") {
+      // Durably queue the prompt so the server promotes it once the active
+      // run would otherwise go idle. Agent/model switching is intentionally
+      // skipped here: switching mid-run would steer the active response,
+      // which is exactly what queueing avoids.
+      move.startSubmit()
+      sdk.client.v2.session
+        .prompt(
+          {
+            sessionID,
+            prompt: {
+              text: [...editorParts.map((part) => part.text), inputText].join("\n\n"),
+              files: nonTextParts
+                .filter((part) => part.type === "file")
+                .map((part) => ({
+                  uri: part.url,
+                  mime: part.mime,
+                  name: part.filename,
+                  source: part.source
+                    ? { start: part.source.text.start, end: part.source.text.end, text: part.source.text.value }
+                    : undefined,
+                })) as PromptInput["files"],
+              agents: nonTextParts
+                .filter((part) => part.type === "agent")
+                .map((part) => ({
+                  name: part.name,
+                  source: part.source
+                    ? { start: part.source.start, end: part.source.end, text: part.source.value }
+                    : undefined,
+                })),
+            },
+            delivery: "queue",
+          },
+          { throwOnError: true },
+        )
+        .catch((error) => {
+          toast.show({
+            title: "Failed to queue prompt",
+            message: errorMessage(error),
+            variant: "error",
+          })
+        })
+      if (editorParts.length > 0) editor.markSelectionSent()
     } else {
       move.startSubmit()
       sdk.client.session
@@ -1516,7 +1585,7 @@ export function Prompt(props: PromptProps) {
               onSubmit={() => {
                 // IME: double-defer so the last composed character (e.g. Korean
                 // hangul) is flushed to plainText before we read it for submission.
-                setTimeout(() => setTimeout(() => submit(), 0), 0)
+                setTimeout(() => setTimeout(() => submit({ delivery: "queue" }), 0), 0)
               }}
               onPaste={async (event: PasteEvent) => {
                 if (props.disabled) {
@@ -1818,6 +1887,10 @@ export function Prompt(props: PromptProps) {
                     </Match>
                     <Match when={true}>
                       <text fg={theme.text}>
+                        {steerSubmitShortcut()} <span style={{ fg: theme.textMuted }}>steer</span>
+                        {" · "}
+                        {queueSubmitShortcut()} <span style={{ fg: theme.textMuted }}>queue</span>
+                        {" · "}
                         {agentShortcut()} <span style={{ fg: theme.textMuted }}>agents</span>
                       </text>
                     </Match>
