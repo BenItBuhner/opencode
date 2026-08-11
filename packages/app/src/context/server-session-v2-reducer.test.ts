@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test"
 import type { OpenCodeEvent, SessionMessageInfo } from "@opencode-ai/client/promise"
+import { Event } from "@opencode-ai/schema/event"
+import { Model } from "@opencode-ai/schema/model"
+import { Provider } from "@opencode-ai/schema/provider"
+import { SessionEvent } from "@opencode-ai/schema/session-event"
+import { SessionID } from "@opencode-ai/schema/session-id"
+import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { createV2SessionReducer } from "./server-session-v2-reducer"
 
 const event = (input: object) => input as OpenCodeEvent
@@ -152,5 +158,92 @@ describe("v2 session reducer", () => {
     )
 
     expect(result).toMatchObject({ sessionID: "ses_1", missing: "msg_user", touched: [] })
+  })
+
+  test("projects current session.next prompt and streaming assistant events", () => {
+    const reducer = createV2SessionReducer()
+    let messages: SessionMessageInfo[] = []
+    const currentBase = {
+      location: { directory: "/repo" },
+      durable: { aggregateID: "ses_1", seq: 1, version: 1 },
+    }
+    const currentSessionID = SessionID.make("ses_1")
+    const userMessageID = SessionMessage.ID.make("msg_user")
+    const assistantMessageID = SessionMessage.ID.make("msg_assistant")
+    const events: Array<
+      | typeof SessionEvent.PromptAdmitted.Encoded
+      | typeof SessionEvent.Prompted.Encoded
+      | typeof SessionEvent.Step.Started.Encoded
+      | typeof SessionEvent.Text.Started.Encoded
+      | typeof SessionEvent.Text.Ended.Encoded
+    > = [
+      {
+        ...currentBase,
+        id: Event.ID.make("evt_admitted"),
+        type: "session.next.prompt.admitted",
+        data: {
+          timestamp: 1,
+          sessionID: currentSessionID,
+          messageID: userMessageID,
+          prompt: { text: "hello", files: [], agents: [] },
+          delivery: "steer",
+        },
+      },
+      {
+        ...currentBase,
+        id: Event.ID.make("evt_prompted"),
+        type: "session.next.prompted",
+        data: {
+          timestamp: 1,
+          sessionID: currentSessionID,
+          messageID: userMessageID,
+          prompt: { text: "hello", files: [], agents: [] },
+          delivery: "steer",
+        },
+      },
+      {
+        ...currentBase,
+        id: Event.ID.make("evt_step"),
+        type: "session.next.step.started",
+        data: {
+          timestamp: 2,
+          sessionID: currentSessionID,
+          assistantMessageID,
+          agent: "build",
+          model: { id: Model.ID.make("model"), providerID: Provider.ID.make("provider") },
+        },
+      },
+      {
+        ...currentBase,
+        id: Event.ID.make("evt_text"),
+        type: "session.next.text.started",
+        data: { timestamp: 3, sessionID: currentSessionID, assistantMessageID, textID: "prt_text" },
+      },
+      {
+        ...currentBase,
+        id: Event.ID.make("evt_text_end"),
+        type: "session.next.text.ended",
+        data: {
+          timestamp: 4,
+          sessionID: currentSessionID,
+          assistantMessageID,
+          textID: "prt_text",
+          text: "hello",
+        },
+      },
+    ]
+    const reductions = events.map((input) => {
+      const result = reducer.reduce(messages, input)
+      if (result) messages = result.messages
+      return result
+    })
+
+    expect(reductions.every((result) => result !== undefined)).toBe(true)
+    expect(messages[0]).toMatchObject({ id: "msg_user", type: "user", text: "hello" })
+    expect(messages[1]).toMatchObject({
+      id: "msg_assistant",
+      type: "assistant",
+      content: [{ type: "text", text: "hello" }],
+    })
   })
 })

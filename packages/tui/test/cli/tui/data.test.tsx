@@ -370,7 +370,7 @@ test("settles pending tools when a live failure arrives", async () => {
   }
 })
 
-test("renders admitted prompts only after they become model-visible", async () => {
+test("tracks queued admitted prompts until they become model-visible", async () => {
   const events = createEventSource()
   const calls = createFetch(undefined, events)
   let sync!: ReturnType<typeof useData>
@@ -407,10 +407,16 @@ test("renders admitted prompts only after they become model-visible", async () =
         messageID: "msg_user_1",
         timestamp: 0,
         prompt: { text: "hello" },
-        delivery: "steer",
+        delivery: "queue",
       },
     })
     expect(sync.session.message.list("session-1") ?? []).toEqual([])
+    expect(sync.session.admitted.list("session-1")).toHaveLength(1)
+    expect(sync.session.admitted.list("session-1")?.[0]).toMatchObject({
+      messageID: "msg_user_1",
+      prompt: { text: "hello" },
+      delivery: "queue",
+    })
 
     emitEvent(events, {
       id: "evt_prompted_1",
@@ -425,6 +431,7 @@ test("renders admitted prompts only after they become model-visible", async () =
     })
 
     await wait(() => sync.session.message.list("session-1")?.length === 1)
+    expect(sync.session.admitted.list("session-1")).toEqual([])
     const message = sync.session.message.list("session-1")?.[0]
     expect(message?.type).toBe("user")
     if (message?.type !== "user") return

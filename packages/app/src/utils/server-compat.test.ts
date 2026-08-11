@@ -25,14 +25,16 @@ function setup(
       if (request.method === "POST" && request.url.endsWith("/prompt_async"))
         return new Response(undefined, { status: 204 })
       if (request.method === "POST" && request.url.endsWith("/prompt")) {
+        const body = (await request.clone().json()) as { delivery?: "steer" | "queue" }
         return Response.json({
-          admittedSeq: 1,
-          id: "msg_1",
-          sessionID: "ses_1",
-          timeCreated: 1,
-          type: "user",
-          data: { text: "hello" },
-          delivery: "steer",
+          data: {
+            admittedSeq: 1,
+            id: "msg_1",
+            sessionID: "ses_1",
+            timeCreated: 1,
+            prompt: { text: "hello" },
+            delivery: body.delivery ?? "steer",
+          },
         })
       }
       if (request.method === "GET" && new URL(request.url).pathname === "/vcs")
@@ -127,6 +129,79 @@ describe("createCompatibleApi", () => {
       { id: "prt_text", type: "text", text: "look" },
       { id: "prt_image", type: "file", mime: "image/png", url: "data:image/png;base64,AAAA", filename: "image.png" },
     ])
+  })
+
+  test("rejects durable queue delivery on V1 instead of reporting a false admission", async () => {
+    const { api, requests } = setup("v1")
+
+    expect(
+      api.session.prompt({
+        sessionID: "ses_1",
+        id: "msg_1",
+        text: "queue me",
+        delivery: "queue",
+      }),
+    ).rejects.toThrow("Queue delivery is unavailable on V1 servers")
+    expect(requests).toEqual([])
+  })
+
+  test("sends current prompts with the current nested prompt contract", async () => {
+    const { api, requests } = setup("v2")
+    await api.session.prompt({
+      sessionID: "ses_1",
+      id: "msg_1",
+      text: "hello",
+      files: [{ uri: "data:text/plain;base64,aGVsbG8=", name: "notes.txt" }],
+      agents: [{ name: "goal" }],
+      agent: "goal",
+      model: { providerID: "provider", modelID: "model" },
+      variant: "high",
+      delivery: "queue",
+      resume: false,
+    })
+    const prompt = requests.find((request) => new URL(request.url).pathname.endsWith("/prompt"))!
+    const body = await prompt.json()
+
+    expect(requests.map((request) => new URL(request.url).pathname)).toEqual([
+      "/api/session/ses_1/agent",
+      "/api/session/ses_1/model",
+      "/api/session/ses_1/prompt",
+    ])
+    expect(await requests[0]!.json()).toEqual({ agent: "goal" })
+    expect(await requests[1]!.json()).toEqual({
+      model: { id: "model", providerID: "provider", variant: "high" },
+    })
+    expect(body).toEqual({
+      id: "msg_1",
+      prompt: {
+        text: "hello",
+        files: [{ uri: "data:text/plain;base64,aGVsbG8=", mime: "text/plain", name: "notes.txt" }],
+        agents: [{ name: "goal" }],
+      },
+      delivery: "queue",
+      resume: false,
+    })
+    expect(body).not.toHaveProperty("text")
+  })
+
+  test("routes current slash commands through durable prompt admission", async () => {
+    const { api, requests } = setup("v2")
+    await api.session.command({
+      sessionID: "ses_1",
+      id: "msg_1",
+      command: "goal",
+      arguments: "set Restore V2",
+      agent: "goal",
+      model: { id: "model", providerID: "provider", variant: "high" },
+      delivery: "steer",
+    })
+    const prompt = requests.find((request) => new URL(request.url).pathname.endsWith("/prompt"))!
+
+    expect(await prompt.json()).toMatchObject({
+      id: "msg_1",
+      prompt: { text: "/goal set Restore V2" },
+      delivery: "steer",
+    })
   })
 
   test("resolves protocol detection once across implementation methods", async () => {

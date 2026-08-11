@@ -3,6 +3,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
+import { SessionEvent } from "@opencode-ai/core/session/event"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
@@ -700,37 +701,39 @@ it.instance("goal summary tool rejects invalid summary format", () =>
   }),
 )
 
-it.instance("goal-mode subagent sessions receive goal prompt and reminders", () =>
-  Effect.gen(function* () {
-    const { llm } = yield* useServerConfig(providerCfg)
+it.instance(
+  "goal-mode subagent sessions receive goal prompt and reminders",
+  () =>
+    Effect.gen(function* () {
+      const { llm } = yield* useServerConfig(providerCfg)
 
-    const prompt = yield* SessionPrompt.Service
-    const sessions = yield* Session.Service
-    const chat = yield* sessions.create({
-      title: "Goal child",
-      agent: "general",
-      metadata: { goal_mode: true },
-      permission: [{ permission: "goal_complete", pattern: "*", action: "allow" }],
-    })
-    yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the child goal", status: "active" })
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const chat = yield* sessions.create({
+        title: "Goal child",
+        agent: "general",
+        metadata: { goal_mode: true },
+        permission: [{ permission: "goal_complete", pattern: "*", action: "allow" }],
+      })
+      yield* sessions.setGoal({ sessionID: chat.id, text: "Finish the child goal", status: "active" })
 
-    yield* prompt.prompt({
-      sessionID: chat.id,
-      agent: "general",
-      model: ref,
-      noReply: true,
-      parts: [{ type: "text", text: "Continue" }],
-    })
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "general",
+        model: ref,
+        noReply: true,
+        parts: [{ type: "text", text: "Continue" }],
+      })
 
-    yield* llm.tool("goal_complete", {})
-    yield* llm.text("Goal complete.")
+      yield* llm.tool("goal_complete", {})
+      yield* llm.text("Goal complete.")
 
-    yield* prompt.loop({ sessionID: chat.id })
-    const inputs = yield* llm.inputs
-    expect(JSON.stringify(inputs[0])).toContain("You are the Goal agent")
-    expect(JSON.stringify(inputs[0])).toContain("<session-goal>")
-    expect(JSON.stringify(inputs[0])).toContain("Finish the child goal")
-  }),
+      yield* prompt.loop({ sessionID: chat.id })
+      const inputs = yield* llm.inputs
+      expect(JSON.stringify(inputs[0])).toContain("You are the Goal agent")
+      expect(JSON.stringify(inputs[0])).toContain("<session-goal>")
+      expect(JSON.stringify(inputs[0])).toContain("Finish the child goal")
+    }),
   10_000,
 )
 
@@ -813,9 +816,7 @@ it.instance("/goal complete clears the persisted session goal", () =>
       model: `${ref.providerID}/${ref.modelID}`,
     })
 
-    expect(result.parts.some((part) => part.type === "text" && part.text.includes("Completed session goal"))).toBe(
-      true,
-    )
+    expect(result.parts.some((part) => part.type === "text" && part.text.includes("Completed session goal"))).toBe(true)
     expect(yield* sessions.getGoal(chat.id)).toBeUndefined()
   }),
 )
@@ -878,7 +879,7 @@ withMcpInstructions.instance(
   15_000,
 )
 
-it.instance("legacy prompt emits message events without session.next events", () =>
+it.instance("legacy prompt shadows visible user messages into the current event stream", () =>
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
     const prompt = yield* SessionPrompt.Service
@@ -922,7 +923,10 @@ it.instance("legacy prompt emits message events without session.next events", ()
     expect(seen).toContain(Session.Event.Updated.type)
     expect(seen).toContain(MessageV2.Event.Updated.type)
     expect(seen).toContain(MessageV2.Event.PartUpdated.type)
-    expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([])
+    expect(seen.filter((type) => type.startsWith("session.next."))).toEqual([
+      SessionEvent.Prompted.type,
+      SessionEvent.Prompted.type,
+    ])
   }),
 )
 

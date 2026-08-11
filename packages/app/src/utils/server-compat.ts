@@ -198,6 +198,9 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
         await legacy().session.abort(value)
       },
       async prompt(value: SessionPromptInput & LegacyPrompt) {
+        if (value.delivery === "queue") {
+          throw new Error("Queue delivery is unavailable on V1 servers")
+        }
         await legacy().session.promptAsync({
           sessionID: value.sessionID,
           messageID: value.id ?? undefined,
@@ -235,7 +238,7 @@ function createV1Api(input: CompatibleInput): CompatibleApi {
           timeCreated: Date.now(),
           type: "user",
           data: { text: value.text },
-          delivery: value.delivery ?? "steer",
+          delivery: "steer",
         }
       },
       async command(value: SessionCommandInput) {

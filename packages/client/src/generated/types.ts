@@ -101,7 +101,7 @@ export type ProjectCopyError = {
 export const isProjectCopyError = (value: unknown): value is ProjectCopyError =>
   typeof value === "object" && value !== null && "name" in value && value["name"] === "ProjectCopyError"
 
-export type HealthGetOutput = { readonly healthy: true }
+export type HealthGetOutput = { readonly healthy: true; readonly protocol: "v2" }
 
 export type LocationGetInput = {
   readonly location?: {
@@ -262,6 +262,40 @@ export type SessionsListOutput = {
         readonly patch: string
       }>
     }
+    readonly goal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
+    readonly completedGoal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
   }>
   readonly cursor: { readonly previous?: string | null; readonly next?: string | null }
 }
@@ -324,6 +358,40 @@ export type SessionsCreateOutput = {
         readonly patch: string
       }>
     }
+    readonly goal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
+    readonly completedGoal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
   }
 }["data"]
 
@@ -361,6 +429,40 @@ export type SessionsGetOutput = {
         readonly deletions: number
         readonly patch: string
       }>
+    }
+    readonly goal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
+    }
+    readonly completedGoal?: {
+      readonly text: string
+      readonly status: "active" | "paused" | "completed"
+      readonly created: number
+      readonly updated: number
+      readonly completed?: number
+      readonly progress?: number
+      readonly summaries?: ReadonlyArray<{
+        readonly id: string
+        readonly created: number
+        readonly progress: number
+        readonly summary: string
+        readonly headline?: string
+        readonly revision?: number
+      }>
+      readonly revision?: number
     }
   }
 }["data"]
@@ -1095,6 +1197,51 @@ export type SessionsHistoryOutput = {
     | {
         readonly id: string
         readonly metadata?: { readonly [x: string]: JsonValue }
+        readonly type: "session.next.goal.updated"
+        readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+        readonly location?: { readonly directory: string; readonly workspaceID?: string }
+        readonly data: {
+          readonly timestamp: number
+          readonly sessionID: string
+          readonly goal?: {
+            readonly text: string
+            readonly status: "active" | "paused" | "completed"
+            readonly created: number
+            readonly updated: number
+            readonly completed?: number
+            readonly progress?: number
+            readonly summaries?: ReadonlyArray<{
+              readonly id: string
+              readonly created: number
+              readonly progress: number
+              readonly summary: string
+              readonly headline?: string
+              readonly revision?: number
+            }>
+            readonly revision?: number
+          }
+          readonly completedGoal?: {
+            readonly text: string
+            readonly status: "active" | "paused" | "completed"
+            readonly created: number
+            readonly updated: number
+            readonly completed?: number
+            readonly progress?: number
+            readonly summaries?: ReadonlyArray<{
+              readonly id: string
+              readonly created: number
+              readonly progress: number
+              readonly summary: string
+              readonly headline?: string
+              readonly revision?: number
+            }>
+            readonly revision?: number
+          }
+        }
+      }
+    | {
+        readonly id: string
+        readonly metadata?: { readonly [x: string]: JsonValue }
         readonly type: "session.next.revert.staged"
         readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
         readonly location?: { readonly directory: string; readonly workspaceID?: string }
@@ -1548,6 +1695,51 @@ export type SessionsEventsOutput =
         readonly reason: "auto" | "manual"
         readonly text: string
         readonly recent: string
+      }
+    }
+  | {
+      readonly id: string
+      readonly metadata?: { readonly [x: string]: unknown }
+      readonly type: "session.next.goal.updated"
+      readonly durable?: { readonly aggregateID: string; readonly seq: number; readonly version: number }
+      readonly location?: { readonly directory: string; readonly workspaceID?: string }
+      readonly data: {
+        readonly timestamp: number
+        readonly sessionID: string
+        readonly goal?: {
+          readonly text: string
+          readonly status: "active" | "paused" | "completed"
+          readonly created: number
+          readonly updated: number
+          readonly completed?: number
+          readonly progress?: number
+          readonly summaries?: ReadonlyArray<{
+            readonly id: string
+            readonly created: number
+            readonly progress: number
+            readonly summary: string
+            readonly headline?: string
+            readonly revision?: number
+          }>
+          readonly revision?: number
+        }
+        readonly completedGoal?: {
+          readonly text: string
+          readonly status: "active" | "paused" | "completed"
+          readonly created: number
+          readonly updated: number
+          readonly completed?: number
+          readonly progress?: number
+          readonly summaries?: ReadonlyArray<{
+            readonly id: string
+            readonly created: number
+            readonly progress: number
+            readonly summary: string
+            readonly headline?: string
+            readonly revision?: number
+          }>
+          readonly revision?: number
+        }
       }
     }
   | {

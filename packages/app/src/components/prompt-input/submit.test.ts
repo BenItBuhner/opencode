@@ -4,6 +4,7 @@ import type { Prompt, PromptStore } from "@/context/prompt"
 import type { ModelSelection } from "@/context/local"
 
 let createPromptSubmit: typeof import("./submit").createPromptSubmit
+let sendFollowupDraft: typeof import("./submit").sendFollowupDraft
 
 const createdClients: string[] = []
 const createdSessions: string[] = []
@@ -32,6 +33,7 @@ const sentPrompts: string[] = []
 const promptInputs: unknown[] = []
 const sentCommands: unknown[] = []
 const commands: Array<{ name: string }> = []
+const selectedAgents: string[] = []
 let serverSessionSyncs = 0
 
 let params: { id?: string } = {}
@@ -136,6 +138,9 @@ beforeAll(async () => {
     Toast: { Region: () => null },
     showToast: () => 0,
   }))
+  mock.module("@/utils/toast", () => ({
+    showToast: () => 0,
+  }))
 
   mock.module("@opencode-ai/core/util/encode", () => ({
     base64Encode: (value: string) => value,
@@ -149,6 +154,7 @@ beforeAll(async () => {
       },
       agent: {
         current: () => ({ name: "agent" }),
+        set: (name: string) => selectedAgents.push(name),
       },
       session: {
         promote(directory: string, sessionID: string) {
@@ -276,6 +282,7 @@ beforeAll(async () => {
 
   const mod = await import("./submit")
   createPromptSubmit = mod.createPromptSubmit
+  sendFollowupDraft = mod.sendFollowupDraft
 })
 
 beforeEach(() => {
@@ -291,6 +298,7 @@ beforeEach(() => {
   promptInputs.length = 0
   sentCommands.length = 0
   commands.length = 0
+  selectedAgents.length = 0
   promptValue = [{ type: "text", content: "ls", start: 0, end: 2 }]
   params = {}
   search = {}
@@ -494,6 +502,42 @@ describe("prompt submit worktree selection", () => {
     ])
   })
 
+  test("submits durable queued followups without optimistic user projection", async () => {
+    const api = clientFor("/repo/main").api.session as unknown as Parameters<typeof sendFollowupDraft>[0]["api"]
+
+    await sendFollowupDraft({
+      api,
+      serverSync: {
+        session: {
+          set: () => undefined,
+        },
+      } as unknown as Parameters<typeof sendFollowupDraft>[0]["serverSync"],
+      sync: {
+        data: { command: [] },
+        session: {
+          optimistic: {
+            add: (value: (typeof optimistic)[number]) => optimistic.push(value),
+            remove: () => undefined,
+          },
+        },
+      } as unknown as Parameters<typeof sendFollowupDraft>[0]["sync"],
+      draft: {
+        sessionID: "session-1",
+        sessionDirectory: "/repo/main",
+        prompt: [{ type: "text", content: "queued", start: 0, end: 6 }],
+        context: [],
+        agent: "agent",
+        model: { providerID: "provider", modelID: "model" },
+      },
+      delivery: "queue",
+      optimistic: false,
+      optimisticBusy: true,
+    })
+
+    expect(promptInputs[0]).toMatchObject({ sessionID: "session-1", text: "queued", delivery: "queue" })
+    expect(optimistic).toEqual([])
+  })
+
   test("submits slash commands through the current session API", async () => {
     params = { id: "session-1" }
     variant = "high"
@@ -531,6 +575,33 @@ describe("prompt submit worktree selection", () => {
       },
     ])
     expect(serverSessionSyncs).toBe(0)
+  })
+
+  test("switches goal commands to the goal agent before submission", async () => {
+    params = { id: "session-1" }
+    commands.push({ name: "goal" })
+    promptValue = [{ type: "text", content: "/goal set Restore V2", start: 0, end: 20 }]
+    const submit = createPromptSubmit({
+      prompt,
+      info: () => ({ id: "session-1" }),
+      imageAttachments: () => [],
+      commentCount: () => 0,
+      autoAccept: () => false,
+      mode: () => "normal",
+      working: () => false,
+      editor: () => undefined,
+      queueScroll: () => undefined,
+      promptLength: (value) => value.reduce((sum, part) => sum + ("content" in part ? part.content.length : 0), 0),
+      addToHistory: () => undefined,
+      resetHistoryNavigation: () => undefined,
+      setMode: () => undefined,
+      setPopover: () => undefined,
+    })
+
+    await submit.handleSubmit({ preventDefault: () => undefined } as unknown as Event)
+
+    expect(selectedAgents).toEqual(["goal"])
+    expect(sentCommands).toMatchObject([{ command: "goal", arguments: "set Restore V2", agent: "goal" }])
   })
 
   test("uses an injected model selection", async () => {

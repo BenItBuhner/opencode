@@ -388,50 +388,70 @@ describe("tool.task", () => {
     }),
   )
 
-  it.instance("goal_mode creates a goal-mode child with goal tools", () =>
-    Effect.gen(function* () {
-      const sessions = yield* Session.Service
-      const { chat, assistant } = yield* seed()
-      const tool = yield* TaskTool
-      const def = yield* tool.init()
-      let seen: SessionPrompt.PromptInput | undefined
+  it.instance(
+    "goal_mode creates a goal-mode child with goal tools",
+    () =>
+      Effect.gen(function* () {
+        const sessions = yield* Session.Service
+        const { chat, assistant } = yield* seed()
+        yield* sessions
+          .setPermission({
+            sessionID: chat.id,
+            permission: [
+              { permission: "external_directory", pattern: "*", action: "deny" },
+              { permission: "edit", pattern: "*", action: "deny" },
+            ],
+          })
+          .pipe(Effect.orDie)
+        const tool = yield* TaskTool
+        const def = yield* tool.init()
+        let seen: SessionPrompt.PromptInput | undefined
 
-      const result = yield* def.execute(
-        {
-          description: "ship workflow",
-          prompt: "Implement the workflow until complete",
-          subagent_type: "general",
-          goal_mode: true,
-          goal: "Ship the workflow",
-        },
-        {
-          sessionID: chat.id,
-          messageID: assistant.id,
-          agent: "build",
-          abort: new AbortController().signal,
-          extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
-          messages: [],
-          metadata: () => Effect.void,
-          ask: () => Effect.void,
-        },
-      )
+        const result = yield* def.execute(
+          {
+            description: "ship workflow",
+            prompt: "Implement the workflow until complete",
+            subagent_type: "general",
+            goal_mode: true,
+            goal: "Ship the workflow",
+          },
+          {
+            sessionID: chat.id,
+            messageID: assistant.id,
+            agent: "build",
+            abort: new AbortController().signal,
+            extra: { promptOps: stubOps({ onPrompt: (input) => (seen = input) }) },
+            messages: [],
+            metadata: () => Effect.void,
+            ask: () => Effect.void,
+          },
+        )
 
-      const child = yield* sessions.get(result.metadata.sessionId)
-      const goal = yield* sessions.getGoal(child.id)
-      expect(child.metadata?.goal_mode).toBe(true)
-      expect(goal?.text).toBe("Ship the workflow")
-      expect(goal?.status).toBe("active")
-      expect(result.metadata.goalMode).toBe(true)
-      expect(result.metadata.goalText).toBe("Ship the workflow")
-      expect(seen?.tools?.goal_complete).toBe(true)
-      expect(seen?.tools?.goal_summarize_state).toBe(true)
-      expect(child.permission?.some((rule) => rule.permission === "goal_complete" && rule.action === "allow")).toBe(
-        true,
-      )
-      expect(child.permission?.some((rule) => rule.permission === "goal_summarize_state" && rule.action === "allow")).toBe(
-        true,
-      )
-    }),
+        const child = yield* sessions.get(result.metadata.sessionId)
+        const goal = yield* sessions.getGoal(child.id)
+        expect(child.metadata?.goal_mode).toBe(true)
+        expect(goal?.text).toBe("Ship the workflow")
+        expect(goal?.status).toBe("active")
+        expect(result.metadata.goalMode).toBe(true)
+        expect(result.metadata.goalText).toBe("Ship the workflow")
+        expect(seen?.tools).toBeUndefined()
+        expect(child.permission).toEqual(
+          expect.arrayContaining([
+            { permission: "external_directory", pattern: "*", action: "deny" },
+            { permission: "edit", pattern: "*", action: "deny" },
+            { permission: "task", pattern: "*", action: "deny" },
+            { permission: "bash", pattern: "*", action: "deny" },
+            { permission: "read", pattern: "*", action: "deny" },
+          ]),
+        )
+        expect(child.permission?.some((rule) => rule.permission === "goal_complete" && rule.action === "allow")).toBe(
+          true,
+        )
+        expect(
+          child.permission?.some((rule) => rule.permission === "goal_summarize_state" && rule.action === "allow"),
+        ).toBe(true)
+      }),
+    { config: { experimental: { primary_tools: ["bash", "read"] } } },
   )
 
   it.instance("goal_mode inherits an active parent goal when goal is omitted", () =>

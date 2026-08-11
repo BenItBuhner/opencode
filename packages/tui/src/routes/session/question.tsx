@@ -11,12 +11,31 @@ import { useBindings, useOpencodeModeStack } from "../../keymap"
 
 const QUESTION_MODE = "question"
 
+export function formatQuestionTimeout(seconds: number) {
+  const remaining = Math.max(0, Math.ceil(seconds))
+  if (remaining < 60) return `${remaining}s`
+  return `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`
+}
+
 export function QuestionPrompt(props: { request: QuestionRequest; directory?: string }) {
   const sdk = useSDK()
   const { theme } = useTheme()
   const renderer = useRenderer()
   const tuiConfig = useTuiConfig()
   const modeStack = useOpencodeModeStack()
+  const initialTimeout =
+    typeof props.request.timeout === "number" && Number.isFinite(props.request.timeout)
+      ? props.request.timeout
+      : undefined
+  const [remaining, setRemaining] = createSignal<number | undefined>(initialTimeout)
+
+  const timer =
+    initialTimeout === undefined
+      ? undefined
+      : setInterval(() => setRemaining((value) => Math.max(0, (value ?? initialTimeout) - 1)), 1_000)
+  onCleanup(() => {
+    if (timer !== undefined) clearInterval(timer)
+  })
 
   const questions = createMemo(() => props.request.questions)
   const single = createMemo(() => questions().length === 1 && questions()[0]?.multiple !== true)
@@ -360,6 +379,9 @@ export function QuestionPrompt(props: { request: QuestionRequest; directory?: st
                 {multi() ? " (select all that apply)" : ""}
               </text>
             </box>
+            <Show when={remaining() !== undefined}>
+              <text fg={theme.textMuted}>Times out in {formatQuestionTimeout(remaining() ?? 0)}</text>
+            </Show>
             <box>
               <For each={options()}>
                 {(opt, i) => {

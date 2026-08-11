@@ -104,7 +104,7 @@ import { useUsageExceededDialogs } from "./session/usage-exceeded-dialogs"
 import { createSessionOwnership } from "./session/session-ownership"
 import { createSessionLineage } from "./session/session-lineage"
 
-type FollowupItem = FollowupDraft & { id: string }
+type FollowupItem = FollowupDraft & { id: string; delivery?: "queue" }
 type FollowupEdit = Pick<FollowupItem, "id" | "prompt" | "context">
 const emptyFollowups: FollowupItem[] = []
 
@@ -1715,7 +1715,13 @@ export default function Page() {
   })
 
   const followupMutation = useMutation(() => ({
-    mutationFn: async (input: { sessionID: string; id: string; manual?: boolean }) => {
+    mutationFn: async (input: {
+      sessionID: string
+      id: string
+      manual?: boolean
+      delivery?: "steer" | "queue"
+      optimistic?: boolean
+    }) => {
       const owner = sessionOwnership.capture()
       const item = (followup.items[input.sessionID] ?? []).find((entry) => entry.id === input.id)
       if (!item) return
@@ -1728,6 +1734,9 @@ export default function Page() {
         sync: sync(),
         serverSync: serverSync(),
         draft: item,
+        messageID: item.id,
+        delivery: input.delivery ?? (serverSDK().protocolKind() === "v2" ? item.delivery : undefined),
+        optimistic: input.optimistic,
         optimisticBusy: item.sessionDirectory === sdk().directory,
       }).catch((err) => {
         setFollowup("failed", input.sessionID, input.id)
@@ -1775,10 +1784,8 @@ export default function Page() {
   }
 
   const queueFollowup = (draft: FollowupDraft) => {
-    setFollowup("items", draft.sessionID, (items) => [
-      ...(items ?? []),
-      { id: Identifier.ascending("message"), ...draft },
-    ])
+    const item: FollowupItem = { id: Identifier.ascending("message"), ...draft, delivery: "queue" }
+    setFollowup("items", draft.sessionID, (items) => [...(items ?? []), item])
     setFollowup("failed", draft.sessionID, undefined)
     setFollowup("paused", draft.sessionID, undefined)
   }
@@ -1932,6 +1939,17 @@ export default function Page() {
     if (followup.paused[sessionID]) return
     if (isChildSession()) return
     if (composer.blocked()) return
+    const protocol = serverSDK().protocolKind()
+    if (!protocol) return
+    if (protocol === "v2") {
+      void followupMutation.mutateAsync({
+        sessionID,
+        id: item.id,
+        delivery: "queue",
+        optimistic: false,
+      })
+      return
+    }
     if (busy(sessionID)) return
 
     void sendFollowup(sessionID, item.id)

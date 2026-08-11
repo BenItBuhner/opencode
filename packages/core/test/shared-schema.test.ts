@@ -12,6 +12,7 @@ import { Project } from "@opencode-ai/schema/project"
 import { ProjectDirectories } from "@opencode-ai/schema/project-directories"
 import { PermissionV1 } from "@opencode-ai/schema/permission-v1"
 import { Session } from "@opencode-ai/schema/session"
+import { SessionGoal } from "@opencode-ai/schema/session-goal"
 import { SessionInput } from "@opencode-ai/schema/session-input"
 import { SessionMessage } from "@opencode-ai/schema/session-message"
 import { Workspace } from "@opencode-ai/schema/workspace"
@@ -46,6 +47,7 @@ test("Core reuses the canonical shared schemas", async () => {
     corePty,
     coreProject,
     coreReference,
+    coreSessionGoal,
     coreSessionInput,
     coreSessionMessage,
     coreSessionTodo,
@@ -68,6 +70,7 @@ test("Core reuses the canonical shared schemas", async () => {
     import("@opencode-ai/core/pty"),
     import("@opencode-ai/core/project/schema"),
     import("@opencode-ai/core/reference"),
+    import("@opencode-ai/core/session/goal"),
     import("@opencode-ai/core/session/input"),
     import("@opencode-ai/core/session/message"),
     import("@opencode-ai/core/session/todo"),
@@ -140,6 +143,10 @@ test("Core reuses the canonical shared schemas", async () => {
     [SessionV2.ID, Session.ID],
     [SessionV2.Info, Session.Info],
     [SessionV2.ListAnchor, Session.ListAnchor],
+    [coreSessionGoal.Status, SessionGoal.Status],
+    [coreSessionGoal.Progress, SessionGoal.Progress],
+    [coreSessionGoal.Summary, SessionGoal.Summary],
+    [coreSessionGoal.Info, SessionGoal.Info],
     [coreSessionInput.Delivery, SessionInput.Delivery],
     [coreSessionInput.Admitted, SessionInput.Admitted],
     [coreSessionMessage.ID, SessionMessage.ID],

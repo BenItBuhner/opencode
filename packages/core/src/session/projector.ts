@@ -393,6 +393,28 @@ const layer = Layer.effectDiscard(
     yield* events.project(SessionEvent.Reasoning.Ended, (event) => run(db, event))
     // yield* events.project(SessionEvent.Retried, (event) => run(db, event))
     yield* events.project(SessionEvent.Compaction.Ended, (event) => run(db, event))
+    yield* events.project(SessionEvent.GoalUpdated, (event) =>
+      Effect.gen(function* () {
+        const current = yield* db
+          .select({ metadata: SessionTable.metadata })
+          .from(SessionTable)
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .get()
+          .pipe(Effect.orDie)
+        if (!current) return yield* Effect.die(`Session not found: ${event.data.sessionID}`)
+        const metadata = { ...(current.metadata ?? {}) }
+        if (event.data.goal) metadata.goal = event.data.goal
+        else delete metadata.goal
+        if (event.data.completedGoal) metadata.completed_goal = event.data.completedGoal
+        else delete metadata.completed_goal
+        yield* db
+          .update(SessionTable)
+          .set({ metadata, time_updated: DateTime.toEpochMillis(event.data.timestamp) })
+          .where(eq(SessionTable.id, event.data.sessionID))
+          .run()
+          .pipe(Effect.orDie)
+      }),
+    )
     yield* events.project(SessionEvent.RevertEvent.Staged, (event) =>
       db
         .update(SessionTable)

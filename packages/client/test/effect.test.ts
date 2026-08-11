@@ -125,6 +125,7 @@ test("session methods retain decoded Effect inputs and outputs", async () => {
     const admitted = yield* client.sessions.prompt({
       sessionID: Session.ID.make("ses_test"),
       prompt: Prompt.make({ text: "Hello" }),
+      delivery: "queue",
       resume: false,
     })
     yield* client.sessions.compact({ sessionID: Session.ID.make("ses_test") })
@@ -161,6 +162,7 @@ test("session methods retain decoded Effect inputs and outputs", async () => {
   expect(Object.getPrototypeOf(result.admitted)).toBe(Object.prototype)
   expect(Object.getPrototypeOf(result.admitted.prompt)).toBe(Object.prototype)
   expect(DateTime.toEpochMillis(result.admitted.timeCreated)).toBe(1_717_171_717_000)
+  expect(result.admitted.delivery).toBe("queue")
   expect(result.context).toEqual([])
   expect(DateTime.toEpochMillis(result.history.data[0].data.timestamp)).toBe(1_717_171_717_000)
   expect(result.history).toEqual(expect.objectContaining({ hasMore: true }))
@@ -221,7 +223,7 @@ const admission = {
     id: "msg_test",
     sessionID: "ses_test",
     prompt: { text: "Hello" },
-    delivery: "steer",
+    delivery: "queue",
     timeCreated: 1_717_171_717_000,
   },
 }

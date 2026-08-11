@@ -17,7 +17,14 @@ export type GoalView = {
   status: string
   created?: number
   progress?: number
+  headline?: string
   summaries?: GoalSummaryView[]
+}
+
+export function compactGoalProgressBar(progress: number) {
+  const value = Math.max(0, Math.min(100, Math.round(progress)))
+  const filled = Math.round(value / 20)
+  return `${"#".repeat(filled)}${"-".repeat(5 - filled)}`
 }
 
 export function goalFromSessionMetadata(metadata: Record<string, unknown> | undefined): GoalView | undefined {
@@ -49,6 +56,7 @@ export function goalFromSessionMetadata(metadata: Record<string, unknown> | unde
     status: item.status,
     created: typeof item.created === "number" ? item.created : undefined,
     progress: typeof item.progress === "number" ? item.progress : summaries?.at(-1)?.progress,
+    headline: summaries?.at(-1)?.headline,
     summaries,
   }
 }

@@ -16,7 +16,10 @@ describe("normalizeSessionInfo", () => {
       location: { directory: "/repo/worktree", workspaceID: "workspace-1" },
       subpath: "worktree",
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot", files: [] },
-    } as SessionInfo)
+      goal: { text: "Restore V2", status: "active", created: 1, updated: 2, revision: 1 },
+    } as SessionInfo & {
+      goal: { text: string; status: "active"; created: number; updated: number; revision: number }
+    })
 
     expect(result).toEqual({
       id: "session-1",
@@ -33,8 +36,34 @@ describe("normalizeSessionInfo", () => {
       model: { id: "gpt-5", providerID: "openai", variant: "high" },
       version: "",
       time: { created: 1, updated: 1 },
+      metadata: {
+        goal: { text: "Restore V2", status: "active", created: 1, updated: 2, revision: 1 },
+      },
       revert: { messageID: "message-1", partID: "part-1", snapshot: "snapshot" },
     })
+  })
+
+  test("retains the completed goal for the summaries entry point", () => {
+    const completedGoal = {
+      text: "Restore V2",
+      status: "completed" as const,
+      created: 1,
+      updated: 3,
+      completed: 3,
+      progress: 100,
+    }
+    const result = normalizeSessionInfo({
+      id: "session-1",
+      projectID: "project-1",
+      cost: 0,
+      tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      time: { created: 1, updated: 3 },
+      title: "Completed goal",
+      location: { directory: "/repo" },
+      completedGoal,
+    } as SessionInfo & { completedGoal: typeof completedGoal })
+
+    expect(result.metadata?.goal).toEqual(completedGoal)
   })
 })
 

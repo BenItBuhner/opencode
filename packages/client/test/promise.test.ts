@@ -123,6 +123,7 @@ test("session methods use the public HTTP contract", async () => {
   const admitted = await client.sessions.prompt({
     sessionID: "ses_test",
     prompt: { text: "Hello" },
+    delivery: "queue",
     resume: false,
   })
   await client.sessions.compact({ sessionID: "ses_test" })
@@ -167,6 +168,7 @@ test("session methods use the public HTTP contract", async () => {
   if (typeof body !== "string") throw new Error("Expected JSON request body")
   expect(JSON.parse(body)).toEqual({
     prompt: { text: "Hello" },
+    delivery: "queue",
     resume: false,
   })
 })

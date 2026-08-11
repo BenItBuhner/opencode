@@ -34,10 +34,13 @@ type LocationData = {
   skill?: SkillV2Info[]
 }
 
+export type AdmittedPrompt = Extract<V2Event, { type: "session.next.prompt.admitted" }>["data"]
+
 type Data = {
   session: {
     info: Record<string, SessionV2Info>
     message: Record<string, SessionMessage[]>
+    admitted: Record<string, AdmittedPrompt[]>
     permission: Record<string, PermissionV2Request[]>
     question: Record<string, QuestionV2Request[]>
   }
@@ -62,6 +65,7 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
       session: {
         info: {},
         message: {},
+        admitted: {},
         permission: {},
         question: {},
       },
@@ -150,6 +154,9 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           })
           break
         case "session.next.prompted": {
+          setStore("session", "admitted", event.data.sessionID, (items = []) =>
+            items.filter((item) => item.messageID !== event.data.messageID),
+          )
           message.update(event.data.sessionID, (draft) => {
             message.prepend(draft, {
               id: event.data.messageID,
@@ -163,6 +170,10 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           break
         }
         case "session.next.prompt.admitted":
+          setStore("session", "admitted", event.data.sessionID, (items = []) => [
+            ...items.filter((item) => item.messageID !== event.data.messageID),
+            event.data,
+          ])
           break
         case "session.next.context.updated":
           message.update(event.data.sessionID, (draft) => {
@@ -429,6 +440,11 @@ export const { use: useData, provider: DataProvider } = createSimpleContext({
           async refresh(sessionID: string) {
             const result = await sdk.client.v2.session.messages({ sessionID }, { throwOnError: true })
             setStore("session", "message", sessionID, result.data.data)
+          },
+        },
+        admitted: {
+          list(sessionID: string) {
+            return store.session.admitted[sessionID]
           },
         },
         permission: {

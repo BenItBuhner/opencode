@@ -28,6 +28,7 @@ import { SessionContextEpoch } from "../context-epoch"
 import { SessionCompaction } from "../compaction"
 import { SessionEvent } from "../event"
 import { SessionHistory } from "../history"
+import { SessionGoal } from "../goal"
 import { SessionInput } from "../input"
 import { SessionSchema } from "../schema"
 import { SessionStore } from "../store"
@@ -103,6 +104,7 @@ const layer = Layer.effect(
     const systemContext = yield* SystemContextRegistry.Service
     const skillGuidance = yield* SkillGuidance.Service
     const referenceGuidance = yield* ReferenceGuidance.Service
+    const goals = yield* SessionGoal.Service
     const config = yield* Config.Service
     const snapshots = yield* Snapshot.Service
     const db = (yield* Database.Service).db
@@ -339,10 +341,20 @@ const layer = Layer.effect(
             yield* withPublication(publisher.failUnsettledTools("Tool execution interrupted"))
           if (stream._tag === "Success" && !publisher.hasProviderError())
             yield* withPublication(publisher.failUnsettledTools("Provider did not return a tool result", true))
+          const goal = agent.id === "goal" ? yield* goals.get(session.id).pipe(Effect.orDie) : undefined
+          const goalFailure =
+            publisher.hasProviderError() || (stream._tag === "Failure" && !Cause.hasInterrupts(stream.cause))
+          if (goal?.status === "active" && goalFailure)
+            yield* goals.update({ sessionID: session.id, status: "paused" }).pipe(Effect.orDie)
           if (stream._tag === "Failure") return yield* Effect.failCause(stream.cause)
           if (settled._tag === "Failure" && Cause.hasInterrupts(settled.cause))
             return yield* Effect.failCause(settled.cause)
-          return { needsContinuation: !publisher.hasProviderError() && needsContinuation, step: currentStep }
+          return {
+            needsContinuation:
+              !publisher.hasProviderError() &&
+              (needsContinuation || (goal?.status === "active" && !goalFailure && !isLastStep)),
+            step: currentStep,
+          }
         }),
       )
     }, Effect.scoped)
@@ -425,6 +437,7 @@ export const node = makeLocationNode({
     SystemContextRegistry.node,
     SkillGuidance.node,
     ReferenceGuidance.node,
+    SessionGoal.node,
     Config.node,
     Snapshot.node,
     Database.node,

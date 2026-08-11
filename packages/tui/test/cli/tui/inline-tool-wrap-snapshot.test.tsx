@@ -15,6 +15,8 @@ import {
   parseTodos,
   alwaysSeparate,
   toolDisplay,
+  boundedToolOutput,
+  toolOutput,
 } from "../../../src/routes/session"
 
 let testSetup: Awaited<ReturnType<typeof testRender>> | undefined
@@ -226,6 +228,37 @@ describe("TUI inline tool wrapping", () => {
   test("falls back for unknown tool names", () => {
     expect(toolDisplay("bash")).toBe("bash")
     expect(toolDisplay("plugin_tool")).toBe("generic")
+  })
+
+  test("resolves tool output from state before metadata and current content fallbacks", () => {
+    expect(toolOutput({ state: { status: "completed", output: "state output" } }, { output: "metadata output" })).toBe(
+      "state output",
+    )
+    expect(toolOutput({ state: { status: "running" } }, { output: "streamed output" })).toBe("streamed output")
+    expect(toolOutput({ state: { status: "completed", structured: { output: "structured output" } } })).toBe(
+      "structured output",
+    )
+    expect(
+      toolOutput({
+        state: {
+          status: "completed",
+          content: [
+            { type: "text", text: "content output" },
+            { type: "file", uri: "file:///tmp/a.txt", mime: "text/plain" },
+          ],
+        },
+      }),
+    ).toBe("content output")
+    expect(toolOutput({ state: { status: "error", result: { type: "error", value: "error output" } } })).toBe(
+      "error output",
+    )
+  })
+
+  test("bounds long tool output previews", () => {
+    const collapsed = boundedToolOutput(["one", "two", "three", "four"].join("\n"), 20, 2)
+
+    expect(collapsed.overflow).toBe(true)
+    expect(collapsed.output).toBe("one\ntwo\n…")
   })
 
   test("replaces pending copy when a tool fails before completion", async () => {

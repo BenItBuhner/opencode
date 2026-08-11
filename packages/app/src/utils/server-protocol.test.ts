@@ -8,6 +8,16 @@ const mockFetch = (run: (input: string | URL | Request) => Promise<Response>) =>
   Object.assign(run, { preconnect: globalThis.fetch.preconnect })
 
 describe("detectServerProtocol", () => {
+  test("uses the explicit current protocol marker when legacy routes are also mounted", async () => {
+    const fetcher = mockFetch((input) => {
+      const path = new URL(input instanceof Request ? input.url : input).pathname
+      if (path === "/global/health") return Promise.resolve(json({ healthy: true, version: "1.18.4" }))
+      return Promise.resolve(json({ healthy: true, protocol: "v2" }))
+    })
+
+    expect(await detectServerProtocol(server, fetcher)).toBe("v2")
+  })
+
   test("prefers the legacy health endpoint when both API generations exist", async () => {
     const fetcher = mockFetch((input) => {
       const path = new URL(input instanceof Request ? input.url : input).pathname

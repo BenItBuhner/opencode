@@ -27,6 +27,7 @@ import { Snapshot } from "@opencode-ai/core/snapshot"
 import { ContextSnapshotDecodeError } from "@opencode-ai/core/session/error"
 import { SessionEvent } from "@opencode-ai/core/session/event"
 import { SessionInput } from "@opencode-ai/core/session/input"
+import { SessionGoal } from "@opencode-ai/core/session/goal"
 import { SessionMessage } from "@opencode-ai/core/session/message"
 import { Prompt } from "@opencode-ai/core/session/prompt"
 import { SessionProjector } from "@opencode-ai/core/session/projector"
@@ -258,6 +259,7 @@ const it = testEffect(
       EventV2.node,
       QuestionV2.node,
       SessionProjector.node,
+      SessionGoal.node,
       SessionStore.node,
       ApplicationTools.node,
       AgentV2.node,
@@ -853,6 +855,70 @@ describe("SessionRunnerLLM", () => {
 
       expect(requests.at(-1)?.system.map((part) => part.text)).toEqual(["Reviewer instructions", "Initial context"])
       expect((yield* session.messages({ sessionID }))[0]).toMatchObject({ type: "assistant", agent: "reviewer" })
+    }),
+  )
+
+  it.effect("continues an active goal session until the goal settles or the agent reaches its step limit", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const agents = yield* AgentV2.Service
+      const goals = yield* SessionGoal.Service
+      yield* agents.transform((editor) =>
+        editor.update(AgentV2.ID.make("goal"), (agent) => {
+          agent.system = "Goal instructions"
+          agent.mode = "primary"
+          agent.steps = 2
+        }),
+      )
+      yield* db
+        .update(SessionTable)
+        .set({ agent: "goal" })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+      yield* goals.set({ sessionID, text: "Restore V2" })
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Keep going" }), resume: false })
+      responses = [
+        fragmentFixture("text", "goal-progress", ["Still working"]).completeEvents,
+        fragmentFixture("text", "goal-final", ["Reached turn limit"]).completeEvents,
+      ]
+      requests.length = 0
+
+      yield* session.resume(sessionID)
+
+      expect(requests).toHaveLength(2)
+      expect(requests[1]?.toolChoice).toMatchObject({ type: "none" })
+      expect(yield* goals.get(sessionID)).toMatchObject({ status: "active" })
+    }),
+  )
+
+  it.effect("pauses an active goal after a provider response error", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const agents = yield* AgentV2.Service
+      const goals = yield* SessionGoal.Service
+      yield* agents.transform((editor) =>
+        editor.update(AgentV2.ID.make("goal"), (agent) => {
+          agent.mode = "primary"
+        }),
+      )
+      yield* db
+        .update(SessionTable)
+        .set({ agent: "goal" })
+        .where(eq(SessionTable.id, sessionID))
+        .run()
+        .pipe(Effect.orDie)
+      yield* goals.set({ sessionID, text: "Restore V2" })
+      const session = yield* SessionV2.Service
+      yield* session.prompt({ sessionID, prompt: Prompt.make({ text: "Keep going" }), resume: false })
+      response = [LLMEvent.stepStart({ index: 0 }), LLMEvent.providerError({ message: "Provider unavailable" })]
+
+      yield* session.resume(sessionID)
+
+      expect(yield* goals.get(sessionID)).toMatchObject({ status: "paused" })
     }),
   )
 
