@@ -38,9 +38,10 @@ import { DialogStash } from "../dialog-stash"
 import { DialogGoalSummaries, type GoalSummariesView, type GoalSummaryView } from "../dialog-goal-summaries"
 import { type AutocompleteRef, Autocomplete } from "./autocomplete"
 import { useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
-import type { AssistantMessage, FilePart, PromptInput, UserMessage } from "@opencode-ai/sdk/v2"
+import type { AssistantMessage, FilePart, UserMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { errorMessage } from "../../util/error"
+import { BTW_METADATA, createBtwTitle, parseBtwPrompt } from "../../util/session"
 import { formatDuration } from "../../util/format"
 import { createColors, createFrames } from "../../ui/spinner"
 import { useDialog } from "../../ui/dialog"
@@ -57,6 +58,7 @@ import { useTuiConfig } from "../../config"
 import { usePromptWorkspace } from "./workspace"
 import { usePromptMove } from "./move"
 import { readLocalAttachment } from "./local-attachment"
+import { lifecycleQueue } from "./lifecycle-queue"
 import { useLocation } from "../../context/location"
 
 registerOpencodeSpinner()
@@ -70,7 +72,11 @@ export type PromptProps = {
   hint?: JSX.Element
   right?: JSX.Element
   hideContextUsage?: boolean
+  hideGoalInfo?: boolean
   showPlaceholder?: boolean
+  allowDialogFocus?: boolean
+  closeDialogOnSubmit?: boolean
+  bindingMode?: string
   placeholders?: {
     normal?: string[]
     shell?: string[]
@@ -478,7 +484,7 @@ export function Prompt(props: PromptProps) {
           const handled = await submit({ delivery: "queue" })
           if (!handled) return
 
-          dialog.clear()
+          if (props.closeDialogOnSubmit !== false) dialog.clear()
         },
       },
       {
@@ -688,7 +694,7 @@ export function Prompt(props: PromptProps) {
   }))
 
   useBindings(() => ({
-    mode: OPENCODE_BASE_MODE,
+    mode: props.bindingMode ?? OPENCODE_BASE_MODE,
     bindings: tuiConfig.keybinds.gather("prompt.palette", [
       "prompt.submit",
       "prompt.editor",
@@ -758,7 +764,7 @@ export function Prompt(props: PromptProps) {
 
   createEffect(() => {
     if (!input || input.isDestroyed) return
-    if (props.visible === false || dialog.stack.length > 0) {
+    if (props.visible === false || (!props.allowDialogFocus && dialog.stack.length > 0)) {
       if (input.focused) input.blur()
       return
     }
@@ -1073,8 +1079,31 @@ export function Prompt(props: PromptProps) {
     }
   })
 
+  // Flush one client-side queued prompt whenever the session goes idle. The
+  // flushed prompt submits through the normal steer path with force so it
+  // cannot re-enqueue if another run starts between shift and submit.
+  let flushingLifecycleQueue = false
+  createEffect(
+    on(
+      () => [props.sessionID, status().type] as const,
+      ([sessionID, sessionStatus]) => {
+        if (flushingLifecycleQueue || !sessionID || sessionStatus !== "idle") return
+        const next = lifecycleQueue.shift(sessionID)
+        if (!next) return
+        flushingLifecycleQueue = true
+        input.setText(next.prompt.input)
+        setStore("prompt", next.prompt)
+        setStore("mode", next.mode)
+        restoreExtmarksFromParts(next.prompt.parts)
+        void submit({ delivery: "steer", force: true }).finally(() => {
+          flushingLifecycleQueue = false
+        })
+      },
+    ),
+  )
+
   let submitting = false
-  async function submit(options?: { delivery?: SubmitDelivery }) {
+  async function submit(options?: { delivery?: SubmitDelivery; force?: boolean }) {
     // Prevent overlapping invocations (e.g. a double-pressed Enter, or the
     // input's native onSubmit racing another dispatch). Without this guard,
     // a second call slips past the empty-input check before the first call
@@ -1084,13 +1113,13 @@ export function Prompt(props: PromptProps) {
     if (submitting) return false
     submitting = true
     try {
-      return await submitInner(options?.delivery ?? "steer")
+      return await submitInner(options?.delivery ?? "steer", options?.force)
     } finally {
       submitting = false
     }
   }
 
-  async function submitInner(delivery: SubmitDelivery = "steer") {
+  async function submitInner(delivery: SubmitDelivery = "steer", force = false) {
     workspace.clearNotice()
 
     // IME: double-defer may fire before onContentChange flushes the last
@@ -1117,6 +1146,28 @@ export function Prompt(props: PromptProps) {
       return false
     }
 
+    // Enter queues while the agent is running: hold the prompt client-side
+    // and let the idle-flush effect submit it once the current run completes.
+    if (!force && delivery === "queue" && props.sessionID && status().type !== "idle") {
+      lifecycleQueue.enqueue(props.sessionID, {
+        prompt: structuredClone(unwrap(store.prompt)),
+        mode: store.mode,
+      })
+      history.append({
+        ...store.prompt,
+        mode: store.mode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+      input.clear()
+      return true
+    }
+
     const workspaceSession = props.sessionID ? sync.session.get(props.sessionID) : undefined
     const workspaceID = workspaceSession?.workspaceID
     const workspaceStatus = workspaceID ? (project.workspace.status(workspaceID) ?? "error") : undefined
@@ -1133,6 +1184,101 @@ export function Prompt(props: PromptProps) {
     }
 
     const variant = local.model.variant.current()
+    const inputText = expandTrackedPastedText(
+      store.prompt.input,
+      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
+        const partIndex = store.extmarkToPartIndex.get(extmark.id)
+        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
+        if (part?.type !== "text") return []
+        return [{ start: extmark.start, end: extmark.end, text: part.text }]
+      }),
+    )
+
+    // Filter out text parts (pasted content) since they're now expanded inline
+    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
+
+    const btwQuestion = props.allowDialogFocus ? undefined : parseBtwPrompt(inputText)
+    if (btwQuestion !== undefined) {
+      const parentID = props.sessionID ? (sync.session.get(props.sessionID)?.parentID ?? props.sessionID) : undefined
+      if (!parentID) {
+        toast.show({
+          title: "BTW needs a session",
+          message: "Use /btw from inside an existing session.",
+          variant: "warning",
+        })
+        return false
+      }
+
+      const parent = sync.session.get(parentID)
+      const res = await sdk.client.session.create({
+        workspace: parent?.workspaceID ?? workspaceSession?.workspaceID ?? project.workspace.current(),
+        parentID,
+        title: createBtwTitle(btwQuestion),
+        agent: agent.name,
+        model: {
+          providerID: selectedModel.providerID,
+          id: selectedModel.modelID,
+          variant,
+        },
+        metadata: BTW_METADATA,
+      })
+      if (res.error || !res.data) {
+        toast.show({
+          title: "Failed to start BTW chat",
+          message: errorMessage(res.error ?? "no response"),
+          variant: "error",
+        })
+        return false
+      }
+
+      await sync.session.sync(res.data.id).catch(() => undefined)
+      if (btwQuestion) {
+        sdk.client.session
+          .prompt(
+            {
+              sessionID: res.data.id,
+              ...selectedModel,
+              agent: agent.name,
+              model: selectedModel,
+              variant,
+              parts: [
+                {
+                  type: "text",
+                  text: btwQuestion,
+                },
+                ...nonTextParts,
+              ],
+            },
+            { throwOnError: true },
+          )
+          .catch((error) => {
+            toast.show({
+              title: "Failed to send BTW prompt",
+              message: errorMessage(error),
+              variant: "error",
+            })
+          })
+      }
+
+      history.append({
+        ...store.prompt,
+        mode: store.mode,
+      })
+      input.extmarks.clear()
+      setStore("prompt", {
+        input: "",
+        parts: [],
+      })
+      setStore("extmarkToPartIndex", new Map())
+      props.onSubmit?.()
+      route.navigate({
+        type: "session",
+        sessionID: res.data.id,
+      })
+      input.clear()
+      return true
+    }
+
     let sessionID = props.sessionID
     let finishMoveProgress = false
     if (sessionID == null) {
@@ -1168,19 +1314,6 @@ export function Prompt(props: PromptProps) {
 
       sessionID = res.data.id
     }
-
-    const inputText = expandTrackedPastedText(
-      store.prompt.input,
-      input.extmarks.getAllForTypeId(promptPartTypeId).flatMap((extmark) => {
-        const partIndex = store.extmarkToPartIndex.get(extmark.id)
-        const part = partIndex === undefined ? undefined : store.prompt.parts[partIndex]
-        if (part?.type !== "text") return []
-        return [{ start: extmark.start, end: extmark.end, text: part.text }]
-      }),
-    )
-
-    // Filter out text parts (pasted content) since they're now expanded inline
-    const nonTextParts = store.prompt.parts.filter((part) => part.type !== "text")
 
     // Capture mode before it gets reset
     const currentMode = store.mode
@@ -1240,49 +1373,6 @@ export function Prompt(props: PromptProps) {
         variant,
         parts: nonTextParts.filter((x) => x.type === "file"),
       })
-    } else if (delivery === "queue" && props.sessionID && status().type !== "idle") {
-      // Durably queue the prompt so the server promotes it once the active
-      // run would otherwise go idle. Agent/model switching is intentionally
-      // skipped here: switching mid-run would steer the active response,
-      // which is exactly what queueing avoids.
-      move.startSubmit()
-      sdk.client.v2.session
-        .prompt(
-          {
-            sessionID,
-            prompt: {
-              text: [...editorParts.map((part) => part.text), inputText].join("\n\n"),
-              files: nonTextParts
-                .filter((part) => part.type === "file")
-                .map((part) => ({
-                  uri: part.url,
-                  mime: part.mime,
-                  name: part.filename,
-                  source: part.source
-                    ? { start: part.source.text.start, end: part.source.text.end, text: part.source.text.value }
-                    : undefined,
-                })) as PromptInput["files"],
-              agents: nonTextParts
-                .filter((part) => part.type === "agent")
-                .map((part) => ({
-                  name: part.name,
-                  source: part.source
-                    ? { start: part.source.start, end: part.source.end, text: part.source.value }
-                    : undefined,
-                })),
-            },
-            delivery: "queue",
-          },
-          { throwOnError: true },
-        )
-        .catch((error) => {
-          toast.show({
-            title: "Failed to queue prompt",
-            message: errorMessage(error),
-            variant: "error",
-          })
-        })
-      if (editorParts.length > 0) editor.markSelectionSent()
     } else {
       move.startSubmit()
       sdk.client.session
@@ -1851,7 +1941,7 @@ export function Prompt(props: PromptProps) {
                   <text fg={editorContextLabelState() === "pending" ? theme.secondary : theme.textMuted}>{file()}</text>
                 )}
               </Show>
-              <Show when={displayGoal()}>
+              <Show when={props.hideGoalInfo ? undefined : displayGoal()}>
                 {(goal) => (
                   <box flexDirection="row" gap={1}>
                     <text fg={theme.accent} onMouseUp={openGoalDetails}>

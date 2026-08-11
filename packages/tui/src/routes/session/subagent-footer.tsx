@@ -7,6 +7,7 @@ import type { AssistantMessage } from "@opencode-ai/sdk/v2"
 import { Locale } from "../../util/locale"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useCommandShortcut, useOpencodeKeymap } from "../../keymap"
+import { isBtwSession } from "../../util/session"
 
 export function SubagentFooter() {
   const route = useRouteData("session")
@@ -17,13 +18,14 @@ export function SubagentFooter() {
   const subagentInfo = createMemo(() => {
     const s = session()
     if (!s) return { label: "Subagent", index: 0, total: 0 }
+    const isBtw = isBtwSession(s)
     const agentMatch = s.title.match(/@(\w+) subagent/)
-    const label = agentMatch ? Locale.titlecase(agentMatch[1]) : "Subagent"
+    const label = isBtw ? "BTW" : agentMatch ? Locale.titlecase(agentMatch[1]) : "Subagent"
 
     if (!s.parentID) return { label, index: 0, total: 0 }
 
     const siblings = sync.data.session
-      .filter((x) => x.parentID === s.parentID)
+      .filter((x) => x.parentID === s.parentID && isBtwSession(x) === isBtw)
       .toSorted((a, b) => a.time.created - b.time.created)
     const index = siblings.findIndex((x) => x.id === s.id)
 
